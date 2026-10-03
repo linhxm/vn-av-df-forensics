@@ -15,6 +15,8 @@ Phát hiện và định vị lip-sync deepfake trong video tiếng Việt: **vi
 
 Dữ liệu chia theo **part** (`vn-av-df-data-part1`, `-part2`, …), mỗi part là một đợt bổ sung, xử lý và đóng ZIP riêng. Local chọn part bằng `PART` trong [data_settings.py](data_settings.py); trên Kaggle chỉnh trong cell cấu hình của notebook.
 
+Ba notebook Kaggle ghi kết quả lên **W&B** (project `vn-av-df`): cut (thống kê, bảng clip, clip mẫu), generate (số mẫu theo ô 2×2, video mẫu), train (mỗi detector/seed một run, ghi **ngay sau từng epoch** của stage A, S và detector cùng GPU/RAM theo thời gian; sau báo cáo bổ sung metric, bảng ô 2×2, ảnh vào đúng run đó). Cần Kaggle secret `WANDB_API_KEY`; đặt `USE_WANDB = False` để tắt.
+
 ## Phương pháp
 
 | Mã | Tên | Mô tả |
@@ -59,14 +61,14 @@ https://www.youtube.com/watch?v=xxxxxxxxxxx,speaker_02
 
 | Bước | Việc làm | Kết quả chính |
 |---|---|---|
-| `01_collect.py` | Bung playlist, bỏ trùng, hỏi metadata YouTube, kiểm chất lượng | `selected_videos.csv` (để tải), `video_metadata.csv` (thống kê), `duplicates.csv` (khi có trùng) |
+| `01_collect.py` | Bung playlist, bỏ trùng, hỏi metadata YouTube, kiểm chất lượng | `selected_videos.csv` (để tải), `video_metadata.csv` (thống kê), `skipped_videos.csv` (video bị bỏ và lý do) |
 | `02_download.py` | Tải bản ≤1080 (cạnh ngắn), kiểm lại file | `data/raw/<part>/` |
 | `03_cut.py` | VAD + dò mặt, cắt clip 5–8 s, chuẩn hoá 25 fps CFR, cạnh ngắn ≤1080 | `data/candidates/<part>/` |
 | `04_review.py` | Duyệt tại http://127.0.0.1:8001 (keep, tiếng khớp người trên hình), Ctrl+C khi xong | `review.csv` |
 | `05_export.py` | Dựng part sạch từ clip keep | `exports/<part>/` |
 
 - **Kiểm chất lượng (01):** loại video private/đã xoá/livestream, fps gốc <25, cạnh ngắn <720 px, dài <5 s hoặc >12 giờ. Video 4K lấy bản 1080 có sẵn của YouTube.
-- **Trùng (01):** giữ lần xuất hiện đầu. `speaker_conflict = yes` trong `duplicates.csv` → sửa `videos.csv` trước khi tải.
+- **Video bị bỏ (01):** `skipped_videos.csv` ghi mọi video không được chọn, cột `type` = `same_part` (trùng trong part, giữ lần đầu) / `other_part` (đã thuộc part khác) / `rejected` (không đạt kiểm) / `error` (lỗi mạng, chạy lại để hỏi lại), kèm `reason`. `speaker_conflict = yes` → sửa `videos.csv` trước khi tải.
 - **Mạng:** lỗi IPv6 thì thêm `--force-ipv4`; bị chặn 403 thì thêm `--cookies-from-browser firefox`.
 - **Bổ sung video:** thêm URL vào `videos.csv` rồi chạy lại 01 → 05. Mỗi bước chỉ xử lý phần mới và giữ quyết định đã duyệt. Đổi `speaker_id` của video đã chọn sẽ báo lỗi.
 - **Đổi luật cắt** (`configs/data.yaml`, code hay model) thì bước 03 báo lỗi. Xoá `data/candidates/<part>` để cắt và duyệt lại.

@@ -59,7 +59,7 @@ def test_expand_and_duplicates_report_origin_and_speaker_conflict():
     # Giữ lần đầu (trong playlist), báo dòng 3 trùng và khác speaker để sửa tay.
     assert same["type"] == "same_part" and same["speaker_conflict"] == "yes"
     assert same["kept_from"].startswith("row 2 (playlist")
-    assert (same["kept_speaker_id"], same["skipped_speaker_id"]) == ("person1", "person2")
+    assert (same["kept_speaker_id"], same["speaker_id"]) == ("person1", "person2")
     assert (other["type"], other["kept_from"]) == ("other_part", "part0")
 
 
@@ -164,8 +164,11 @@ def test_collect_part_metadata_quality_check_and_fixed_columns(tmp_path):
     assert meta["fffffffffff"]["status"] == "error"
     track = meta["bbbbbbbbbbb"]
     assert (track["audio_track_count"], track["audio_is_original"]) == ("2", "yes")
-    duplicates = read_rows(part2 / "duplicates.csv")
-    assert {d["type"] for d in duplicates} == {"same_part", "other_part"}
+    # Một file liệt kê mọi video bị bỏ: trùng, bị loại (kèm lý do) và lỗi mạng.
+    skipped = {(d["video_id"], d["type"]) for d in read_rows(part2 / "skipped_videos.csv")}
+    assert {("aaaaaaaaaaa", "other_part"), ("bbbbbbbbbbb", "same_part")} <= skipped
+    assert {("ccccccccccc", "rejected"), ("ggggggggggg", "rejected")} <= skipped
+    assert ("fffffffffff", "error") in skipped
     # Chạy lại: chỉ hỏi lại video lỗi mạng; video đã có metadata không hỏi lại.
     asked.clear()
     infos["fffffffffff"] = youtube_info(title="F")

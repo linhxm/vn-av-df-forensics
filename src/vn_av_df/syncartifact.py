@@ -13,6 +13,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from vn_av_df import tracking
 from vn_av_df.reconstruction import (
     Reconstructor,
     TemporalBlock,
@@ -327,6 +328,7 @@ def fit_sync(model, train, validation, loader, options, seed, top_fraction=0.1):
                 validation_auc=auc,
             )
         )
+        tracking.log("stageS", history[-1])
         if value < best:
             best, best_auc, stale = value, auc, 0
             saved = [copy.deepcopy(module.state_dict()) for module in modules]

@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
+from vn_av_df import tracking
 from vn_av_df.common.runtime import atomic_bytes, fingerprint, read_json, sha, write_json
 from vn_av_df.dataset import (
     condition,
@@ -428,9 +429,10 @@ def train_one(cfg, architecture, seed, resume=False):
     stale = 0
     history = []
     reconstruction_report = sync_report = None
+    if (out / "last.pt").exists() and not resume:
+        raise FileExistsError("Run exists: set RESUME=True or choose RUN_NAME")
+    tracking.start(cfg, out, architecture, seed)  # train_selected đóng run kể cả khi lỗi.
     if (out / "last.pt").exists():
-        if not resume:
-            raise FileExistsError("Run exists: set RESUME=True or choose RUN_NAME")
         state = torch.load(out / "last.pt", map_location="cpu", weights_only=True)
         if state["run_id"] != run_id:
             raise ValueError("Resume configuration/data/code changed")
@@ -442,6 +444,14 @@ def train_one(cfg, architecture, seed, resume=False):
         history = state["history"]
         reconstruction_report = state.get("reconstruction_report")
         sync_report = state.get("sync_report")
+        # Run W&B mới của phiên resume: ghi lại lịch sử đã có trước khi train tiếp.
+        for stage, rows in (
+            ("stageA", (reconstruction_report or {}).get("history", [])),
+            ("stageS", (sync_report or {}).get("history", [])),
+            ("detector", history),
+        ):
+            for row in rows:
+                tracking.log(stage, row)
         torch.set_rng_state(state["rng"])
         if str(cfg["device"]).startswith("cuda") and state.get("cuda_rng") is not None:
             torch.cuda.set_rng_state_all(state["cuda_rng"])
@@ -523,6 +533,7 @@ def train_one(cfg, architecture, seed, resume=False):
                 "validation_coverage": report["video_coverage"],
             }
         )
+        tracking.log("detector", history[-1])
         state = {
             "format": FORMAT,
             "state": model.state_dict(),
@@ -583,6 +594,12 @@ def train_one(cfg, architecture, seed, resume=False):
         else None,
     }
     write_json(out / "resources.json", resources)
+    tracking.finish(
+        {
+            "best_epoch": read_json(out / "best.json")["epoch"],
+            **{f"resources/{k}": v for k, v in resources.items()},
+        }
+    )
     return out / "best.pt"
 
 
@@ -637,7 +654,10 @@ def train_selected(cfg, resume=False):
     results = []
     for architecture in cfg["architectures"]:
         for seed in cfg["seeds"]:
-            checkpoint = train_one(cfg, architecture, seed, resume)
+            try:
+                checkpoint = train_one(cfg, architecture, seed, resume)
+            finally:
+                tracking.finish()  # Không để run W&B mở khi một detector lỗi.
             _, state = load_model(checkpoint)
             if state["manifest_sha256"] != selection["manifest_sha256"]:
                 raise ValueError("Dataset parts changed during training")

@@ -36,9 +36,10 @@ METADATA_FIELDS = [
     *("audio_track_count", "audio_is_original"),
     *("status", "reason", "checked_at", "yt_dlp_version"),
 ]
-DUPLICATE_FIELDS = [
-    *("video_id", "url", "title", "type", "kept_from", "kept_speaker_id"),
-    *("skipped_from", "skipped_speaker_id", "speaker_conflict"),
+# Mọi video không được chọn: trùng (same_part/other_part), bị loại (rejected), lỗi mạng (error).
+SKIPPED_FIELDS = [
+    *("video_id", "url", "title", "speaker_id", "source_row", "type", "reason"),
+    *("kept_from", "kept_speaker_id", "speaker_conflict"),
 ]
 # Lỗi từ YouTube cho biết video không xem được (loại hẳn); lỗi khác coi là lỗi mạng (hỏi lại).
 UNAVAILABLE = re.compile(
@@ -152,11 +153,12 @@ def split_duplicates(items, taken):
                 video_id=item["video_id"],
                 url=item["url"],
                 title=item.get("title", ""),
+                speaker_id=item["speaker_id"],
+                source_row=item["source_row"],
                 type="same_part" if first else "other_part",
+                reason="duplicate" if first else "already selected in another part",
                 kept_from=first["source_row"] if first else part,
                 kept_speaker_id=first["speaker_id"] if first else "",
-                skipped_from=item["source_row"],
-                skipped_speaker_id=item["speaker_id"],
                 speaker_conflict="yes"
                 if first and first["speaker_id"] != item["speaker_id"]
                 else "",
@@ -351,12 +353,20 @@ def collect_part(
     selected = [{k: r.get(k, "") for k in SELECTED_FIELDS} for r in previous] + added
     if selected:
         write_rows(output, selected, mutable=True, fields=SELECTED_FIELDS)
-    report = folder / "duplicates.csv"
-    if duplicates:
-        write_rows(report, duplicates, mutable=True, fields=DUPLICATE_FIELDS)
+    # Một file để xem nhanh mọi video bị bỏ và lý do; thông số đầy đủ ở video_metadata.csv.
+    skipped = duplicates + [
+        {k: r.get(k, "") for k in ("video_id", "url", "title", "speaker_id", "source_row")}
+        | {"type": r["status"], "reason": r["reason"]}
+        for r in rows
+        if r["status"] in ("rejected", "error")
+    ]
+    report = folder / "skipped_videos.csv"
+    if skipped:
+        write_rows(report, skipped, mutable=True, fields=SKIPPED_FIELDS)
     else:
         report.unlink(missing_ok=True)
-    (folder / "cross_part_duplicates.csv").unlink(missing_ok=True)  # Tên cũ, đã gộp.
+    for old_name in ("duplicates.csv", "cross_part_duplicates.csv"):  # Tên cũ, đã gộp.
+        (folder / old_name).unlink(missing_ok=True)
     errors = [r["video_id"] for r in rows if r["status"] == "error"]
     summary = {
         "videos": len(rows),
@@ -370,8 +380,8 @@ def collect_part(
         "speaker_conflicts": sum(d["speaker_conflict"] == "yes" for d in duplicates),
         "output": str(output),
     }
-    if duplicates:
-        summary["note"] = f"See {report} and fix speaker_id in videos.csv if needed"
+    if skipped:
+        summary["note"] = f"See {report}; fix speaker_id in videos.csv if speaker_conflict"
     if errors:
         raise RuntimeError(f"Metadata failed for {len(errors)} videos (network?); rerun 01_collect")
     if not selected:

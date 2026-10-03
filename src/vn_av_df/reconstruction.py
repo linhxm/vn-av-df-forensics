@@ -12,6 +12,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from vn_av_df import tracking
+
 
 def valid_runs(valid):
     """Trả các khoảng [start,end) liên tục để tránh truyền qua missing data."""
@@ -255,6 +257,7 @@ def fit_reconstruction(model, train, validation, loader, options, seed):
         history.append(
             dict(epoch=epoch + 1, train_loss=sum(losses) / len(losses), validation_loss=score)
         )
+        tracking.log("stageA", history[-1])
         if score < best:
             best, stale = score, 0
             saved = copy.deepcopy(model.reconstructor.state_dict())

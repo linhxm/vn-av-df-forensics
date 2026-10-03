@@ -1,6 +1,8 @@
 """P2 SyncArtifact trên cache fixture: kiểm protocol, không chứng minh độ chính xác thật."""
 
 import random
+import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -182,6 +184,35 @@ def test_p2_stages_protocol_evaluation_and_report(project, monkeypatch):
     cfg["sync"]["shift_frames"] = [3, 5]
     with pytest.raises(ValueError, match="Resume"):
         train_one(cfg, "p2", 42, resume=True)
+
+
+def test_p2_logs_every_epoch_to_wandb_while_training(project, monkeypatch):
+    cfg, _ = project
+    cfg["architectures"] = ["p2"]
+    cfg["wandb"] = {"project": "test", "group": "run01"}
+    logged, finished = [], []
+
+    class Run:
+        id, project, entity, summary = "abc123", "test", None, {}
+
+        def define_metric(self, *args, **kwargs):
+            pass
+
+        def log(self, row):
+            logged.append(row)
+
+        def finish(self):
+            finished.append(self.summary.get("best_epoch"))
+
+    monkeypatch.setitem(sys.modules, "wandb", types.SimpleNamespace(init=lambda **kw: Run()))
+    train_selected(cfg)
+    # Ghi ngay sau từng epoch, đúng thứ tự stage A → S → detector, mỗi stage trục epoch riêng.
+    assert [list(row)[0] for row in logged] == ["stageA/epoch"] * 2 + ["stageS/epoch"] * 2 + [
+        "detector/epoch"
+    ]
+    assert "stageS/validation_auc" in logged[2] and "detector/validation_loss" in logged[4]
+    assert read_json(Path(cfg["runs"]) / "p2_seed42/wandb.json")["id"] == "abc123"
+    assert finished == [1]  # Đóng run sau khi train, kèm summary best epoch/resources.
 
 
 def test_p2_inference_reports_branch_evidence(project):
