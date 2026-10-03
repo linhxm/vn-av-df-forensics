@@ -233,7 +233,13 @@ def fit_reconstruction(model, train, validation, loader, options, seed):
     if not constants:
         raise ValueError("No valid real validation frames")
     best, saved, history, stale = float("inf"), None, [], 0
+    print(
+        f"Stage A (tái dựng A→V, real-only): {len(train)} train, {len(validation)} validation; "
+        f"loss hằng số trên validation {sum(constants) / len(constants):.4f}",
+        flush=True,
+    )
     for epoch in range(options.get("epochs", 20)):
+        tick = time.perf_counter()
         model.reconstructor.train()
         losses = []
         for row in balanced_order(train, seed + epoch):
@@ -255,7 +261,12 @@ def fit_reconstruction(model, train, validation, loader, options, seed):
             raise ValueError("No usable reconstruction samples")
         score = sum(values) / len(values)
         history.append(
-            dict(epoch=epoch + 1, train_loss=sum(losses) / len(losses), validation_loss=score)
+            dict(
+                epoch=epoch + 1,
+                train_loss=sum(losses) / len(losses),
+                validation_loss=score,
+                epoch_seconds=time.perf_counter() - tick,
+            )
         )
         tracking.log("stageA", history[-1])
         if score < best:

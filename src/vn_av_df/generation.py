@@ -5,6 +5,7 @@ import io
 import math
 import random
 import tempfile
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -350,10 +351,21 @@ def generate(cfg, generator=None):
         },
     )
     rows = []
+    total = len(plan["jobs"])
+    print(
+        f"Generate {total} cặp: theo split {plan['split_counts']}, "
+        f"{len(plan.get('skipped_without_donor', []))} parent bỏ vì không có donor",
+        flush=True,
+    )
+    began = time.monotonic()
     for number, job in enumerate(plan["jobs"]):
-        print(f"Generate pair {number + 1}/{len(plan['jobs'])}", flush=True)
+        tick = time.monotonic()
         r, d = job["original"], job["donor"]
         name = job.get("generator", "wav2lip_gan")
+        head = (
+            f"Pair {number + 1}/{total} [{r['split']}] {name}/{job.get('audio_mode', 'source')}: "
+            f"parent {r['clip_id']} ({r.get('speaker_id') or '-'})"
+        )
         gen_info = provenance[name]
         key = fingerprint(job)[:20]
         record = out / "records" / f"{key}.json"
@@ -362,6 +374,7 @@ def generate(cfg, generator=None):
             if any(sha(out / p["video"]) != p["sha256"] for p in previous):
                 raise ValueError("Generated file changed")
             rows.extend(previous)
+            print(f"{head}: đã sinh ở lượt trước, bỏ qua", flush=True)
             continue
         kinds = (["real"] if job.get("emit_real", True) else []) + ["full", "partial"]
         if job.get("sham_donor"):
@@ -494,6 +507,14 @@ def generate(cfg, generator=None):
             )
         write_json(record, generated)
         rows.extend(generated)
+        spent = time.monotonic() - began
+        print(
+            f"{head}, donor {d['clip_id'] if mode == 'donor' else '(tiếng gốc)'}; "
+            f"{'/'.join(dests)}; partial {length / 25:.2f}s tại {a / 25:.2f}s | "
+            f"{time.monotonic() - tick:.0f}s, đã chạy {spent / 60:.1f} phút, "
+            f"còn ~{spent / (number + 1) * (total - number - 1) / 60:.1f} phút",
+            flush=True,
+        )
     write_manifest(out / "candidates.jsonl", rows)
     if not (out / "review.csv").exists():
         csv_write(

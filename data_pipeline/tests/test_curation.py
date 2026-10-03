@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from vn_av_data.common.runtime import load_config, run, sha
+from vn_av_data.common.runtime import load_config, read_json, run, sha
 from vn_av_data.data.acquisition import index_sources, youtube_id
 from vn_av_data.data.curation import (
     curate_sources,
@@ -137,6 +137,10 @@ def test_cut_resume_appends_new_sources_and_keeps_review(delayed_source, tmp_pat
 
     result = curate_sources(manifest, output, cfg, lambda *_: [[0, 5]], scan)
     assert result["candidates"] == 1
+    # Nhật ký từng nguồn có thông số nguồn và thời gian cắt cho thống kê (notebook/W&B).
+    (done,) = read_json(output / "logs/sources.json").values()
+    assert done["media"]["fps"] == 25 and done["media"]["duration_s"] > 0
+    assert done["elapsed_s"] >= 0
     review = output / "review.csv"
     with review.open(encoding="utf-8-sig", newline="") as stream:
         rows = list(csv.DictReader(stream))

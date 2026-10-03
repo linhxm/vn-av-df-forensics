@@ -6,6 +6,8 @@ Quality acceptance does not assert audio-visual synchrony. Every clip retains so
 import csv
 import io
 import math
+import time
+from collections import Counter
 from itertools import pairwise
 from pathlib import Path
 
@@ -214,8 +216,9 @@ def curate_sources(manifest, output, cfg, speech_detector=None, visual_scanner=N
     journal = logs / "sources.json"
     finished = read_json(journal) if journal.exists() else {}
     candidates, rejected, errors = [], [], []
-    for source in rows:
+    for number, source in enumerate(rows, 1):
         sid = source["source_id"]
+        head = f"[{number}/{len(rows)}] {sid}"
         path = source_path(source, manifest)
         if sha(path) != source["sha256"]:
             raise ValueError(f"Source changed: {path}")
@@ -227,21 +230,56 @@ def curate_sources(manifest, output, cfg, speech_detector=None, visual_scanner=N
                     raise ValueError(f"Published clip missing/changed: {target}; use a new cut run")
             candidates.extend(done["candidates"])
             rejected.extend(done["rejected"])
+            print(
+                f"{head}: đã cắt ở lượt trước ({len(done['candidates'])} clip), bỏ qua", flush=True
+            )
             continue
         try:
-            print(f"Cut source {sid}", flush=True)
+            began = time.monotonic()
             origin, info = media_origin(path)
             duration = info["duration_s"]
+            # Thông số nguồn ghi vào nhật ký để thống kê (notebook/W&B) cả khi nguồn bị loại.
+            media = {
+                "duration_s": duration,
+                "fps": info["fps"],
+                "width": info["width"],
+                "height": info["height"],
+                "codec": info.get("video_codec"),
+                "bitrate_kbps": info.get("video_bitrate_kbps") or info.get("total_bitrate_kbps"),
+            }
+            print(
+                f"{head}: {(duration or 0) / 60:.1f} phút, {info['fps'] or 0:.2f} fps, "
+                f"{info['width']}x{info['height']}",
+                flush=True,
+            )
             if not duration or not 0 < duration <= cfg["max_source_hours"] * 3600:
                 raise ValueError("Source duration missing or exceeds configured limit")
             issue = quality_issue(info)
             if issue:
                 # Nguồn nạp ngoài bước tải (index) vẫn phải qua cùng ngưỡng fps/độ phân giải.
-                finished[sid] = {"candidates": [], "rejected": [], "source_rejected": issue}
+                print(f"  loại nguồn: {issue}", flush=True)
+                finished[sid] = {
+                    "candidates": [],
+                    "rejected": [],
+                    "source_rejected": issue,
+                    "media": media,
+                }
                 write_json(journal, finished)
                 continue
             speech = (speech_detector or detect_speech)(path, cfg["vad_model"], origin, duration)
+            speech_s = sum(end - start for start, end in speech)
+            print(
+                f"  VAD: {speech_s:.0f}s tiếng nói ({speech_s / duration:.0%}), "
+                f"{len(speech)} đoạn | {time.monotonic() - began:.0f}s",
+                flush=True,
+            )
             samples, scenes = (visual_scanner or scan_visual)(path, cfg, origin)
+            valid = sum(s["valid"] for s in samples) / max(1, len(samples))
+            print(
+                f"  Mặt: {len(samples)} mẫu, {valid:.0%} đạt; {len(scenes)} lần chuyển cảnh "
+                f"| {time.monotonic() - began:.0f}s",
+                flush=True,
+            )
             accepted_source, rejected_source = [], []
             for start, end in plan_clips(speech, scenes, duration, cfg):
                 selected = [s for s in samples if start <= s["time_s"] < end]
@@ -268,8 +306,11 @@ def curate_sources(manifest, output, cfg, speech_detector=None, visual_scanner=N
                     "face_ratio": ratio,
                     "visual_sample_coverage": min(1.0, coverage),
                 }
-                if ratio < cfg["min_face_ratio"] or coverage < 0.8:
-                    rejected_source.append({**base, "reason": "face_or_coverage"})
+                if coverage < 0.8:  # Thiếu mẫu hình (frame hỏng/khoảng trống), chưa xét mặt.
+                    rejected_source.append({**base, "reason": "coverage"})
+                    continue
+                if ratio < cfg["min_face_ratio"]:
+                    rejected_source.append({**base, "reason": "face"})
                     continue
                 target = output / "clips" / (clip_id + ".mp4")
                 # Nguồn chưa ghi vào sources.json = lần trước bị ngắt giữa chừng: cắt lại clip dở.
@@ -286,16 +327,28 @@ def curate_sources(manifest, output, cfg, speech_detector=None, visual_scanner=N
                         "sync_status": "unverified",
                     }
                 )
+            elapsed = time.monotonic() - began
+            clip_s = sum(c["duration_s"] for c in accepted_source)
+            reasons = Counter(r["reason"] for r in rejected_source)
             finished[sid] = {
                 "candidates": accepted_source,
                 "rejected": rejected_source,
                 "speech_regions": speech,
                 "scene_boundaries": scenes,
+                "media": media,
+                "elapsed_s": round(elapsed, 1),
             }
             write_json(journal, finished)
+            print(
+                f"  {len(accepted_source) + len(rejected_source)} cửa sổ: giữ "
+                f"{len(accepted_source)} clip ({clip_s:.0f}s), loại do mặt {reasons['face']}, "
+                f"do thiếu mẫu {reasons['coverage']} | {elapsed:.0f}s",
+                flush=True,
+            )
             candidates.extend(accepted_source)
             rejected.extend(rejected_source)
         except Exception as exc:  # noqa: BLE001 -- record a source failure and continue the batch
+            print(f"  lỗi: {exc}", flush=True)
             errors.append({"source_id": sid, "error": str(exc)})
         write_json(logs / "errors.json", errors)
     if candidates:

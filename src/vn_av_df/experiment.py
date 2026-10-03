@@ -5,7 +5,7 @@ import io
 import math
 import random
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -86,12 +86,22 @@ def prepare(cfg):
         return reports
     rows, selection = training_dataset(cfg, verify_media=True)
     encoder = make_encoder(cfg["encoder"])
+    name = Path(cfg["cache"]).name
+    print(f"Prepare {name}: {len(rows)} mẫu, cache {cfg['cache']}", flush=True)
     start = time.perf_counter()
     for i, row in enumerate(rows):
-        print(f"Features {i + 1}/{len(rows)} {row['sample_id']}", flush=True)
+        tick = time.perf_counter()
         encoder.extract(
             {"video": str(media_path(cfg["dataset"], row))},
             Path(cfg["cache"]) / (row["sample_id"] + ".npz"),
+        )
+        # Mẫu đã có cache mất ~0 s; thời gian còn lại ước theo tốc độ trung bình đến giờ.
+        spent = time.perf_counter() - start
+        print(
+            f"Features {name} {i + 1}/{len(rows)} {row['sample_id']}: "
+            f"{time.perf_counter() - tick:.1f}s | đã chạy {spent / 60:.1f} phút, "
+            f"còn ~{spent / (i + 1) * (len(rows) - i - 1) / 60:.1f} phút",
+            flush=True,
         )
     elapsed = time.perf_counter() - start
     write_json(
@@ -431,7 +441,15 @@ def train_one(cfg, architecture, seed, resume=False):
     reconstruction_report = sync_report = None
     if (out / "last.pt").exists() and not resume:
         raise FileExistsError("Run exists: set RESUME=True or choose RUN_NAME")
-    tracking.start(cfg, out, architecture, seed)  # train_selected đóng run kể cả khi lỗi.
+    # Số mẫu theo split/ô 2×2 (test chỉ đếm, không đọc) để biết detector train trên dữ liệu nào.
+    data = dict(sorted(Counter(f"{r['split']}/{condition(r)}" for r in rows).items()))
+    parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(
+        f"Train {out.name}: {len(train)} train, {len(val)} validation, "
+        f"{parameters:,} tham số train được; {data}",
+        flush=True,
+    )
+    tracking.start(cfg, out, architecture, seed, data)  # train_selected đóng run kể cả khi lỗi.
     if (out / "last.pt").exists():
         state = torch.load(out / "last.pt", map_location="cpu", weights_only=True)
         if state["run_id"] != run_id:
@@ -451,7 +469,7 @@ def train_one(cfg, architecture, seed, resume=False):
             ("detector", history),
         ):
             for row in rows:
-                tracking.log(stage, row)
+                tracking.log(stage, row, echo=False)
         torch.set_rng_state(state["rng"])
         if str(cfg["device"]).startswith("cuda") and state.get("cuda_rng") is not None:
             torch.cuda.set_rng_state_all(state["cuda_rng"])
@@ -487,6 +505,7 @@ def train_one(cfg, architecture, seed, resume=False):
         {"run_id": run_id, "architecture": architecture, "seed": seed, "settings": cfg},
     )
     for epoch in range(start, options["epochs"]):
+        tick = time.perf_counter()
         model.train()
         if options.get("balance_parents", True):
             from vn_av_df.reconstruction import balanced_order
@@ -523,6 +542,17 @@ def train_one(cfg, architecture, seed, resume=False):
         report["by_condition"], report["branches"] = breakdown(
             prediction, thresholds, options["top_fraction"]
         )
+        # Theo ô 2×2: AUC fake so với real gốc; real/sham chỉ có false alarm (một lớp).
+        cells = {}
+        for cell, metrics in report["by_condition"].items():
+            key = "auc" if cell not in ("real", "sham") else "false_alarm"
+            cells[f"validation_{key}/{cell}"] = metrics["video"][
+                "roc_auc" if key == "auc" else "false_alarm_rate"
+            ]
+        # P2: AUC không ngưỡng của từng nhánh theo ô; theo dõi nhánh nào học được gì qua epoch.
+        for branch, values in ((report["branches"] or {}).get("scores") or {}).items():
+            for cell, metrics in values.items():
+                cells[f"branch_auc/{branch}/{cell}"] = metrics["roc_auc"]
         history.append(
             {
                 "epoch": epoch + 1,
@@ -531,6 +561,16 @@ def train_one(cfg, architecture, seed, resume=False):
                 "validation_roc_auc": report["video"]["roc_auc"],
                 "validation_f1": report["video"]["f1"],
                 "validation_coverage": report["video_coverage"],
+                "validation_pr_auc": report["video"]["pr_auc"],
+                "validation_false_alarm_rate": report["video"]["false_alarm_rate"],
+                "validation_temporal_ap_0.5": ((report["temporal"] or {}).get("0.5") or {}).get(
+                    "ap"
+                ),
+                "video_threshold": thresholds["video"],
+                "best_validation_loss": best,
+                "epochs_without_improvement": stale,
+                "epoch_seconds": time.perf_counter() - tick,
+                **cells,
             }
         )
         tracking.log("detector", history[-1])
@@ -577,8 +617,10 @@ def train_one(cfg, architecture, seed, resume=False):
                 },
             )
         write_json(out / "history.json", history)
-        print(architecture, seed, history[-1], flush=True)
+        if improved:
+            print(f"{out.name}: best mới ở epoch {epoch + 1}, lưu best.pt", flush=True)
         if options["patience"] and stale >= options["patience"]:
+            print(f"{out.name}: early stop sau {stale} epoch không cải thiện", flush=True)
             break
     resources = {
         "elapsed_this_session_s": time.perf_counter() - began,
@@ -789,6 +831,13 @@ def evaluate(cfg):
             thresholds=state["thresholds"],
         )
         write_json(checkpoint.parent / "test.json", report)
+        video = report["video"]
+        print(
+            f"Test {checkpoint.parent.name}: {video['samples']} video, ROC-AUC "
+            f"{video['roc_auc']}, F1 {video['f1']}; theo generator "
+            f"{ {g: m['video']['roc_auc'] for g, m in report['by_generator'].items()} }",
+            flush=True,
+        )
         reports.append({"architecture": run["architecture"], "seed": run["seed"], **report})
     if not legacy_compare:
         # Chỉ là danh mục báo cáo từng detector; không tính xếp hạng/paired comparisons.

@@ -297,7 +297,15 @@ def fit_sync(model, train, validation, loader, options, seed, top_fraction=0.1):
         parameters, lr=options.get("lr", 3e-4), weight_decay=options.get("weight_decay", 1e-4)
     )
     best, best_auc, saved, history, stale = float("inf"), None, None, [], 0
+    shams = [sum(bool(r.get("control_type")) for r in rows) for rows in (train, validation)]
+    print(
+        f"Stage S (head sync, không thấy fake): {len(train)} train ({shams[0]} sham), "
+        f"{len(validation)} validation ({shams[1]} sham); dịch lệch {list(shift_range)} frame, "
+        f"xác suất {probability}",
+        flush=True,
+    )
     for epoch in range(options.get("epochs", 20)):
+        tick = time.perf_counter()
         for module in modules:
             module.train()
         rng = random.Random(seed + epoch)
@@ -326,6 +334,7 @@ def fit_sync(model, train, validation, loader, options, seed, top_fraction=0.1):
                 train_loss=sum(losses) / len(losses),
                 validation_loss=value,
                 validation_auc=auc,
+                epoch_seconds=time.perf_counter() - tick,
             )
         )
         tracking.log("stageS", history[-1])

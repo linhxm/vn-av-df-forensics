@@ -15,7 +15,12 @@ Phát hiện và định vị lip-sync deepfake trong video tiếng Việt: **vi
 
 Dữ liệu chia theo **part** (`vn-av-df-data-part1`, `-part2`, …), mỗi part là một đợt bổ sung, xử lý và đóng ZIP riêng. Local chọn part bằng `PART` trong [data_settings.py](data_settings.py); trên Kaggle chỉnh trong cell cấu hình của notebook.
 
-Ba notebook Kaggle ghi kết quả lên **W&B** (project `vn-av-df`): cut (thống kê, bảng clip, clip mẫu), generate (số mẫu theo ô 2×2, video mẫu), train (mỗi detector/seed một run, ghi **ngay sau từng epoch** của stage A, S và detector cùng GPU/RAM theo thời gian; sau báo cáo bổ sung metric, bảng ô 2×2, ảnh vào đúng run đó). Cần Kaggle secret `WANDB_API_KEY`; đặt `USE_WANDB = False` để tắt.
+Ba notebook Kaggle ghi lên **W&B** (project `vn-av-df-forensics`). Run mở trước bước chính nên có cả log console và CPU/RAM/GPU theo thời gian:
+- cut: phễu từng video (tiếng nói → cửa sổ → clip, lý do loại), theo speaker, thông số nguồn, clip mẫu;
+- generate: chia split (speaker/nguồn mỗi split), từng cặp sinh, số mẫu theo ô 2×2, đoạn fake cục bộ, phiên bản generator, video mẫu;
+- train: run prepare (dữ liệu đã chọn, thời gian trích feature) và mỗi detector/seed một run ghi **sau từng epoch** (stage A, S, detector, AUC theo ô 2×2 và theo nhánh P2); sau báo cáo/test bổ sung metric, bảng theo nhóm, dự đoán từng video, ROC/PR, ảnh.
+
+Cần Kaggle secret `WANDB_API_KEY`; đặt `USE_WANDB = False` để tắt.
 
 ## Phương pháp
 
@@ -84,7 +89,7 @@ data/raw/<dataset>/<part>/            data/candidates/<dataset>/<part>/
 **Cắt trên Kaggle** (tuỳ chọn, khi máy local chậm):
 1. Upload thư mục raw của part thành Kaggle dataset.
 2. Chạy [cut.ipynb](notebooks/cut.ipynb).
-3. Giải nén ZIP vào `data/candidates/vn-av-df-data/`, rồi chạy `04_review.py`.
+3. *Save Version*, tải thư mục `candidates/<part>/` từ tab Output vào `data/candidates/vn-av-df-data/`, rồi chạy `04_review.py`.
 
 Code và config cắt phải giống local (có kiểm chữ ký). Hết phiên Kaggle thì attach output cũ vào `PREVIOUS_CUT` để cắt tiếp.
 
