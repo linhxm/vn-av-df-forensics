@@ -1,0 +1,167 @@
+"""Chạy bằng interpreter AV-HuBERT riêng; source chính thức + checkpoint Base.
+
+Không nội suy landmark qua khoảng mất mặt. Mỗi valid run/chunk được encoder
+xử lý độc lập; feature ở frame thiếu giữ zero và mask=False.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+import numpy as np
+
+from vn_av_df.common.runtime import read_json, save_npz, sha, write_json
+
+MOUTH_BOX_SCALE = 1.6  # Hộp vuông quanh landmark 48–67, nới để gồm môi/răng/viền ghép.
+
+
+def runs(mask):
+    """Khoảng quan sát liên tục theo frame 25 Hz."""
+    edges = np.diff(np.r_[False, mask, False].astype(int))
+    return zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1))
+
+
+def main(request):
+    """Giải mã → landmark/ROI môi → filterbank → hai lượt encoder → cache."""
+    import cv2
+    import dlib
+    import torch
+    from python_speech_features import logfbank
+    from torch.nn import functional as F
+
+    cfg = request["config"]
+    upstream = Path(cfg["repo"]).resolve()
+    sys.path[:0] = [str(upstream / "avhubert"), str(upstream / "fairseq")]
+    import fairseq
+    import hubert  # noqa: F401 -- đăng ký model vào fairseq
+    import hubert_pretraining  # noqa: F401 -- đăng ký task
+    from skimage import transform as tf
+
+    from vn_av_df.data.media import decode
+
+    models, _, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cfg["checkpoint"]])
+    model = models[0]
+    if hasattr(model, "decoder") or model.cfg.encoder_embed_dim != 768:
+        raise ValueError("Require AV-HuBERT Base no-finetuning checkpoint")
+    device = cfg.get("device", "cpu")
+    model.to(device).eval().requires_grad_(False)
+    decoded = decode(
+        request["video"], cfg.get("max_duration", 60), cfg.get("max_side", 640), sample_rate=16000
+    )
+    frames, pcm = decoded["frames"], decoded["pcm"]
+    detector, predictor = dlib.get_frontal_face_detector(), dlib.shape_predictor(cfg["landmarks"])
+    mean_face = np.load(cfg["mean_face"], allow_pickle=False)
+    landmarks = np.zeros((len(frames), 68, 2), np.float32)
+    valid = decoded["audio_valid"] & decoded["visual_valid"]
+    for i, frame in enumerate(frames):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = detector(gray, 1)
+        if len(faces) != 1:
+            valid[i] = False
+            continue
+        shape = predictor(gray, faces[0])
+        landmarks[i] = [(shape.part(j).x, shape.part(j).y) for j in range(68)]
+    crop = int(task.cfg.image_crop_size)
+    if crop != 88 or int(task.cfg.stack_order_audio) != 4:
+        raise ValueError("Unsupported AV-HuBERT preprocessing config; expected crop88/stack4")
+    # Làm mượt landmarks trong từng đoạn hợp lệ rồi căn chỉnh theo mean face upstream.
+    rois = np.zeros((len(frames), crop, crop), np.float32)
+    # [cx, cy, side] trên frame đã decode; nhánh artifact P2 cắt RGB từ frame gốc.
+    mouth_boxes = np.zeros((len(frames), 3), np.float32)
+    stable = [33, 36, 39, 42, 45]
+    for left, right in list(runs(valid)):
+        for i in range(left, right):
+            smooth = landmarks[max(left, i - 6) : min(right, i + 7)].mean(0)
+            low, high = smooth[48:68].min(0), smooth[48:68].max(0)
+            mouth_boxes[i] = [*((low + high) / 2), (high - low).max() * MOUTH_BOX_SCALE]
+            transform = tf.SimilarityTransform()
+            if not transform.estimate(smooth[stable], mean_face[stable]):
+                valid[i] = False
+                continue
+            aligned = cv2.warpAffine(frames[i], transform.params[:2], (256, 256))
+            center = transform(landmarks[i])[48:68].mean(0)
+            x, y = np.rint(center - 48).astype(int)
+            if x < 0 or y < 0 or x + 96 > 256 or y + 96 > 256:
+                valid[i] = False
+                continue
+            patch = cv2.cvtColor(aligned[y : y + 96, x : x + 96], cv2.COLOR_BGR2GRAY)[4:92, 4:92]
+            rois[i] = (patch / 255.0 - task.cfg.image_mean) / task.cfg.image_std
+    # 25 ms filterbank, hop10 ms; stack4 khớp grid 40 ms của video.
+    # Upstream đọc PCM int16; giữ cùng thang biên độ trước log-filterbank.
+    audio = logfbank(np.clip(pcm * 32768, -32768, 32767), samplerate=16000).astype(np.float32)
+    audio = np.pad(audio, ((0, (-len(audio)) % 4), (0, 0))).reshape(-1, 104)
+    if abs(len(audio) - len(frames)) > 1:
+        raise ValueError("Audio/video feature timelines differ by more than one frame")
+    if len(audio) < len(frames):
+        valid[len(audio) :] = False
+        audio = np.pad(audio, ((0, len(frames) - len(audio)), (0, 0)))
+    audio = torch.from_numpy(audio[: len(frames)])
+    if task.cfg.normalize:
+        audio = F.layer_norm(audio, audio.shape[1:])
+    af, vf = np.zeros((len(frames), 768), np.float32), np.zeros((len(frames), 768), np.float32)
+    weights = np.zeros(len(frames), np.float32)
+    support = np.zeros((len(frames), 2), np.float64)
+    chunk, overlap = cfg.get("chunk_frames", 200), cfg.get("overlap_frames", 50)
+    if not 0 <= overlap < chunk:
+        raise ValueError("Need 0 <= overlap < chunk_frames")
+    with torch.no_grad():
+        for left, right in runs(valid):
+            for start in range(left, right, chunk - overlap):
+                end = min(right, start + chunk)
+                a = audio[start:end].T[None].to(device)
+                v = torch.from_numpy(rois[start:end])[None, None].to(device)
+                ax, _ = model.extract_finetune(
+                    source={"audio": a, "video": None}, padding_mask=None, output_layer=None
+                )
+                vx, _ = model.extract_finetune(
+                    source={"audio": None, "video": v}, padding_mask=None, output_layer=None
+                )
+                if ax.shape != (1, end - start, 768) or vx.shape != ax.shape:
+                    raise ValueError("Unexpected native feature shape")
+                af[start:end] += ax[0].float().cpu().numpy()
+                vf[start:end] += vx[0].float().cpu().numpy()
+                # Support union của mọi chunk góp vào một native frame.
+                first = weights[start:end] == 0
+                support[start:end, 0] = np.where(
+                    first, start / 25, np.minimum(support[start:end, 0], start / 25)
+                )
+                support[start:end, 1] = np.maximum(support[start:end, 1], end / 25)
+                weights[start:end] += 1
+                if end == right:
+                    break
+    af /= np.maximum(weights[:, None], 1)
+    vf /= np.maximum(weights[:, None], 1)
+    valid &= weights > 0
+    if not np.isfinite(af).all() or not np.isfinite(vf).all():
+        raise ValueError("Nonfinite AV-HuBERT output")
+    output = Path(request["output"])
+    save_npz(
+        output,
+        audio=af,
+        visual=vf,
+        times_s=np.arange(len(frames)) / 25,
+        audio_valid=valid,
+        visual_valid=valid,
+        support_s=support,
+        mouth_boxes=mouth_boxes,
+    )
+    write_json(
+        output.with_suffix(".json"),
+        dict(
+            format="avhubert-native-v1",
+            step_s=0.04,
+            output_stride=cfg.get("output_stride", 5),
+            window_s=chunk / 25,
+            duration_s=len(frames) / 25,
+            origin_s=decoded["origin_s"],
+            feature_signature=request["signature"],
+            feature_sha256=sha(output),
+            source_fingerprint=request["source_fingerprint"],
+            preprocessing="68-point stable similarity; per-valid-run smoothing13; ROI96-center88; logfbank-stack4; mouth-box1.6",
+        ),
+    )
+
+
+if __name__ == "__main__":
+    main(read_json(sys.argv[1]))

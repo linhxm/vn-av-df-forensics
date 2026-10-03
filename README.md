@@ -1,156 +1,195 @@
-# VN-AV Forensics
+# VN-AV-DF Forensics
 
-Hai nhánh cho video một người nói, có audio và thấy rõ miệng:
+Phát hiện và định vị lip-sync deepfake trong video tiếng Việt: **video YouTube → cắt/duyệt → sinh fake → train → so sánh → demo**.
+Điểm 0–1 là mức nghi ngờ, chưa hiệu chuẩn thành xác suất; đoạn không quan sát được bị mask, không coi là real.
 
-- **timing:** ước lượng độ lệch có dấu, phát hiện lệch toàn clip/cục bộ.
-- **lip_audio_mismatch:** bất nhất môi–âm thanh còn lại sau khi xét căn chỉnh thời gian hợp lý.
+## Tổng quan
 
-Một backbone FATE dùng chung, một model hai head và một checkpoint. Demo không sửa video: chỉ ghép đặc trưng ở các thời điểm tương ứng. Không phân loại kỹ thuật giả mạo, âm vị cụ thể hay danh tính giọng–mặt.
+| Giai đoạn | Chạy ở đâu | Entrypoint | Đầu ra |
+|---|---|---|---|
+| 1. Thu thập, cắt, duyệt | Local (cắt có thể chạy Kaggle) | `data_pipeline/steps/01…05`, [cut.ipynb](notebooks/cut.ipynb) | Part clip sạch |
+| 2. Sinh fake | Kaggle | [generate.ipynb](notebooks/generate.ipynb) | Part real/fake chờ duyệt |
+| 2b. Duyệt fake | Local | `generation/04…07` | Part đã chốt (ZIP) |
+| 3. Train, báo cáo | Kaggle | [train.ipynb](notebooks/train.ipynb) | `runs/<RUN_NAME>/` |
+| 4. Demo | Local | `training/05_demo.py` | http://127.0.0.1:8000 |
 
-## Ba folder
+Dữ liệu chia theo **part** (`vn-av-df-data-part1`, `-part2`, …), mỗi part là một đợt bổ sung, xử lý và đóng ZIP riêng. Local chọn part bằng `PART` trong [data_settings.py](data_settings.py); trên Kaggle chỉnh trong cell cấu hình của notebook.
 
-```text
-vn-av-forensics-data        YouTube → tải → cắt/lọc → duyệt clip sạch
-vn-av-forensics-generation  chia nhóm → clean + 5 kỹ thuật → duyệt → lưu MP4/nhãn
-vn-av-forensics-training    cache FATE → warmup timing → học chung → đánh giá → demo
-```
+## Phương pháp
 
-[Tài liệu kiến trúc và các công trình tham khảo](AV_INCONSISTENCY_MODEL_REVIEW_2026-09-14.md).
-
-## 1. Tạo dữ liệu sạch
-
-Từ gốc repo, Anaconda Prompt; cài Git và Node.js vào PATH:
-
-```powershell
-conda create -n vn-av-data python=3.11 -y
-conda activate vn-av-data
-cd vn-av-forensics-data
-python -m pip install -e .
-python -m vn_av_data setup
-```
-
-Tạo `data/sources/dataset_v002/videos.csv` theo [CSV mẫu](vn-av-forensics-data/configs/videos.example.csv), điền URL thật và speaker_id nhất quán. Phiên bản/đợt tải đặt trong `steps/settings.py`.
-
-```powershell
-python steps/01_collect.py
-python steps/02_download.py
-python steps/03_cut.py
-python steps/04_merge_manifest.py
-python steps/05_review.py
-```
-
-Mở http://127.0.0.1:8001, duyệt keep/reject/uncertain và xác nhận tiếng–hình khớp. Dừng bằng Ctrl+C rồi:
-
-```powershell
-python steps/06_export.py
-python -m vn_av_data validate --dataset exports/dataset_v002
-```
-
-Tải theo batch có snapshot nguồn và trạng thái để resume; chạy lại lệnh download bỏ qua file đã xác minh. Có thể thêm `--limit 2`, `--dry-run` hoặc `--cookies-from-browser edge --force-ipv4`. Cut chặn batch chưa tải xong. Giữ nhiều nhóm nguồn/người độc lập; cùng người phải cùng speaker_id. Tối thiểu ba nhóm để chia train/validation/test. Không còn yêu cầu donor khác người trong từng split.
-
-## 2. Tạo dataset bất nhất
-
-| Kỹ thuật | Nhãn timing | Nhãn mismatch |
+| Mã | Tên | Mô tả |
 |---|---|---|
-| clean (đối chứng) | 0 | 0 |
-| global_lag | Offset đã biết | 0 ở cửa sổ còn đủ nội dung nguồn |
-| local_lag | Offset từng đoạn | 0 tại cửa sổ không vắt qua biên |
-| sequence_swap | Chưa biết trong đoạn thay | Duyệt bất nhất khi thay câu |
-| content_splice | Chưa biết trong đoạn thay | Duyệt bất nhất khi ghép đoạn lời |
-| motion_freeze | Chưa biết trong đoạn đóng băng | Duyệt có lời nói nhưng môi đứng |
+| `fate_gru` | **B-FATE** | PE-AV Small + FATE (frozen) → projection 128 → BiGRU 2 tầng |
+| `avh_tcn` | **B-AVH** | AV-HuBERT Base LRS3 (frozen) → concat A/V → TCN; cùng encoder với P2 nhưng không mô hình hoá consistency |
+| `p2_syncartifact` | **P2** (đề xuất) | Nhánh sync (residual A→V) + nhánh artifact (DINOv2 ViT-S/14, crop miệng RGB 224) + gate fusion |
 
-Bỏ source_swap. Generator tạo đủ ±0,2/0,4/0,6/0,8 giây; sạch là lớp 0. Nhãn mismatch: 1 có bất nhất, 0 đã xác nhận tương thích, -1 chưa biết/không tính loss. Tên generator không tự là nhãn dương. Đứng hình toàn khung là mẫu dễ có dấu hiệu phụ, phải báo kết quả riêng từng kỹ thuật.
+P2 học 3 stage:
+- **A:** R học A→V chỉ trên real.
+- **S:** head sync học real (0) với sham và real dịch lệch ±3–15 frame (1), rồi đóng băng; **không bao giờ thấy fake**.
+- **C:** nhánh artifact + fusion học nhãn AI (sham = 0), thêm head phụ artifact.
 
-Chia nhóm nguồn/người trước tạo biến thể; donor không vượt split. Sạch và bất nhất cùng chính sách encode. File MP4, hash, nguồn, split và nhãn được lưu để train nhiều lần.
+Ablation: `avh_realrecon`, `p2_sync_only`, `p2_artifact_only`, `p2_concat`, `p2_sync_seen_fake`; `fate_linear` để sanity check. Residual A→V lấy cảm hứng từ [AuViRe](https://github.com/mever-team/auvire), không phải bản tái hiện.
 
-**Kaggle:** upload dataset sạch; mở [generate_relations.ipynb](vn-av-forensics-generation/notebooks/generate_relations.ipynb), sửa YOUR_CLEAN_DATASET, bật Internet, chạy CPU. Tải `relations_two_head_v1.zip` rồi giải nén vào `vn-av-forensics-generation/outputs/`.
+## Cài đặt local
 
-**Hoặc tạo local**, từ folder generation:
-
-```powershell
-conda activate vn-av-data
-python -m pip install -e .
-python -m vn_av_generation plan --dataset ../vn-av-forensics-data/exports/dataset_v002 --output plans/plan_two_head_v1.json
-python -m vn_av_generation render --dataset ../vn-av-forensics-data/exports/dataset_v002 --plan plans/plan_two_head_v1.json --output outputs/relations_two_head_v1
-```
-
-Duyệt chung nhãn môi–âm thanh:
+Python 3.10, chạy từ thư mục `vn-av-df-forensics`. Notebook Kaggle tự cài thư viện và tải model, không cần bước này.
 
 ```powershell
-python -m vn_av_generation review --dataset outputs/relations_two_head_v1
+python -m pip install -e ./data_pipeline -e .      # Data, duyệt fake
+python -m pip install -e ".[training]"             # Thêm thư viện inference cho demo
+python data_pipeline/steps/00_setup.py             # YuNet + Silero VAD
+python training/00_setup.py --encoder fate         # Demo B-FATE
+python training/00_setup.py --encoder avhubert     # Demo B-AVH/P2
+python training/00_setup.py --encoder dinov2       # Demo P2
 ```
 
-Mở http://127.0.0.1:8002. Positive chỉ khi quan sát bất nhất không giải thích được bằng dịch thời gian hợp lý; uncertain nếu chưa rõ. Sửa khoảng đúng theo video. Dừng server rồi:
+`python 00_install.py` (`PROFILE = "demo"` hoặc `"data"`) thay được hai lệnh pip. `training/00_setup.py` không có `--encoder` thì tải theo `ARCHITECTURES` trong `settings.py`. Không cần tải Wav2Lip/MuseTalk về local.
 
-```powershell
-python -m vn_av_generation finalize --dataset outputs/relations_two_head_v1 --review outputs/relations_two_head_v1/review.csv --output outputs/relations_two_head_v1/manifest-reviewed.jsonl
-python -m vn_av_generation inspect --dataset outputs/relations_two_head_v1 --manifest manifest-reviewed.jsonl
+## 1. Dữ liệu
+
+Điền `data_pipeline/data/sources/vn-av-df-data/<part>/videos.csv` (xem [mẫu](data_pipeline/configs/videos.example.csv)):
+
+```csv
+url,speaker_id
+https://www.youtube.com/playlist?list=PLxxxxxxxx,speaker_01
+https://www.youtube.com/watch?v=xxxxxxxxxxx,speaker_02
 ```
 
-Giữ toàn bộ folder: clips/, manifest.jsonl, dataset_info.json, generation.json, review.csv, manifest-reviewed.jsonl và manifest-reviewed.info.json. Upload thành Kaggle Dataset. Render lại cùng code/plan/output sẽ xác minh rồi bỏ qua mẫu xong; đổi code/plan cần output mới.
+`url` là video hoặc playlist (mọi video trong playlist nhận `speaker_id` của dòng). Giữ `speaker_id` nhất quán giữa các part. Sau đó chạy lần lượt trong `data_pipeline/steps/`:
 
-### Dùng lại video đã tạo theo năm head
+| Bước | Việc làm | Kết quả chính |
+|---|---|---|
+| `01_collect.py` | Bung playlist, bỏ trùng, hỏi metadata YouTube, kiểm chất lượng | `selected_videos.csv` (để tải), `video_metadata.csv` (thống kê), `duplicates.csv` (khi có trùng) |
+| `02_download.py` | Tải bản ≤1080 (cạnh ngắn), kiểm lại file | `data/raw/<part>/` |
+| `03_cut.py` | VAD + dò mặt, cắt clip 5–8 s, chuẩn hoá 25 fps CFR, cạnh ngắn ≤1080 | `data/candidates/<part>/` |
+| `04_review.py` | Duyệt tại http://127.0.0.1:8001 (keep, tiếng khớp người trên hình), Ctrl+C khi xong | `review.csv` |
+| `05_export.py` | Dựng part sạch từ clip keep | `exports/<part>/` |
 
-Không cần render lại nếu đã có MP4. Từ folder generation, thay đường dẫn bằng dataset thực tế:
-
-```powershell
-python -m vn_av_generation migrate --dataset outputs/relations_v002 --manifest manifest-reviewed.jsonl --output outputs/relations_v002/manifest-two-heads.jsonl
-```
-
-Lệnh tạo manifest/receipt mới, giữ video và nhãn gốc. Positive ở một trong sequence/phoneme_viseme/motion_speech trở thành positive chung. Negative chỉ hợp lệ khi đủ ba loại được xác nhận âm tính; phần còn lại chưa biết. Source_swap bị loại khỏi manifest mới, không xóa video. Mẫu lag thuần túy làm negative mismatch ở vùng hợp lệ.
-
-Trong notebook train, đặt DATASET tới folder cũ và MANIFEST thành `manifest-two-heads.jsonl`. Audit sẽ báo thiếu nhãn nếu cần duyệt/bổ sung dữ liệu. Data cũ chỉ có ±0,2/±0,8 vẫn dùng được nhưng chưa phủ đủ lưới; nên tạo phiên bản mới đủ offset. Manifest control ảo cũ chưa có MP4 phải đi qua generator mới.
-
-## 3. Train hai head trên Kaggle
-
-Hai notebook clone repo GitHub: cần đưa code mới lên repo trước, hoặc upload code và sửa đường dẫn. Thay đổi local không tự lên GitHub.
-
-Mở [train_fate_relations.ipynb](vn-av-forensics-training/notebooks/train_fate_relations.ipynb), thêm dataset đã duyệt, sửa DATASET/MANIFEST, bật GPU và Internet:
+- **Kiểm chất lượng (01):** loại video private/đã xoá/livestream, fps gốc <25, cạnh ngắn <720 px, dài <5 s hoặc >12 giờ. Video 4K lấy bản 1080 có sẵn của YouTube.
+- **Trùng (01):** giữ lần xuất hiện đầu. `speaker_conflict = yes` trong `duplicates.csv` → sửa `videos.csv` trước khi tải.
+- **Mạng:** lỗi IPv6 thì thêm `--force-ipv4`; bị chặn 403 thì thêm `--cookies-from-browser firefox`.
+- **Bổ sung video:** thêm URL vào `videos.csv` rồi chạy lại 01 → 05. Mỗi bước chỉ xử lý phần mới và giữ quyết định đã duyệt. Đổi `speaker_id` của video đã chọn sẽ báo lỗi.
+- **Đổi luật cắt** (`configs/data.yaml`, code hay model) thì bước 03 báo lỗi. Xoá `data/candidates/<part>` để cắt và duyệt lại.
+- VAD/YuNet chỉ tạo ứng viên, không thay được bước duyệt. Clip chồng nhau không làm tăng số mẫu độc lập.
 
 ```text
-validate → import → audit → setup → doctor → prepare → train → evaluate → checkpoint-info
+data/raw/<dataset>/<part>/            data/candidates/<dataset>/<part>/
+├── videos/        video gốc          ├── clips/       clip .mp4
+├── sources.jsonl  manifest           ├── review.csv   manifest + quyết định duyệt
+└── logs/          nhật ký tải        └── logs/        nhật ký cắt (để chạy tiếp)
 ```
 
-Import giữ nguyên split, kiểm tra hash và nhãn. Prepare chỉ đọc video đã render, không tạo bất nhất lần nữa. Setup tải code/weights FATE và YuNet. FATE đóng băng; cache đặc trưng dùng lại giữa các epoch.
+**Cắt trên Kaggle** (tuỳ chọn, khi máy local chậm):
+1. Upload thư mục raw của part thành Kaggle dataset.
+2. Chạy [cut.ipynb](notebooks/cut.ipynb).
+3. Giải nén ZIP vào `data/candidates/vn-av-df-data/`, rồi chạy `04_review.py`.
 
-Một lệnh train chạy 23 epoch tối đa: **3 epoch warmup timing + 20 epoch học chung hai head**. Warmup chưa xuất best.pt dùng demo. Hai giai đoạn dùng cùng model/optimizer; validation/test luôn dùng lag dự đoán, không lấy lag đáp án để căn chỉnh hộ. Resume bằng `python -m vn_av_training train --resume` khi còn last.pt và cấu hình/data không đổi.
+Code và config cắt phải giống local (có kiểm chữ ký). Hết phiên Kaggle thì attach output cũ vào `PREVIOUS_CUT` để cắt tiếp.
 
-Train yêu cầu hai lớp dùng được cho cả hai head trong train và validation. Nhãn thiếu không là negative. Threshold chọn trên validation với giới hạn FAR/precision/recall/AUROC; timing kiểm tra thêm coverage và MAE. Khi lag chưa chắc, mismatch chỉ được đưa ra kết luận nếu nhóm validation tương ứng đã đạt kiểm tra riêng. Nếu không, trả null; điểm thô vẫn xem được ở chế độ chẩn đoán.
+## 2. Sinh fake
 
-Kết quả: `runs/fate-two-head-v1/`, cache: `cache/fate-two-head-v1/`. Xem history.json (phase), validation-report.json và evaluation-test/metrics.json, gồm kết quả theo kỹ thuật. Kiểm thử phần mềm không chứng minh độ chính xác trên video thật; cần đánh giá nguồn/người mới và tiếng Việt riêng.
+Dữ liệu theo **thiết kế 2×2**:
 
-**Weight năm head cũ không tương thích.** Cần train checkpoint định dạng fate-two-heads-v1; không đổi tên weight cũ để nạp. Cache trích đặc trưng mới nằm ở thư mục riêng do đường xử lý đã đổi; không ghi đè cache/run cũ. Tải ZIP artifact cuối notebook; giữ thêm cache nếu muốn train lại không trích đặc trưng.
+| | Không dấu vết AI | Có dấu vết AI |
+|---|---|---|
+| **Tiếng khớp miệng** | real | fake `source`: miệng vẽ theo tiếng gốc (chỉ có artifact) |
+| **Tiếng lệch miệng** | sham: ghép tiếng thật khác của cùng người, nhãn AI = 0 | fake `donor`: miệng vẽ theo tiếng thật khác của cùng người (mối đe doạ chính) |
 
-## 4. Demo: backend Anaconda + frontend terminal
+Mặc định trong [generate.ipynb](notebooks/generate.ipynb):
+- Generator: Wav2Lip GAN cho mọi split; MuseTalk 1.5 chỉ dùng ở test.
+- Chế độ fake: train chỉ `donor`; validation/test có `donor` + `source`.
+- Fake cục bộ dài 0,4 / 0,8 / 1,6 / 2,4 s.
+- Chia split 80/10/10 theo nhóm người/nguồn.
+- `CLIPS_PER_SPLIT = 2` để chạy thử; `0` lấy toàn bộ.
 
-### Terminal 1 — Anaconda Prompt
+Clip không tìm được clip donor cùng `speaker_id` sẽ bị bỏ qua và ghi vào plan, nên cần điền `speaker_id` đầy đủ.
+
+Nhãn mỗi mẫu:
+- `label` (AI), `fake_intervals`, `audio_mode` (`donor` / `source` / null);
+- `av_mismatch_intervals`: chỉ head sync của P2 dùng, không phải nhãn deepfake.
+
+Sau khi tải output về local, chạy trong `generation/`:
+- `04_review.py`: duyệt tại http://127.0.0.1:8002.
+- `05_finalize.py`: chốt clip keep.
+- `07_export.py`: tạo ZIP để train.
+
+`06_import_external.py` nhập output từ generator khác. Đổi plan, code hay weights thì đặt tên dataset mới.
+
+## 3. Train và báo cáo
+
+Chỉnh trong cell cấu hình của [train.ipynb](notebooks/train.ipynb):
+
+```python
+DATASET_PARTS = ["vn-av-df-data-part1"]  # hoặc nhiều part, hoặc "all"
+ARCHITECTURES = ["fate_gru"]             # hoặc ["p2_syncartifact"], hoặc "all"
+SEEDS = [42]                             # thí nghiệm: [42, 43, 44]
+RUN_NAME = "train_part1_gru_run01"
+RESUME = False                           # True chỉ khi cùng data/config/code/cache
+```
+
+Notebook chạy lần lượt: setup encoder → cache đặc trưng → train → báo cáo → test (tuỳ chọn) → ZIP.
+- **Train:** `best.pt` của mỗi detector chọn theo validation loss; notebook không tự chọn kiến trúc tốt nhất. Thêm part vào tập train thì dùng `RUN_NAME` mới.
+- **Báo cáo** (validation, mỗi model/seed): loss/AUC theo epoch, ROC/PR, confusion matrix, timeline mẫu. Mỗi model có bảng theo 4 ô 2×2 (`by_condition`); P2 thêm AUC của từng nhánh (`branches`) và biểu đồ stage S.
+- **Test:** `RUN_TEST = True` để chạy; ghi `test.json`, `evaluation.json` và `test-lock.json`.
+
+[compare.ipynb](notebooks/compare.ipynb) mới là khung, chưa so sánh được.
+
+## 4. Demo
+
+1. **Chỉ cần cho B-AVH/P2:** cài worker AV-HuBERT theo [environments/README.md](environments/README.md), rồi điền `AVH_PYTHON` trong `settings.py`.
+2. **Lấy detector đã train:** giải nén output `train.ipynb` sao cho có `runs/<RUN_NAME>/training.json`. Trong `settings.py`, chọn `RUN_NAME`, `DEMO_METHOD`, `SEEDS`, hoặc trỏ `CHECKPOINT` tới `best.pt`. Demo cần cả encoder lẫn detector tương ứng.
+3. **Build frontend và chạy:**
+
+   ```powershell
+   cd demo; npm ci; npm run build; cd ..
+   python training/05_demo.py
+   ```
+
+Demo nhận clip một người nói, tối đa 60 s. Kết quả gồm timeline AI và ngưỡng (lấy từ validation). Với P2, demo hiện thêm điểm và timeline riêng của nhánh sync và nhánh artifact. Hai nhánh này chưa có ngưỡng riêng; nhánh sync cao cũng có thể chỉ do lồng tiếng thông thường.
+
+## Kiểm thử
 
 ```powershell
-conda create -n vn-av-training python=3.11 -y
-conda activate vn-av-training
-cd D:\COMP\RESEARCH\Deepfake_VN\vn-av-forensics\vn-av-forensics-training
-python -m pip install -e . -r environments/fate.txt
-python -m vn_av_training setup --config configs/relations-local.yaml
+python -m pytest -q
+python -m ruff check src tests settings.py
 ```
 
-Giải nén artifact vào folder training để có `runs/fate-two-head-v1/best.pt`; giữ cấu hình encoder như khi tạo cache trên Kaggle. Nếu đã có môi trường tương thích thì activate và cài cập nhật package.
+Test dùng generator giả và feature fixture, nên **không chứng minh checkpoint thật chạy được hay detector chính xác**. Cần pilot với dữ liệu thật.
 
-```powershell
-python -m vn_av_training checkpoint-info --config configs/relations-local.yaml
-python -m vn_av_training doctor --config configs/relations-local.yaml --stage inference --load
-python -m vn_av_training serve --config configs/relations-local.yaml
-```
+## Phiên bản và checkpoint được chọn
 
-Backend ở http://127.0.0.1:8000, local mặc định CPU.
+Bảng dưới mô tả tài sản được cấu hình sử dụng; không có nghĩa tất cả đã được tải về local. Checkpoint generator được tải trên Kaggle.
 
-### Terminal 2 — frontend
+| Thành phần | Phiên bản/checkpoint được chọn |
+|---|---|
+| YuNet | Bản March 2023 của OpenCV Zoo: `face_detection_yunet_2023mar.onnx` |
+| Silero VAD | **v6.0**: `silero_vad.onnx` |
+| PE-AV Small | `facebook/pe-av-small`, file `model.safetensors`; revision mặc định `dd050762bb9704ae9cd996ca45532a98f81d817e` |
+| FATE adapter | `Guan123/fate`, file `adapter_model.safetensors`; revision mặc định `8463ab93a644a22bd85db91e7e77d99ebe1ec5e0` |
+| FATE source | `guankaisi/FATE`; commit `beae95aeb6f72cf1751d06d1428931016a7a1867` |
+| AV-HuBERT | **Base, LRS3, clean-pretrain, iteration 4**, chưa fine-tune: `base_lrs3_iter4.pt` |
+| Dlib landmark cho AV-HuBERT | Landmark 68 điểm: `shape_predictor_68_face_landmarks.dat`, tải dạng `.dat.bz2` rồi giải nén |
+| Mean-face cho AV-HuBERT | `20words_mean_face.npy` từ `mpc001/Lipreading_using_Temporal_Convolutional_Networks`; dữ liệu tham chiếu tiền xử lý |
+| DINOv2 cho nhánh artifact P2 | `facebook/dinov2-small` (ViT-S/14), `model.safetensors`; revision `ed25f3a31f01632728cabb09d1542f84ab7b0056` |
+| Wav2Lip | **Wav2Lip GAN**, lưu thành `Wav2Lip-SD-GAN.pt` |
+| Face detector của Wav2Lip | **S3FD**, nguồn `s3fd-619a316812.pth`, lưu thành `s3fd.pth` |
+| MuseTalk | **MuseTalk 1.5**, repository `TMElyralab/MuseTalk`: `musetalkV15/unet.pth` và cấu hình `musetalkV15/musetalk.json` |
+| VAE của MuseTalk | `stabilityai/sd-vae-ft-mse`: `diffusion_pytorch_model.bin` |
+| Audio encoder của MuseTalk | `openai/whisper-tiny`: `pytorch_model.bin` |
+| DWPose của MuseTalk | `yzd-v/DWPose`: `dw-ll_ucoco_384.pth` |
+| Face parsing của MuseTalk | `79999_iter.pth` và `resnet18-5c106cde.pth` |
+| Detector của project | `best.pt` riêng cho từng kiến trúc/seed, tạo sau khi train trên Kaggle; demo dùng kèm encoder tương ứng |
 
-```powershell
-cd D:\COMP\RESEARCH\Deepfake_VN\vn-av-forensics\vn-av-forensics-training\demo
-npm install
-npm run dev
-```
+## Cấu trúc
 
-Mở **http://127.0.0.1:5173**. Nếu PowerShell chặn npm.ps1, dùng npm.cmd install và npm.cmd run dev.
+| Thư mục | Nội dung |
+|---|---|
+| `src/vn_av_df/` | Code chung |
+| `data_pipeline/` | Thu thập dữ liệu |
+| `generation/`, `training/` | Entrypoint |
+| `notebooks/` | Notebook Kaggle |
+| `environments/` | Worker |
+| `demo/` | Frontend |
+| `tests/` | Kiểm thử |
 
-UI hiển thị tiến trình thực tế → ảnh/RMS/shape đặc trưng → chất lượng hai head → lag và cặp thời điểm được ghép → timeline/khoảng → tải video bằng chứng và JSON/CSV. Mặc định chỉ xem vùng đủ điều kiện; bật checkbox để xem điểm chẩn đoán. CSV tách cột diagnostic_ khỏi điểm đủ điều kiện. Video gốc không bị chỉnh; RMS/ảnh kiểm tra không phải giải thích âm vị.
+Không commit weights, external, cache, datasets, runs, outputs. Nhật ký nghiên cứu nằm trong `RESEARCH_WORKLOG`.

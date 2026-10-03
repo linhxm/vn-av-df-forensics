@@ -1,6 +1,0 @@
-extends: relations.yaml
-device: cpu
-checkpoint: runs/fate-two-head-v1/best.pt
-encoder:
-  device: cpu
-# Keep precision/window/bin options identical to the Kaggle cache signature.

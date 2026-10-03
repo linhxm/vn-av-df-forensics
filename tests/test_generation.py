@@ -1,0 +1,331 @@
+from pathlib import Path
+
+import numpy as np
+import pytest
+from fastapi.testclient import TestClient
+
+from vn_av_df.common.runtime import read_json, sha, write_json
+from vn_av_df.data.groups import write_manifest
+from vn_av_df.data.media import decode, probe
+from vn_av_df.data.render import encode
+from vn_av_df.dataset import load_dataset
+from vn_av_df.generation import finalize, generate, make_plan, split_clean
+from vn_av_df.import_media import import_external
+from vn_av_df.web import demo_app, review_app
+
+
+def clean_bundle(root, identities):
+    """Bundle sạch fixture: mỗi clip một màu/tần số riêng; identities = [(source, speaker)]."""
+    rows = []
+    for i, (source, speaker) in enumerate(identities):
+        frames = np.full((130, 48, 64, 3), 20 + i * 25, np.uint8)
+        pcm = (0.15 * np.sin(np.arange(130 * 1920) * 2 * np.pi * (300 + i * 70) / 48000)).astype(
+            "float32"
+        )
+        path = root / "clips" / f"c{i}.mp4"
+        encode(frames, pcm, path, 18)
+        duration = probe(path)["duration_s"]
+        rows.append(
+            {
+                "clip_id": f"c{i}",
+                "video": f"clips/c{i}.mp4",
+                "sha256": sha(path),
+                "source_id": source,
+                "speaker_id": speaker,
+                "duration_s": duration,
+                "source_start_s": 0,
+                "source_end_s": duration,
+                "review_decision": "keep",
+                "sync_status": "reviewed_match",
+                "relation_annotations": {},
+            }
+        )
+    write_manifest(root / "manifest.jsonl", rows)
+    write_json(
+        root / "dataset_info.json",
+        {
+            "schema_version": "vn-av-dataset-v1",
+            "dataset_id": "fixture",
+            "clips": len(rows),
+            "manifest_sha256": sha(root / "manifest.jsonl"),
+        },
+    )
+    return rows
+
+
+def paint_generator(cfg, video, audio, output, n, w, h):
+    """Generator fixture: vẽ một khối trắng; không chứng minh generator thật chạy được."""
+    d = decode(video, max_side=640, sample_rate=48000)
+    d["frames"][:, 15:35, 15:45] = 255
+    encode(d["frames"], d["pcm"], output, 18)
+
+
+def test_donor_source_design_labels_audio_and_skip(tmp_path):
+    from vn_av_df.dataset import condition
+    from vn_av_df.generation import csv_write
+
+    root = tmp_path / "clean"
+    # c6 cùng nguồn với c0 nhưng không có clip cùng người: không có donor → bị bỏ qua.
+    identities = [(f"s{i}", f"p{i // 2}") for i in range(6)] + [("s0", "p9")]
+    clean_bundle(root, identities)
+    cfg = {
+        "seed": 42,
+        "clean_dataset": str(root),
+        "plan": str(tmp_path / "plan.json"),
+        "generated_dataset": str(tmp_path / "generated"),
+        "generation": {
+            "clips_per_split": 0,
+            "partial_seconds": [0.4],
+            "crf": 18,
+            "max_side": 640,
+            "include_sham": True,
+            "fake_audio_modes_by_split": {
+                "train": ["donor"],
+                "validation": ["donor", "source"],
+                "test": ["donor", "source"],
+            },
+        },
+    }
+    assert make_plan(cfg)["skipped_without_donor"] == 1
+    plan = read_json(cfg["plan"])
+    assert plan["skipped_without_donor"] == ["c6"]
+    for job in plan["jobs"]:
+        expected = ["donor"] if job["original"]["split"] == "train" else ["donor", "source"]
+        assert job["audio_mode"] in expected
+        if job["audio_mode"] == "source":
+            assert job["donor"] == job["original"] and not job["emit_real"]
+        else:
+            assert job["donor"]["speaker_id"] == job["original"]["speaker_id"]
+            assert job["donor"]["clip_id"] != job["original"]["clip_id"]
+    generate(cfg, paint_generator)
+    out = Path(cfg["generated_dataset"])
+    candidates = [r["sample_id"] for r in load_candidates(out)]
+    csv_write(out / "review.csv", [{"sample_id": s, "decision": "keep"} for s in candidates])
+    finalize(cfg)
+    bundle = load_dataset(out, verify_media=True)
+    cells = {condition(r) for r in bundle}
+    assert cells == {"real", "sham", "test_fixture/donor", "test_fixture/source"}
+    assert all(r["audio_mode"] == "donor" for r in bundle if r["split"] == "train" and r["label"])
+    for r in bundle:
+        if r["variant"] == "real":
+            assert r["av_mismatch_intervals"] == [] and r["audio_mode"] is None
+        elif r["variant"] == "sham":
+            assert r["label"] == 0 and r["av_mismatch_intervals"][0][1] - r[
+                "av_mismatch_intervals"
+            ][0][0] == pytest.approx(0.4)
+        else:
+            assert r["av_mismatch_intervals"] is None
+    # donor thay tiếng (thật, cùng người); source giữ đúng PCM gốc.
+    pcm = {r["sample_id"]: decode(out / r["video"])["pcm"] for r in bundle}
+    for r in bundle:
+        if r["variant"] != "full":
+            continue
+        real = next(
+            x
+            for x in bundle
+            if x["variant"] == "real" and x["source_clip_id"] == r["source_clip_id"]
+        )
+        same = np.allclose(pcm[r["sample_id"]], pcm[real["sample_id"]], atol=1e-4)
+        assert same == (r["audio_mode"] == "source")
+
+
+def load_candidates(folder):
+    from vn_av_df.data.groups import read_manifest
+
+    return read_manifest(folder / "candidates.jsonl")
+
+
+@pytest.mark.parametrize("multigenerator", [False, True])
+def test_real_media_generation_review_export_and_resume(tmp_path, multigenerator):
+    root = tmp_path / "clean"
+    rows = clean_bundle(root, [(f"s{i}", f"p{i // 2}") for i in range(6)])
+    cfg = {
+        "seed": 42,
+        "clean_dataset": str(root),
+        "plan": str(tmp_path / "plan.json"),
+        "generated_dataset": str(tmp_path / "generated"),
+        "generation": {"clips_per_split": 1, "partial_seconds": [0.4], "crf": 18, "max_side": 640},
+    }
+    if multigenerator:
+        cfg["generation"].update(
+            include_sham=True,
+            audio_mode="source",
+            generators_by_split={
+                "train": ["wav2lip_gan"],
+                "validation": ["wav2lip_gan"],
+                "test": ["wav2lip_gan", "musetalk_1_5"],
+            },
+        )
+    expected = 14 if multigenerator else 9
+    assert make_plan(cfg)["videos"] == expected
+    jobs = read_json(cfg["plan"])["jobs"]
+    assert all(j["original"]["split"] == "test" for j in jobs if j["generator"] == "musetalk_1_5")
+
+    generator = paint_generator
+    assert generate(cfg, generator)["samples"] == expected
+    with pytest.raises(ValueError, match="Empty"):
+        finalize(cfg)
+    with TestClient(review_app(cfg)) as client:
+        items = client.get("/items").json()
+        assert client.get("/media/" + items[0]["sample_id"]).status_code == 200
+        for item in items:
+            assert (
+                client.post("/decision/" + item["sample_id"], json={"decision": "keep"}).status_code
+                == 200
+            )
+    first = finalize(cfg)
+    assert first["samples"] == expected
+    bundle = load_dataset(cfg["generated_dataset"], verify_media=True)
+    assert {r["label"] for r in bundle} == {0, 1}
+    assert all(
+        r["fake_intervals"][0][1] - r["fake_intervals"][0][0] == pytest.approx(0.4)
+        for r in bundle
+        if r["variant"] == "partial"
+    )
+    if multigenerator:
+        assert sum(r["variant"] == "real" for r in bundle) == 3
+        assert sum(r["variant"] == "sham" for r in bundle) == 3
+        assert all(r["synthetic_audio"] is False for r in bundle)
+        assert all(
+            r["label"] == 0 and r["fake_intervals"] == [] for r in bundle if r["variant"] == "sham"
+        )
+        # Cùng PCM cho real/full/partial: không để resampling audio chỉ xuất hiện ở fake.
+        real = next(r for r in bundle if r["variant"] == "real")
+        original_pcm = decode(Path(cfg["generated_dataset"]) / real["video"])["pcm"]
+        for row in bundle:
+            if row["source_clip_id"] == real["source_clip_id"] and row["variant"] in {
+                "full",
+                "partial",
+            }:
+                np.testing.assert_allclose(
+                    decode(Path(cfg["generated_dataset"]) / row["video"])["pcm"], original_pcm
+                )
+    assert generate(cfg, generator)["samples"] == expected
+    assert finalize(cfg) == first
+    with TestClient(review_app(cfg)) as client:
+        assert (
+            client.post(
+                "/decision/" + bundle[0]["sample_id"], json={"decision": "reject"}
+            ).status_code
+            == 409
+        )
+
+    # A second generator must preserve clean parent splits when merged with this bundle.
+    external_video = tmp_path / "external.mp4"
+    d = decode(root / rows[0]["video"], max_side=640, sample_rate=48000)
+    d["frames"][:, 5:15, 5:15] = 231
+    encode(d["frames"], d["pcm"], external_video, 18)
+    item = {
+        "video": external_video.name,
+        "label": 1,
+        "fake_intervals": [[0, probe(external_video)["duration_s"]]],
+        "source_clip_id": "c0",
+        "audio_source_clip_id": "c1",
+        "generator": "second_generator_fixture",
+        "generator_version": "test-only",
+        "review_status": "keep",
+    }
+    external_manifest = tmp_path / "external.jsonl"
+    write_manifest(external_manifest, [item])
+    import_cfg = {
+        **cfg,
+        "external_manifest": str(external_manifest),
+        "import_output": str(tmp_path / "merged"),
+        "import_base": cfg["generated_dataset"],
+    }
+    assert import_external(import_cfg)["samples"] == expected + 1
+    merged = load_dataset(import_cfg["import_output"], verify_media=True)
+    clean_split = {r["clip_id"]: r["split"] for r in split_clean(rows, cfg["seed"])}
+    assert merged[-1]["split"] == clean_split["c0"]
+    item["audio_source_clip_id"] = "c2"
+    write_manifest(external_manifest, [item])
+    import_cfg["import_output"] = str(tmp_path / "invalid_merge")
+    with pytest.raises(ValueError, match="crosses splits"):
+        import_external(import_cfg)
+
+    if not multigenerator:
+        # Part 2 only needs its new media and part 1's cumulative JSON split registry.
+        from vn_av_df.dataset import training_dataset
+
+        root2 = tmp_path / "clean2"
+        d = decode(root / rows[0]["video"], max_side=640, sample_rate=48000)
+        d["frames"][:, :8, :8] = 150
+        new_video = root2 / "clips/c6.mp4"
+        encode(d["frames"], d["pcm"], new_video, 18)
+        added = {
+            **rows[0],
+            "clip_id": "c6",
+            "source_id": "s6",
+            "video": "clips/c6.mp4",
+            "sha256": sha(new_video),
+            "duration_s": probe(new_video)["duration_s"],
+        }
+        write_manifest(root2 / "manifest.jsonl", [added])
+        write_json(
+            root2 / "dataset_info.json",
+            {
+                "schema_version": "vn-av-dataset-v1",
+                "dataset_id": "fixture_part2",
+                "clips": 1,
+                "manifest_sha256": sha(root2 / "manifest.jsonl"),
+            },
+        )
+        cfg2 = {
+            **cfg,
+            "data_part": 2,
+            "clean_dataset": str(root2),
+            "generated_dataset": str(tmp_path / "generated2"),
+            "plan": str(tmp_path / "plan2.json"),
+            "split_history": [str(Path(cfg["generated_dataset"]) / "split-lock.json")],
+        }
+        assert make_plan(cfg2)["videos"] == 3
+        assert generate(cfg2, generator)["samples"] == 3
+        with TestClient(review_app(cfg2)) as client:
+            for item in client.get("/items").json():
+                assert (
+                    client.post(
+                        "/decision/" + item["sample_id"], json={"decision": "keep"}
+                    ).status_code
+                    == 200
+                )
+        assert finalize(cfg2)["samples"] == 3
+        second = load_dataset(cfg2["generated_dataset"], verify_media=True)
+        assert {r["split"] for r in second} == {clean_split["c0"]}
+        combined, receipt = training_dataset(
+            {
+                "dataset": str(tmp_path),
+                "dataset_parts": ["generated", "generated2"],
+            },
+            verify_media=True,
+        )
+        assert len(combined) == expected + 3 and len(receipt["parts"]) == 2
+        history2 = read_json(Path(cfg2["generated_dataset"]) / "split-lock.json")
+        assert history2["data_part"] == 2 and len(history2["assignments"]) == 7
+
+
+def test_demo_public_result_has_only_scores_and_intervals(tmp_path):
+    import time
+
+    class Fixture:
+        def __init__(self, cfg):
+            assert cfg["demo_details"] is True  # Frontend cần điểm theo ô để vẽ timeline.
+
+        def analyze(self, path, output):
+            result = {
+                "video_score": 0.8,
+                "intervals": [{"start_sec": 1.0, "end_sec": 2.0, "score": 0.9}],
+            }
+            write_json(output, result)
+            return result
+
+    with TestClient(demo_app({"demo_output": str(tmp_path)}, Fixture)) as client:
+        assert client.get("/api/health").json()["ready"] is False
+        assert client.get("/api/research").json()["test-comparison.json"] is None
+        job = client.post("/api/jobs", files={"video": ("clip.mp4", b"fixture")}).json()
+        for _ in range(100):
+            state = client.get("/api/jobs/" + job["id"]).json()
+            if state["status"] == "complete":
+                break
+            time.sleep(0.01)
+        assert set(state["result"]) == {"video_score", "intervals"}
+        assert client.get("/api/jobs/" + job["id"] + "/report").json() == state["result"]
