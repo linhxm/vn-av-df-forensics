@@ -45,8 +45,9 @@ def installer(tmp_path, monkeypatch):
             python.parent.mkdir(parents=True, exist_ok=True)
             python.write_text("fixture")
         if "-c" in command:
-            worker = Path(command[0]).parents[1].name.removeprefix(".venv-")
-            path = tmp_path / ".kaggle-tools" / worker / "probe.json"
+            prefix = Path(command[0]).parents[1]  # <env_root>/.venv-<worker>/bin/python
+            worker = prefix.name.removeprefix(".venv-")
+            path = prefix.parent / ".kaggle-tools" / worker / "probe.json"
             path.write_text(json.dumps({"cuda_available": True}))
 
     monkeypatch.setattr(bootstrap, "execute", execute)
@@ -78,6 +79,23 @@ def test_worker_isolated_and_ready_resume_rechecks_without_reinstall(
     (root / "environments" / f"{worker}.yml").write_text("changed")
     with pytest.raises(ValueError, match="specification/source changed"):
         bootstrap.setup_worker(root, worker)
+
+
+def test_env_root_keeps_environment_outside_checkout_and_drops_caches(installer):
+    root, commands, _ = installer
+    workers = root.parent / "kaggle-temp"
+    cache = workers / ".kaggle-tools/mamba/pkgs/torch-2.0.1/lib.so"
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(b"x" * 1000)
+    python = bootstrap.setup_worker(root, "musetalk", env_root=workers)
+    assert python == workers / ".venv-musetalk/bin/python"
+    receipt = workers / ".kaggle-tools/musetalk/environment.json"
+    assert json.loads(receipt.read_text())["status"] == "ready"
+    # Checkout (Output Kaggle) không chứa env/receipt; cache gói conda bị xoá, pip không cache.
+    assert not (root / ".venv-musetalk").exists() and not (root / ".kaggle-tools").exists()
+    assert not cache.parent.parent.exists()
+    assert all(env["PIP_NO_CACHE_DIR"] == "1" for _, env in commands)
+    assert any(str(workers / ".kaggle-tools/mamba") in command for command, _ in commands)
 
 
 def test_failed_install_resumes_but_failed_probe_is_not_ready(installer, monkeypatch):
@@ -166,8 +184,10 @@ def test_notebook_bootstrap_configures_only_its_worker(notebook, worker, tmp_pat
             "generators_by_split": {"test": ["musetalk_1_5" if needed else "wav2lip_gan"]}
         },
     }
+    workers = tmp_path / "kaggle-temp"
     state = dict(
         ROOT=tmp_path,
+        WORKERS=workers,
         cfg=cfg,
         settings=SimpleNamespace(),
         subprocess=SimpleNamespace(run=lambda args, **kwargs: commands.append((args, kwargs))),
@@ -178,7 +198,7 @@ def test_notebook_bootstrap_configures_only_its_worker(notebook, worker, tmp_pat
         assert not commands
         assert cfg["musetalk"]["python"] == cfg["encoders"]["avhubert"]["python"] == "unchanged"
         return
-    expected = str(tmp_path / f".venv-{worker}/bin/python")
+    expected = str(workers / f".venv-{worker}/bin/python")
     assert commands == [
         (
             [
@@ -187,6 +207,8 @@ def test_notebook_bootstrap_configures_only_its_worker(notebook, worker, tmp_pat
                 worker,
                 "--root",
                 str(tmp_path),
+                "--env-root",
+                str(workers),
             ],
             {"check": True},
         )

@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 
 sys.dont_write_bytecode = True
+# Thư mục script (src/vn_av_df) có models.py trùng tên package models/ của Wav2Lip; bỏ khỏi path.
+sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != Path(__file__).resolve().parent]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import zipfile
 from types import SimpleNamespace

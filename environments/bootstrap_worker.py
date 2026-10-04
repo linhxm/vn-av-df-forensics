@@ -2,6 +2,8 @@
 
 Chạy sau action tải source/weights. Chỉ dùng stdlib để bootstrap không phụ thuộc
 torch/fairseq/MMLab của kernel. Receipt chỉ chuyển ready sau pip check và import probe.
+--env-root đặt môi trường (~10+ GB) ngoài checkout, ví dụ /kaggle/temp, để không tính vào
+giới hạn Output 20 GB của /kaggle/working; cache pip/micromamba không giữ lại sau khi cài.
 """
 
 import argparse
@@ -155,8 +157,22 @@ def probe_code(worker, root, output, require_cuda):
     )
 
 
-def setup_worker(root, worker, require_cuda=True):
-    """Tạo/resume môi trường do project quản lý, chỉ sau khi source upstream đã tải."""
+def remove_package_cache(mamba_root):
+    """Xoá gói conda đã tải/giải nén sau khi cài xong; env đã có bản riêng (hardlink/copy)."""
+    cache = mamba_root / "pkgs"
+    if not cache.is_dir():
+        return 0
+    size = sum(p.stat().st_size for p in cache.rglob("*") if p.is_file() and not p.is_symlink())
+    shutil.rmtree(cache, ignore_errors=True)
+    return size
+
+
+def setup_worker(root, worker, require_cuda=True, env_root=None):
+    """Tạo/resume môi trường do project quản lý, chỉ sau khi source upstream đã tải.
+
+    Source/weights đọc từ root; môi trường, micromamba, receipt và log nằm ở env_root
+    (mặc định root) để receipt luôn đi cùng môi trường nó mô tả.
+    """
     if worker not in {"avhubert", "musetalk"}:
         raise ValueError("Unknown worker")
     if platform.system() != "Linux" or platform.machine() not in {"x86_64", "AMD64"}:
@@ -164,6 +180,7 @@ def setup_worker(root, worker, require_cuda=True):
             "Automatic bootstrap targets Kaggle/Linux x86_64; see manual setup for local"
         )
     root = Path(root).resolve()
+    env_root = Path(env_root).resolve() if env_root else root
     specification = root / "environments" / f"{worker}.yml"
     source = root / "external" / ("av_hubert" if worker == "avhubert" else "MuseTalk")
     required = [specification, source / "vn_av_revision.json"]
@@ -177,9 +194,10 @@ def setup_worker(root, worker, require_cuda=True):
             raise FileNotFoundError(f"Run the notebook asset setup cell first; missing {path}")
     signature = {str(p.relative_to(root)): digest(p) for p in required}
     signature["bootstrap"] = digest(__file__)
-    prefix = root / f".venv-{worker}"
+    prefix = env_root / f".venv-{worker}"
     python = prefix / "bin/python"
-    folder = root / ".kaggle-tools" / worker
+    tools = env_root / ".kaggle-tools"
+    folder = tools / worker
     receipt, log = folder / "environment.json", folder / "setup.log"
     previous = json.loads(receipt.read_text()) if receipt.exists() else None
     if previous and previous["signature"] != signature:
@@ -196,6 +214,8 @@ def setup_worker(root, worker, require_cuda=True):
         MPLBACKEND="Agg",
         PYTHONNOUSERSITE="1",
         PIP_DISABLE_PIP_VERSION_CHECK="1",
+        # Wheel torch/MMLab đã nằm trong env; cache pip chỉ chiếm thêm vài GB.
+        PIP_NO_CACHE_DIR="1",
         PIP_CONSTRAINT=str(folder / "constraints.txt"),
     )
     if not previous or previous["status"] != "ready":
@@ -207,7 +227,7 @@ def setup_worker(root, worker, require_cuda=True):
             "setuptools<70\n",
             encoding="utf-8",
         )
-        mamba = micromamba(root / ".kaggle-tools" / "bin")
+        mamba = micromamba(tools / "bin")
         # Chạy lại env update nếu lần đầu dừng giữa phần conda/pip của YAML.
         command = "install" if python.exists() else "create"
         execute(
@@ -215,7 +235,7 @@ def setup_worker(root, worker, require_cuda=True):
                 mamba,
                 "--no-rc",
                 "-r",
-                root / ".kaggle-tools/mamba",
+                tools / "mamba",
                 command,
                 "-y",
                 "-p",
@@ -229,6 +249,8 @@ def setup_worker(root, worker, require_cuda=True):
         )
         for command in installation_commands(worker, python, root, constraints):
             execute(command, root, log, env)
+        freed = remove_package_cache(tools / "mamba")
+        print(f"Removed micromamba package cache: {freed / 1e9:.2f} GB", flush=True)
     write_json(receipt, {"status": "checking", "signature": signature, "python": str(python)})
     execute([python, "-m", "pip", "check"], root, log, env)
     probe = folder / "probe.json"
@@ -255,6 +277,16 @@ if __name__ == "__main__":
     )
     parser.add_argument("worker", choices=("avhubert", "musetalk"))
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument(
+        "--env-root",
+        type=Path,
+        default=None,
+        help="Nơi đặt môi trường/log (mặc định --root); Kaggle: thư mục ngoài /kaggle/working",
+    )
     parser.add_argument("--allow-cpu", action="store_true")
     args = parser.parse_args()
-    print(setup_worker(args.root, args.worker, require_cuda=not args.allow_cpu))
+    print(
+        setup_worker(
+            args.root, args.worker, require_cuda=not args.allow_cpu, env_root=args.env_root
+        )
+    )

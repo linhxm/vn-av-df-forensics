@@ -10,9 +10,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Python tự thêm thư mục script (src/vn_av_df) vào sys.path; ở đó có musetalk.py che mất
+# package musetalk/ của upstream (không có __init__.py nên thua module thường). Bỏ thư mục đó.
+sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != Path(__file__).resolve().parent]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from vn_av_df.common.runtime import read_json, run
+from vn_av_df.common.runtime import read_json, run  # noqa: E402
 
 
 def load(cfg):

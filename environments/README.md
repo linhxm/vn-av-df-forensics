@@ -11,18 +11,18 @@
 
 ## Tự chuẩn bị worker trên Kaggle
 
-Hai notebook có cell gọi [bootstrap_worker.py](bootstrap_worker.py) sau bước tải assets. Script tải Micromamba từ endpoint chính thức, tạo Python 3.10 trong project và cài đúng worker; không yêu cầu Kaggle có conda từ trước và không cài fairseq/MMLab vào kernel FATE. Notebook tự gán đường dẫn interpreter vào config sau khi setup đạt.
+Hai notebook có cell gọi [bootstrap_worker.py](bootstrap_worker.py) sau bước tải assets. Script tải Micromamba từ endpoint chính thức, tạo Python 3.10 ở `--env-root` (notebook: `WORKERS = /kaggle/temp/vn-av-df-workers`, ngoài /kaggle/working nên không tính vào Output 20 GB) và cài đúng worker; không yêu cầu Kaggle có conda từ trước và không cài fairseq/MMLab vào kernel FATE. Notebook tự gán đường dẫn interpreter vào config sau khi setup đạt.
 
 | Notebook | Worker tự tạo | Không cài trong bước worker |
 |---|---|---|
-| generate.ipynb | .venv-musetalk/bin/python nếu chọn MuseTalk | AV-HuBERT/FATE |
-| train.ipynb | .venv-avhubert/bin/python nếu chọn AV-HuBERT | MuseTalk/Wav2Lip |
+| generate.ipynb | WORKERS/.venv-musetalk/bin/python nếu chọn MuseTalk | AV-HuBERT/FATE |
+| train.ipynb | WORKERS/.venv-avhubert/bin/python nếu chọn AV-HuBERT | MuseTalk/Wav2Lip |
 
 Bật Internet và GPU rồi chạy các cell theo thứ tự. Bootstrap tự kiểm Python, phiên bản torch, tương thích NumPy, import thư viện và phép tính CUDA nhỏ. Receipt chỉ đánh dấu ready sau khi pip check và import/CUDA probe đạt. Đây **không phải** inference thử checkpoint thật.
 
 Các kiểm thử orchestration local đã đạt, nhưng **chưa có phiên Kaggle end-to-end hoặc kiểm chứng checkpoint thật**. Nếu pip/conda/import lỗi, cell dừng trước generation/feature extraction và chỉ rõ file log; không thay model hoặc tự bỏ qua worker.
 
-Log và thông tin môi trường nằm ở `.kaggle-tools/<worker>/`: setup.log, environment.json, constraints.txt, probe.json, pip-freeze.txt. Chạy lại cùng cấu hình có thể tiếp tục phần cài còn dở; môi trường ready được kiểm lại và không tự cài lại. Đổi YAML/source/bootstrap phải dùng checkout làm việc mới để tránh trộn môi trường. Script không sửa một prefix có sẵn nhưng không có receipt do nó tạo.
+Log và thông tin môi trường nằm ở `<env-root>/.kaggle-tools/<worker>/` (mặc định env-root = project root): setup.log, environment.json, constraints.txt, probe.json, pip-freeze.txt. Chạy lại cùng cấu hình có thể tiếp tục phần cài còn dở; môi trường ready được kiểm lại và không tự cài lại. Đổi YAML/source/bootstrap phải dùng checkout làm việc mới để tránh trộn môi trường. Script không sửa một prefix có sẵn nhưng không có receipt do nó tạo. pip chạy với `PIP_NO_CACHE_DIR=1`; cài xong thì xoá cache gói micromamba (`.kaggle-tools/mamba/pkgs`). Môi trường ở /kaggle/temp mất khi hết phiên: phiên mới cài lại.
 
 Notebook generation xuất thêm generation-environment.zip; notebook training đưa thông tin worker vào ZIP kết quả. Micromamba tải lần đầu từ endpoint latest, lưu URL cuối và hash binary/archive; đây là pin tài sản đã tải, không phải khóa sẵn mọi dependency transitive. Nguồn: [Micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html), [wheel MMCV CUDA11.8/torch2.0](https://download.openmmlab.com/mmcv/dist/cu118/torch2.0/index.html).
 
