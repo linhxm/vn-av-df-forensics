@@ -3,14 +3,20 @@
 import csv
 import io
 import math
+import queue
 import random
+import shutil
 import tempfile
+import threading
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
 from pathlib import Path
 
 from vn_av_data.contract import validate_bundle
 
+from vn_av_df import worker
 from vn_av_df.common.runtime import atomic_bytes, fingerprint, read_json, sha, write_json
 from vn_av_df.data.groups import connected_groups, read_manifest, write_manifest
 from vn_av_df.data.media import decode, probe
@@ -350,16 +356,32 @@ def generate(cfg, generator=None):
             "assignments": [*plan.get("prior_assignments", []), *assigned],
         },
     )
-    rows = []
+    # GPU sinh song song (mỗi GPU một worker); không cấu hình = tuần tự như trước.
+    gpus = list(cfg.get("generation_gpus") or [None])
+    # Hạn giờ (epoch giây): quá hạn thì không nhận cặp mới; phần đã sinh giữ để phiên sau làm tiếp.
+    deadline = cfg.get("generation_deadline")
     total = len(plan["jobs"])
+    pending = sum(
+        not (out / "records" / f"{fingerprint(job)[:20]}.json").exists() for job in plan["jobs"]
+    )
     print(
-        f"Generate {total} cặp: theo split {plan['split_counts']}, "
+        f"Generate {total} cặp ({total - pending} đã có từ lượt trước) trên {len(gpus)} GPU: "
+        f"theo split {plan['split_counts']}, "
         f"{len(plan.get('skipped_without_donor', []))} parent bỏ vì không có donor",
         flush=True,
     )
+    # Thư mục tạm còn sót khi phiên trước bị dừng đột ngột.
+    for leftover in [*out.glob("tmp*"), *(out / "clips").glob("tmp*")]:
+        if leftover.is_dir():
+            shutil.rmtree(leftover, ignore_errors=True)
     began = time.monotonic()
-    for number, job in enumerate(plan["jobs"]):
-        tick = time.monotonic()
+    progress = {"done": 0}
+    slots = queue.Queue()
+    for gpu in gpus:
+        slots.put(gpu)
+    guard = threading.Lock()
+
+    def make_pair(number, job):
         r, d = job["original"], job["donor"]
         name = job.get("generator", "wav2lip_gan")
         head = (
@@ -373,154 +395,199 @@ def generate(cfg, generator=None):
             previous = read_json(record)
             if any(sha(out / p["video"]) != p["sha256"] for p in previous):
                 raise ValueError("Generated file changed")
-            rows.extend(previous)
-            print(f"{head}: đã sinh ở lượt trước, bỏ qua", flush=True)
-            continue
-        kinds = (["real"] if job.get("emit_real", True) else []) + ["full", "partial"]
-        if job.get("sham_donor"):
-            kinds.append("sham")
-        dests = {kind: out / "clips" / f"{key}_{kind}.mp4" for kind in kinds}
-        if any(p.exists() for p in dests.values()):
-            raise ValueError(
-                "Orphan output from interrupted pair; move that pair out before resuming"
+            return previous
+        gpu = slots.get()
+        if deadline is not None and time.time() > deadline:
+            slots.put(gpu)
+            return None
+        try:
+            tick = time.monotonic()
+            kinds = (["real"] if job.get("emit_real", True) else []) + ["full", "partial"]
+            if job.get("sham_donor"):
+                kinds.append("sham")
+            dests = {kind: out / "clips" / f"{key}_{kind}.mp4" for kind in kinds}
+            # Có video mà chưa có record = cặp bị ngắt giữa chừng (hết giờ phiên): xoá, sinh lại.
+            for stale in dests.values():
+                if stale.exists():
+                    stale.unlink()
+                    print(f"{head}: xoá output dở của lượt trước {stale.name}", flush=True)
+            original = decode(
+                root / r["video"], max_side=plan["config"]["max_side"], sample_rate=48000
             )
-        original = decode(root / r["video"], max_side=plan["config"]["max_side"], sample_rate=48000)
-        with tempfile.TemporaryDirectory(dir=out) as temp:
-            target = Path(temp) / "generated.mkv"
-            adapters[name](
-                cfg,
-                root / r["video"],
-                root / d["video"],
-                target,
-                len(original["frames"]),
-                original["frames"].shape[2],
-                original["frames"].shape[1],
-            )
-            fake = decode(target, max_side=plan["config"]["max_side"], sample_rate=48000)
-        mode = job.get("audio_mode", plan["config"].get("audio_mode", "source"))
-        # Không lấy PCM generator (đã qua 16kHz/codec) làm dấu phân biệt fake.
-        if mode == "source":
-            fake["pcm"] = original["pcm"].copy()
-        else:
-            donor_audio = decode(
-                root / d["video"], max_side=plan["config"]["max_side"], sample_rate=48000
-            )["pcm"]
-            if len(donor_audio) < len(original["pcm"]):
-                raise ValueError("Donor audio shorter than parent")
-            fake["pcm"] = donor_audio[: len(original["pcm"])].copy()
-        n = len(original["frames"])
-        rng = random.Random(plan["seed"] + number)
-        # Cover short and longer events; manipulation extent is measured at 25 fps.
-        length = min(n - 2, round(rng.choice(plan["config"]["partial_seconds"]) * 25))
-        if length < 1:
-            raise ValueError("partial_seconds must be positive")
-        a = rng.randrange(1, n - length)
-        partial_frames, partial_audio, spans = compose_partial(original, fake, (a, a + length))
-        sham_audio = original["pcm"].copy()
-        if job.get("sham_donor"):
-            # Ghép âm thanh thu thật, hình không AI: đối chứng dấu vết splice và lệch A/V.
-            genuine = decode(
-                root / job["sham_donor"]["video"],
-                max_side=plan["config"]["max_side"],
-                sample_rate=48000,
-            )["pcm"]
-            if len(genuine) < n * 1920:
-                raise ValueError("Sham donor too short")
-            sham_audio[a * 1920 : (a + length) * 1920] = genuine[a * 1920 : (a + length) * 1920]
-        generated = []
-        for kind, frames, pcm, intervals in (
-            ("real", original["frames"], original["pcm"], []),
-            ("full", fake["frames"], fake["pcm"], [[0, n / 25]]),
-            ("partial", partial_frames, partial_audio, spans),
-            ("sham", original["frames"], sham_audio, []),
-        ):
-            if kind not in dests:
-                continue
-            is_fake = kind in {"full", "partial"}
-            encode(frames, pcm, dests[kind], plan["config"]["crf"])
-            if abs(probe(dests[kind])["duration_s"] - n / 25) > 0.1:
-                raise ValueError("Encoded duration differs")
-            generated.append(
-                {
-                    "sample_id": f"{key}_{kind}",
-                    "video": dests[kind].relative_to(out).as_posix(),
-                    "sha256": sha(dests[kind]),
-                    "duration_s": n / 25,
-                    "label": int(is_fake),
-                    "fake_intervals": intervals,
-                    "split": r["split"],
-                    "source_id": r["source_id"],
-                    "source_clip_id": r["clip_id"],
-                    "speaker_id": r.get("speaker_id"),
-                    **{
-                        field: r[field]
-                        for field in (
-                            "global_speaker_ids",
-                            "source_sha256",
-                            "duplicate_group_id",
-                        )
-                        if r.get(field)
-                    },
-                    "audio_source_id": job["sham_donor"]["source_id"]
-                    if kind == "sham"
-                    else d["source_id"]
-                    if kind != "real"
-                    else r["source_id"],
-                    "parent_ids": sorted(
-                        {
-                            r["source_id"],
-                            d["source_id"],
-                            *(([job["sham_donor"]["source_id"]]) if kind == "sham" else []),
-                        }
-                    ),
-                    "speaker_ids": list(filter(None, {r.get("speaker_id"), d.get("speaker_id")})),
-                    "generator": gen_info["generator"] if is_fake else "none",
-                    "generator_version": gen_info["version"] if is_fake else "matched-encode-v2",
-                    "synthetic_audio": False,
-                    "synthetic_visual": is_fake,
-                    "audio_fake_intervals": [],
-                    "visual_fake_intervals": intervals,
-                    "audio_mode": mode if is_fake else None,
-                    # Lệch tiếng–miệng đã biết: sham = đoạn ghép; fake chưa đo được nên null.
-                    "av_mismatch_intervals": spans
-                    if kind == "sham"
-                    else []
-                    if kind == "real"
-                    else None,
-                    "audio_edit_kind": "splice"
-                    if kind == "sham"
-                    else "none"
-                    if mode == "source" or kind == "real"
-                    else "donor_replace"
-                    if kind == "full"
-                    else "splice",
-                    "processing_profile": "common-pcm48k-h264-aac-crf" + str(plan["config"]["crf"]),
-                    "control_type": "conventional_audio_splice" if kind == "sham" else None,
-                    "sync_status": "reviewed_match" if kind == "real" else "unknown",
-                    "generator_checkpoint_sha256": gen_info.get("checkpoint_sha256")
-                    if is_fake
-                    else None,
-                    "variant": kind,
-                    "review_status": "pending",
-                    "group_id": key,
-                }
-            )
-        write_json(record, generated)
-        rows.extend(generated)
-        spent = time.monotonic() - began
+            with tempfile.TemporaryDirectory(dir=out) as temp:
+                target = Path(temp) / "generated.mkv"
+                # Worker thật nhận thêm gpu (sinh song song); fixture test giữ chữ ký cũ.
+                synth = adapters[name] if generator else partial(adapters[name], gpu=gpu)
+                synth(
+                    cfg,
+                    root / r["video"],
+                    root / d["video"],
+                    target,
+                    len(original["frames"]),
+                    original["frames"].shape[2],
+                    original["frames"].shape[1],
+                )
+                fake = decode(target, max_side=plan["config"]["max_side"], sample_rate=48000)
+            mode = job.get("audio_mode", plan["config"].get("audio_mode", "source"))
+            # Không lấy PCM generator (đã qua 16kHz/codec) làm dấu phân biệt fake.
+            if mode == "source":
+                fake["pcm"] = original["pcm"].copy()
+            else:
+                donor_audio = decode(
+                    root / d["video"], max_side=plan["config"]["max_side"], sample_rate=48000
+                )["pcm"]
+                if len(donor_audio) < len(original["pcm"]):
+                    raise ValueError("Donor audio shorter than parent")
+                fake["pcm"] = donor_audio[: len(original["pcm"])].copy()
+            n = len(original["frames"])
+            rng = random.Random(plan["seed"] + number)
+            # Cover short and longer events; manipulation extent is measured at 25 fps.
+            length = min(n - 2, round(rng.choice(plan["config"]["partial_seconds"]) * 25))
+            if length < 1:
+                raise ValueError("partial_seconds must be positive")
+            a = rng.randrange(1, n - length)
+            partial_frames, partial_audio, spans = compose_partial(original, fake, (a, a + length))
+            sham_audio = original["pcm"].copy()
+            if job.get("sham_donor"):
+                # Ghép âm thanh thu thật, hình không AI: đối chứng dấu vết splice và lệch A/V.
+                genuine = decode(
+                    root / job["sham_donor"]["video"],
+                    max_side=plan["config"]["max_side"],
+                    sample_rate=48000,
+                )["pcm"]
+                if len(genuine) < n * 1920:
+                    raise ValueError("Sham donor too short")
+                sham_audio[a * 1920 : (a + length) * 1920] = genuine[a * 1920 : (a + length) * 1920]
+            generated = []
+            for kind, frames, pcm, intervals in (
+                ("real", original["frames"], original["pcm"], []),
+                ("full", fake["frames"], fake["pcm"], [[0, n / 25]]),
+                ("partial", partial_frames, partial_audio, spans),
+                ("sham", original["frames"], sham_audio, []),
+            ):
+                if kind not in dests:
+                    continue
+                is_fake = kind in {"full", "partial"}
+                encode(frames, pcm, dests[kind], plan["config"]["crf"])
+                if abs(probe(dests[kind])["duration_s"] - n / 25) > 0.1:
+                    raise ValueError("Encoded duration differs")
+                generated.append(
+                    {
+                        "sample_id": f"{key}_{kind}",
+                        "video": dests[kind].relative_to(out).as_posix(),
+                        "sha256": sha(dests[kind]),
+                        "duration_s": n / 25,
+                        "label": int(is_fake),
+                        "fake_intervals": intervals,
+                        "split": r["split"],
+                        "source_id": r["source_id"],
+                        "source_clip_id": r["clip_id"],
+                        "speaker_id": r.get("speaker_id"),
+                        **{
+                            field: r[field]
+                            for field in (
+                                "global_speaker_ids",
+                                "source_sha256",
+                                "duplicate_group_id",
+                            )
+                            if r.get(field)
+                        },
+                        "audio_source_id": job["sham_donor"]["source_id"]
+                        if kind == "sham"
+                        else d["source_id"]
+                        if kind != "real"
+                        else r["source_id"],
+                        "parent_ids": sorted(
+                            {
+                                r["source_id"],
+                                d["source_id"],
+                                *(([job["sham_donor"]["source_id"]]) if kind == "sham" else []),
+                            }
+                        ),
+                        "speaker_ids": list(
+                            filter(None, {r.get("speaker_id"), d.get("speaker_id")})
+                        ),
+                        "generator": gen_info["generator"] if is_fake else "none",
+                        "generator_version": gen_info["version"]
+                        if is_fake
+                        else "matched-encode-v2",
+                        "synthetic_audio": False,
+                        "synthetic_visual": is_fake,
+                        "audio_fake_intervals": [],
+                        "visual_fake_intervals": intervals,
+                        "audio_mode": mode if is_fake else None,
+                        # Lệch tiếng–miệng đã biết: sham = đoạn ghép; fake chưa đo được nên null.
+                        "av_mismatch_intervals": spans
+                        if kind == "sham"
+                        else []
+                        if kind == "real"
+                        else None,
+                        "audio_edit_kind": "splice"
+                        if kind == "sham"
+                        else "none"
+                        if mode == "source" or kind == "real"
+                        else "donor_replace"
+                        if kind == "full"
+                        else "splice",
+                        "processing_profile": "common-pcm48k-h264-aac-crf"
+                        + str(plan["config"]["crf"]),
+                        "control_type": "conventional_audio_splice" if kind == "sham" else None,
+                        "sync_status": "reviewed_match" if kind == "real" else "unknown",
+                        "generator_checkpoint_sha256": gen_info.get("checkpoint_sha256")
+                        if is_fake
+                        else None,
+                        "variant": kind,
+                        "review_status": "pending",
+                        "group_id": key,
+                    }
+                )
+            write_json(record, generated)
+        finally:
+            slots.put(gpu)
+        with guard:
+            progress["done"] += 1
+            done, spent = progress["done"], time.monotonic() - began
         print(
             f"{head}, donor {d['clip_id'] if mode == 'donor' else '(tiếng gốc)'}; "
             f"{'/'.join(dests)}; partial {length / 25:.2f}s tại {a / 25:.2f}s | "
-            f"{time.monotonic() - tick:.0f}s, đã chạy {spent / 60:.1f} phút, "
-            f"còn ~{spent / (number + 1) * (total - number - 1) / 60:.1f} phút",
+            f"{time.monotonic() - tick:.0f}s{'' if gpu is None else f' (GPU {gpu})'}, "
+            f"mới {done}/{pending}, đã chạy {spent / 60:.1f} phút, "
+            f"còn ~{spent / done * (pending - done) / 60:.1f} phút",
             flush=True,
         )
+        return generated
+
+    results = [None] * total
+    try:
+        with ThreadPoolExecutor(max_workers=len(gpus)) as pool:
+            futures = {pool.submit(make_pair, i, job): i for i, job in enumerate(plan["jobs"])}
+            try:
+                for future in as_completed(futures):
+                    results[futures[future]] = future.result()
+            except BaseException:
+                # Một cặp lỗi: không nhận cặp mới, chờ cặp đang chạy xong rồi báo lỗi.
+                for future in futures:
+                    future.cancel()
+                raise
+    finally:
+        worker.close_all()
+    missing = sum(result is None for result in results)
+    if missing:
+        # Chưa đủ cặp: không ghi candidates/review (review.csv chỉ tạo một lần khi đủ).
+        return {
+            "status": "partial",
+            "pairs_done": total - missing,
+            "pairs_remaining": missing,
+            "next": "Hết giờ phiên: Save Version, attach output này làm PREVIOUS_GENERATION rồi chạy tiếp",
+        }
+    rows = [row for result in results for row in result]
     write_manifest(out / "candidates.jsonl", rows)
     if not (out / "review.csv").exists():
         csv_write(
             out / "review.csv", [{"sample_id": r["sample_id"], "decision": "pending"} for r in rows]
         )
     return {
+        "status": "complete",
         "samples": len(rows),
         "next": "Run review then finalize; pending media is not training data",
     }

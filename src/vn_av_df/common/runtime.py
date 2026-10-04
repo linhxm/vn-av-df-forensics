@@ -57,10 +57,20 @@ def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
 
+def child_env(env=None):
+    """Biến môi trường cho process con (worker, ffmpeg).
+
+    Kernel Jupyter đặt MPLBACKEND=module://matplotlib_inline...; worker ở môi trường riêng
+    không có gói đó nên mọi import matplotlib (mmpose, skimage...) đều lỗi. Dùng Agg.
+    """
+    return {**(os.environ if env is None else env), "MPLBACKEND": "Agg"}
+
+
 def run(args, *, cwd=None, timeout=1800, log=None):
     result = subprocess.run(
         [str(x) for x in args],
         cwd=cwd,
+        env=child_env(),
         timeout=timeout,
         capture_output=True,
         text=True,

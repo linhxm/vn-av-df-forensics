@@ -5,6 +5,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from vn_av_df import worker
 from vn_av_df.common.runtime import read_json, run, sha, write_json
 from vn_av_df.data.media import ffmpeg
 
@@ -61,7 +62,15 @@ def provenance(cfg):
     }
 
 
-def synthesize(cfg, video, audio_video, output, frames, width, height):
+def start(command, gpu=None):
+    """Mở worker; gpu (số thứ tự) giới hạn worker vào một GPU khi sinh song song."""
+    env = os.environ.copy()
+    if gpu is not None:
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+    return worker.Worker(command, env=env)
+
+
+def synthesize(cfg, video, audio_video, output, frames, width, height, gpu=None):
     g = cfg["wav2lip"]
     with tempfile.TemporaryDirectory(dir=Path(output).parent) as folder:
         temp = Path(folder)
@@ -103,24 +112,26 @@ def synthesize(cfg, video, audio_video, output, frames, width, height):
                 temp / "audio.wav",
             ]
         )
-        # Keep bridge in its own process: upstream imports and global argv never pollute training.
-        run(
-            [
-                g.get("python", sys.executable),
-                "-B",
-                Path(__file__).with_name("wav2lip_worker.py"),
-                "--upstream",
-                Path(g["repo"]).resolve(),
-                "--checkpoint",
-                Path(g["checkpoint"]).resolve(),
-                "--device",
-                g["device"],
-                "--ffmpeg",
-                ffmpeg(),
-            ],
-            cwd=temp,
-            timeout=3600,
-        )
+        # Bridge chạy process riêng (upstream đọc argv/biến toàn cục, không lẫn vào training)
+        # nhưng sống suốt lượt sinh: model và bộ dò mặt chỉ nạp một lần cho mọi cặp.
+        command = [
+            g.get("python", sys.executable),
+            "-B",
+            Path(__file__).with_name("wav2lip_worker.py"),
+            "--upstream",
+            Path(g["repo"]).resolve(),
+            "--checkpoint",
+            Path(g["checkpoint"]).resolve(),
+            "--device",
+            g["device"],
+            "--ffmpeg",
+            ffmpeg(),
+            "--face-det-batch",
+            g.get("face_det_batch_size", 16),
+            "--serve",
+        ]
+        bridge = worker.get(("wav2lip", gpu, *map(str, command)), lambda: start(command, gpu))
+        bridge.call({"cwd": str(temp.resolve())}, timeout=3600)
         run(
             [
                 ffmpeg(),

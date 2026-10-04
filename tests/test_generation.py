@@ -129,6 +129,41 @@ def test_donor_source_design_labels_audio_and_skip(tmp_path):
         assert same == (r["audio_mode"] == "source")
 
 
+def test_generation_stops_at_deadline_and_resumes_in_parallel(tmp_path):
+    import time
+
+    from vn_av_df.common.runtime import fingerprint
+
+    root = tmp_path / "clean"
+    clean_bundle(root, [(f"s{i}", f"p{i // 2}") for i in range(6)])
+    cfg = {
+        "seed": 42,
+        "clean_dataset": str(root),
+        "plan": str(tmp_path / "plan.json"),
+        "generated_dataset": str(tmp_path / "generated"),
+        "generation": {"clips_per_split": 1, "partial_seconds": [0.4], "crf": 18, "max_side": 640},
+    }
+    make_plan(cfg)
+    jobs = read_json(cfg["plan"])["jobs"]
+    out = Path(cfg["generated_dataset"])
+    # Hết giờ trước khi bắt đầu: không cặp nào, không ghi candidates/review.
+    partial = generate({**cfg, "generation_deadline": time.time() - 1}, paint_generator)
+    assert partial["status"] == "partial" and partial["pairs_remaining"] == len(jobs)
+    assert not (out / "candidates.jsonl").exists() and not (out / "review.csv").exists()
+    # Phiên trước bị ngắt giữa cặp: video dở (chưa có record) và thư mục tạm còn sót.
+    key = fingerprint(jobs[0])[:20]
+    (out / "clips").mkdir(parents=True, exist_ok=True)
+    (out / "clips" / f"{key}_full.mp4").write_bytes(b"incomplete")
+    (out / "tmpleftover").mkdir()
+    # Phiên sau: chạy tiếp, 2 slot song song, đủ mọi cặp theo đúng thứ tự plan.
+    done = generate({**cfg, "generation_gpus": [0, 1]}, paint_generator)
+    assert done["status"] == "complete" and done["samples"] == 9
+    assert not (out / "tmpleftover").exists()
+    rows = load_candidates(out)
+    assert [r["group_id"] for r in rows[::3]] == [fingerprint(j)[:20] for j in jobs]
+    assert all(sha(out / r["video"]) == r["sha256"] for r in rows)
+
+
 def load_candidates(folder):
     from vn_av_df.data.groups import read_manifest
 

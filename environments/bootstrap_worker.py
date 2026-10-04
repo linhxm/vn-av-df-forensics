@@ -191,6 +191,9 @@ def setup_worker(root, worker, require_cuda=True):
     for name in ("PYTHONPATH", "PYTHONHOME", "PIP_TARGET", "PIP_PREFIX", "PIP_USER", "VIRTUAL_ENV"):
         env.pop(name, None)
     env.update(
+        # Kernel Jupyter đặt MPLBACKEND=module://matplotlib_inline...; worker không có gói đó,
+        # import mmpose → matplotlib sẽ lỗi ở bước probe. Worker không vẽ: dùng Agg.
+        MPLBACKEND="Agg",
         PYTHONNOUSERSITE="1",
         PIP_DISABLE_PIP_VERSION_CHECK="1",
         PIP_CONSTRAINT=str(folder / "constraints.txt"),

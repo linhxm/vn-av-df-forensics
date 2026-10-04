@@ -1,10 +1,12 @@
 """MuseTalk 1.5: source/weights có provenance, worker sinh trung gian lossless."""
 
+import json
+import os
 import sys
-import tempfile
 from pathlib import Path
 
-from vn_av_df.common.runtime import read_json, require_file, run, sha, write_json
+from vn_av_df import worker
+from vn_av_df.common.runtime import read_json, require_file, run, sha
 
 
 def setup(cfg):
@@ -77,31 +79,35 @@ def provenance(cfg):
     )
 
 
-def synthesize(cfg, video, audio_video, output, frames, width, height):
-    """Cùng giao diện Wav2Lip; output FFV1/PCM, không encode fake thêm một lần lossy."""
+def synthesize(cfg, video, audio_video, output, frames, width, height, gpu=None):
+    """Cùng giao diện Wav2Lip; output FFV1/PCM, không encode fake thêm một lần lossy.
+
+    Worker sống suốt lượt sinh (nạp VAE/UNet/Whisper/DWPose một lần), một worker mỗi GPU.
+    """
     options = cfg["musetalk"]
-    with tempfile.TemporaryDirectory(dir=Path(output).parent) as folder:
-        request = Path(folder) / "request.json"
-        write_json(
-            request,
-            dict(
-                config=options,
-                video=str(Path(video).resolve()),
-                audio_video=str(Path(audio_video).resolve()),
-                output=str(Path(output).resolve()),
-                frames=frames,
-                width=width,
-                height=height,
-                ffmpeg=cfg.get("ffmpeg"),
-            ),
-        )
-        run(
-            [
-                options.get("python", sys.executable),
-                "-B",
-                Path(__file__).with_name("musetalk_worker.py"),
-                request,
-            ],
-            cwd=options["repo"],
-            timeout=3600,
-        )
+    command = [
+        options.get("python", sys.executable),
+        "-B",
+        Path(__file__).with_name("musetalk_worker.py"),
+        "--serve",
+        json.dumps(options, sort_keys=True),
+    ]
+
+    def start():
+        env = os.environ.copy()
+        if gpu is not None:
+            env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+        return worker.Worker(command, cwd=options["repo"], env=env)
+
+    bridge = worker.get(("musetalk", gpu, *map(str, command)), start)
+    bridge.call(
+        dict(
+            video=str(Path(video).resolve()),
+            audio_video=str(Path(audio_video).resolve()),
+            output=str(Path(output).resolve()),
+            frames=frames,
+            width=width,
+            height=height,
+        ),
+        timeout=3600,
+    )

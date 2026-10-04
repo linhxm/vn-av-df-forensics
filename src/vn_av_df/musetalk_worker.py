@@ -1,5 +1,11 @@
-"""Bridge lossless dùng API inference chính thức MuseTalk 1.5, không gọi shell upstream."""
+"""Bridge lossless dùng API inference chính thức MuseTalk 1.5, không gọi shell upstream.
 
+Một lần: `python musetalk_worker.py request.json`. Chạy liên tục: `--serve '<config JSON>'`,
+nạp VAE/UNet/Whisper/bộ dò mặt một lần rồi nhận từng yêu cầu (video, audio_video, output,
+frames, width, height) qua stdin.
+"""
+
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -9,32 +15,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from vn_av_df.common.runtime import read_json, run
 
 
-def main(request):
-    """Sinh đúng số frame nguồn; fail khi thiếu face/audio, không loop nguồn."""
-    import cv2
-    import numpy as np
+def load(cfg):
+    """Nạp model một lần; module preprocessing của MuseTalk tự nạp DWPose/bộ dò mặt khi import."""
     import torch
-    from scipy.io import wavfile
-    from scipy.signal import resample_poly
     from transformers import WhisperModel
 
-    cfg = request["config"]
     sys.path.insert(0, str(Path(cfg["repo"]).resolve()))
     from musetalk.utils.audio_processor import AudioProcessor
-    from musetalk.utils.blending import get_image
     from musetalk.utils.face_parsing import FaceParsing
-    from musetalk.utils.preprocessing import coord_placeholder, get_landmark_and_bbox
-    from musetalk.utils.utils import datagen, load_all_model
-
-    from vn_av_df.data.media import decode, ffmpeg
+    from musetalk.utils.utils import load_all_model
 
     device = torch.device(cfg.get("device", "cuda"))
-    torch.manual_seed(int(cfg.get("seed", 42)))
-    n, w, h = request["frames"], request["width"], request["height"]
-    source = decode(request["video"], max_side=max(w, h), sample_rate=48000)
-    donor = decode(request["audio_video"], max_side=max(w, h), sample_rate=48000)
-    if len(source["frames"]) != n or len(donor["pcm"]) < n * 1920:
-        raise ValueError("MuseTalk source/donor timeline differs from plan")
     vae, unet, pe = load_all_model(
         unet_model_path="models/musetalkV15/unet.pth",
         unet_config="models/musetalkV15/musetalk.json",
@@ -49,10 +40,41 @@ def main(request):
         .to(device=device, dtype=dtype)
         .eval()
     )
-    processor, parser = (
-        AudioProcessor(feature_extractor_path="models/whisper"),
-        FaceParsing(left_cheek_width=90, right_cheek_width=90),
+    return dict(
+        cfg=cfg,
+        device=device,
+        dtype=dtype,
+        vae=vae,
+        unet=unet,
+        pe=pe,
+        whisper=whisper,
+        processor=AudioProcessor(feature_extractor_path="models/whisper"),
+        parser=FaceParsing(left_cheek_width=90, right_cheek_width=90),
     )
+
+
+def synthesize(models, request):
+    """Sinh đúng số frame nguồn; fail khi thiếu face/audio, không loop nguồn."""
+    import cv2
+    import numpy as np
+    import torch
+    from musetalk.utils.blending import get_image
+    from musetalk.utils.preprocessing import coord_placeholder, get_landmark_and_bbox
+    from musetalk.utils.utils import datagen
+    from scipy.io import wavfile
+    from scipy.signal import resample_poly
+
+    from vn_av_df.data.media import decode, ffmpeg
+
+    cfg, device, dtype = models["cfg"], models["device"], models["dtype"]
+    vae, unet, pe = models["vae"], models["unet"], models["pe"]
+    # Seed lại mỗi video: kết quả không phụ thuộc thứ tự/số video worker đã xử lý trước đó.
+    torch.manual_seed(int(cfg.get("seed", 42)))
+    n, w, h = request["frames"], request["width"], request["height"]
+    source = decode(request["video"], max_side=max(w, h), sample_rate=48000)
+    donor = decode(request["audio_video"], max_side=max(w, h), sample_rate=48000)
+    if len(source["frames"]) != n or len(donor["pcm"]) < n * 1920:
+        raise ValueError("MuseTalk source/donor timeline differs from plan")
     with tempfile.TemporaryDirectory(dir=Path(request["output"]).parent) as folder:
         folder = Path(folder)
         images = []
@@ -81,12 +103,12 @@ def main(request):
                     frame[y1:y2, x1:x2], (256, 256), interpolation=cv2.INTER_LANCZOS4
                 )
                 latents.append(vae.get_latents_for_unet(patch))
-            inputs, length = processor.get_audio_feature(str(folder / "audio16.wav"))
-            chunks = processor.get_whisper_chunk(
+            inputs, length = models["processor"].get_audio_feature(str(folder / "audio16.wav"))
+            chunks = models["processor"].get_whisper_chunk(
                 inputs,
                 device,
                 dtype,
-                whisper,
+                models["whisper"],
                 length,
                 fps=25,
                 audio_padding_length_left=2,
@@ -114,7 +136,11 @@ def main(request):
                         x1, y1, x2, y2 = boxes[index]
                         face = cv2.resize(face.astype(np.uint8), (x2 - x1, y2 - y1))
                         composite = get_image(
-                            frames[index].copy(), face, [x1, y1, x2, y2], mode="jaw", fp=parser
+                            frames[index].copy(),
+                            face,
+                            [x1, y1, x2, y2],
+                            mode="jaw",
+                            fp=models["parser"],
                         )
                         writer.write(composite)
                         index += 1
@@ -143,5 +169,15 @@ def main(request):
         )
 
 
+def main(request):
+    synthesize(load(request["config"]), request)
+
+
 if __name__ == "__main__":
-    main(read_json(sys.argv[1]))
+    if sys.argv[1] == "--serve":
+        from vn_av_df.worker import serve
+
+        loaded = load(json.loads(sys.argv[2]))
+        serve(lambda request: synthesize(loaded, request))
+    else:
+        main(read_json(sys.argv[1]))

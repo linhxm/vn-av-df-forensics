@@ -2,17 +2,20 @@
 
 Keeps model/detection/inference upstream; adjusts librosa API, device and lossless
 intermediate output. Inputs in cwd have fixed names, avoiding upstream shell paths.
+--serve: nạp model và bộ dò mặt một lần, mỗi yêu cầu {"cwd": thư mục có face.avi/audio.wav}.
 """
 
 import argparse
 import importlib.metadata
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import zipfile
 from types import SimpleNamespace
 
@@ -58,7 +61,10 @@ def main():
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--serve", action="store_true")
     parser.add_argument("--ffmpeg", required=True)
+    # Upstream mặc định 16; lô 1 chậm hơn nhiều mà không đổi kết quả dò mặt.
+    parser.add_argument("--face-det-batch", type=int, default=16)
     args = parser.parse_args()
     import librosa
     import torch
@@ -77,7 +83,7 @@ def main():
         "--outfile",
         "generated.mkv",
         "--face_det_batch_size",
-        "1",
+        str(args.face_det_batch),
         "--wav2lip_batch_size",
         "8",
     ]
@@ -148,8 +154,33 @@ def main():
         return 0
 
     inference.subprocess = SimpleNamespace(call=mux_lossless)
-    Path("temp").mkdir(exist_ok=False)
-    inference.main()
+    # Upstream tạo lại S3FD (nạp weight lên GPU) mỗi lần dò mặt; giữ một bản cho mọi video.
+    detectors = {}
+    factory = inference.face_detection.FaceAlignment
+
+    def cached_detector(*options, **named):
+        key = repr((options, sorted(named.items())))
+        if key not in detectors:
+            detectors[key] = factory(*options, **named)
+        return detectors[key]
+
+    inference.face_detection.FaceAlignment = cached_detector
+
+    def run_one(request=None):
+        # Tên file cố định trong cwd (face.avi, audio.wav, generated.mkv) như bản một lần.
+        if request:
+            os.chdir(request["cwd"])
+        Path("temp").mkdir(exist_ok=False)
+        inference.main()
+        if not Path("generated.mkv").is_file():
+            raise RuntimeError("Wav2Lip did not produce generated.mkv")
+
+    if args.serve:
+        from vn_av_df.worker import serve
+
+        serve(run_one)
+    else:
+        run_one()
 
 
 if __name__ == "__main__":
