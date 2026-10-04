@@ -68,7 +68,7 @@ https://www.youtube.com/watch?v=xxxxxxxxxxx,speaker_02
 |---|---|---|
 | `01_collect.py` | Bung playlist, bỏ trùng, hỏi metadata YouTube, kiểm chất lượng | `selected_videos.csv` (để tải), `video_metadata.csv` (thống kê), `skipped_videos.csv` (video bị bỏ và lý do) |
 | `02_download.py` | Tải bản ≤1080 (cạnh ngắn), kiểm lại file | `data/raw/<part>/` |
-| `03_cut.py` | VAD + dò mặt, cắt clip 5–8 s, chuẩn hoá 25 fps CFR, cạnh ngắn ≤1080 | `data/candidates/<part>/` |
+| `03_cut.py` | VAD + dò mặt, cắt clip 5–8 s, chuẩn hoá 25 fps CFR, cạnh ngắn ≤1080 | `data/candidates/<dataset>/<part>/` |
 | `04_review.py` | Duyệt tại http://127.0.0.1:8001 (keep, tiếng khớp người trên hình), Ctrl+C khi xong | `review.csv` |
 | `05_export.py` | Dựng part sạch từ clip keep | `exports/<part>/` |
 
@@ -76,7 +76,7 @@ https://www.youtube.com/watch?v=xxxxxxxxxxx,speaker_02
 - **Video bị bỏ (01):** `skipped_videos.csv` ghi mọi video không được chọn, cột `type` = `same_part` (trùng trong part, giữ lần đầu) / `other_part` (đã thuộc part khác) / `rejected` (không đạt kiểm) / `error` (lỗi mạng, chạy lại để hỏi lại), kèm `reason`. `speaker_conflict = yes` → sửa `videos.csv` trước khi tải.
 - **Mạng:** lỗi IPv6 thì thêm `--force-ipv4`; bị chặn 403 thì thêm `--cookies-from-browser firefox`.
 - **Bổ sung video:** thêm URL vào `videos.csv` rồi chạy lại 01 → 05. Mỗi bước chỉ xử lý phần mới và giữ quyết định đã duyệt. Đổi `speaker_id` của video đã chọn sẽ báo lỗi.
-- **Đổi luật cắt** (`configs/data.yaml`, code hay model) thì bước 03 báo lỗi. Xoá `data/candidates/<part>` để cắt và duyệt lại.
+- **Đổi luật cắt** (`configs/data.yaml`, code hay model) thì bước 03 báo lỗi. Xoá `data/candidates/<dataset>/<part>` để cắt và duyệt lại.
 - VAD/YuNet chỉ tạo ứng viên, không thay được bước duyệt. Clip chồng nhau không làm tăng số mẫu độc lập.
 
 ```text
@@ -89,7 +89,7 @@ data/raw/<dataset>/<part>/            data/candidates/<dataset>/<part>/
 **Cắt trên Kaggle** (tuỳ chọn, khi máy local chậm):
 1. Upload thư mục raw của part thành Kaggle dataset.
 2. Chạy [cut.ipynb](notebooks/cut.ipynb).
-3. *Save Version*, tải thư mục `candidates/<part>/` từ tab Output vào `data/candidates/vn-av-df-data/`, rồi chạy `04_review.py`.
+3. *Save Version*, tải thư mục `candidates/` từ tab Output vào `data_pipeline/data/` (được `data/candidates/vn-av-df-data/<part>/`), rồi chạy `04_review.py`.
 
 Code và config cắt phải giống local (có kiểm chữ ký). Hết phiên Kaggle thì attach output cũ vào `PREVIOUS_CUT` để cắt tiếp.
 
@@ -106,7 +106,7 @@ Mặc định trong [generate.ipynb](notebooks/generate.ipynb):
 - Generator: Wav2Lip GAN cho mọi split; MuseTalk 1.5 chỉ dùng ở test.
 - Chế độ fake: train chỉ `donor`; validation/test có `donor` + `source`.
 - Fake cục bộ dài 0,4 / 0,8 / 1,6 / 2,4 s.
-- Chia split 80/10/10 theo nhóm người/nguồn.
+- Chia split 70/15/15 theo nhóm người/nguồn (tạm: part 1 chia 80/10/10 thì validation chỉ 1 người).
 - `CLIPS_PER_SPLIT = 2` để chạy thử; `0` lấy toàn bộ.
 
 Clip không tìm được clip donor cùng `speaker_id` sẽ bị bỏ qua và ghi vào plan, nên cần điền `speaker_id` đầy đủ.

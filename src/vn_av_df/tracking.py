@@ -6,6 +6,7 @@ ID run lưu ở <run>/<architecture>_seed<seed>/wandb.json để notebook bổ s
 """
 
 import json
+from datetime import datetime, timedelta, timezone
 
 from vn_av_df.common.runtime import write_json
 
@@ -27,6 +28,8 @@ def start(cfg, folder, architecture, seed, data=None):
     import wandb
 
     finish()
+    # Ngày giờ Việt Nam (máy Kaggle chạy UTC) trong tên run: phân biệt lần train và lần resume.
+    stamp = datetime.now(timezone(timedelta(hours=7))).strftime("%m%d-%H%M")
     settings = {
         "architecture": architecture,
         "seed": seed,
@@ -40,7 +43,7 @@ def start(cfg, folder, architecture, seed, data=None):
         project=options["project"],
         entity=options.get("entity"),
         group=options.get("group"),
-        name=f"{options['group']}-{folder.name}" if options.get("group") else folder.name,
+        name="-".join(filter(None, (options.get("group"), folder.name, stamp))),
         job_type="train",
         config=json.loads(json.dumps(settings, default=str)),
     )

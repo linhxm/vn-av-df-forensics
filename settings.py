@@ -21,7 +21,8 @@ DATASET_PARTS = [part_name()]
 # DATASET_PARTS = ["vn-av-df-data-part1", "vn-av-df-data-part2"]
 # DATASET_PARTS = "all"  # Chỉ các part đã tải/attach, không tự download.
 # Mặc định mỗi part chia riêng theo nhóm người/nguồn, tính tỷ lệ trên số clip sạch.
-SPLIT_RATIOS = {"train": 0.8, "validation": 0.1, "test": 0.1}
+# Tạm 70/15/15: part 1 (10 speaker) chia 80/10/10 thì validation chỉ có 1 người.
+SPLIT_RATIOS = {"train": 0.7, "validation": 0.15, "test": 0.15}
 # Tạm tắt kế thừa split giữa các part: không cần upload JSON của part trước.
 SPLIT_HISTORY = []
 # Bật lại: điền các split-lock bao phủ mọi part trước; JSON tích lũy đủ thì chỉ cần một file.

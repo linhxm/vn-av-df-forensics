@@ -276,5 +276,5 @@ def test_generation_notebook_uses_edited_part_and_generator_settings(
     assert "audio_mode" not in cfg["generation"]
     assert cfg["musetalk"]["batch_size"] == 2
     assert cfg["split_history"] == ([str(tmp_path / "prior.json")] if use_history else [])
-    assert cfg["split_ratios"] == {"train": 0.8, "validation": 0.1, "test": 0.1}
+    assert cfg["split_ratios"] == {"train": 0.7, "validation": 0.15, "test": 0.15}
     assert calls == ["validate", "plan", "generator_setup"]
