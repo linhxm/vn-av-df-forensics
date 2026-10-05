@@ -290,6 +290,15 @@ def validate_plan_settings(cfg, plan):
         raise ValueError("Generation settings differ from frozen plan; use a new plan/output")
 
 
+# Lỗi generator không thấy mặt ở một số frame (bước cắt chỉ đòi YuNet thấy mặt ở ≥90% frame
+# lấy mẫu 4 fps; Wav2Lip/MuseTalk đòi mọi frame). Chỉ các lỗi này được bỏ qua cặp; lỗi khác dừng.
+FACE_ERRORS = ("Face not detected", "Missing MuseTalk face", "Invalid face bbox")
+
+
+def face_error(exc):
+    return next((m for m in FACE_ERRORS if m in str(exc)), None)
+
+
 def generate(cfg, generator=None):
     """Sinh bằng worker thực; giữ audio chung cho V-only, provenance và resume nghiêm ngặt."""
     from vn_av_df.generators import generator_adapter
@@ -375,7 +384,7 @@ def generate(cfg, generator=None):
         if leftover.is_dir():
             shutil.rmtree(leftover, ignore_errors=True)
     began = time.monotonic()
-    progress = {"done": 0}
+    progress = {"done": 0, "skipped": 0}
     slots = queue.Queue()
     for gpu in gpus:
         slots.put(gpu)
@@ -393,6 +402,8 @@ def generate(cfg, generator=None):
         record = out / "records" / f"{key}.json"
         if record.exists():
             previous = read_json(record)
+            if isinstance(previous, dict):  # Cặp đã bỏ qua (không thấy mặt): không sinh lại.
+                return []
             if any(sha(out / p["video"]) != p["sha256"] for p in previous):
                 raise ValueError("Generated file changed")
             return previous
@@ -418,15 +429,37 @@ def generate(cfg, generator=None):
                 target = Path(temp) / "generated.mkv"
                 # Worker thật nhận thêm gpu (sinh song song); fixture test giữ chữ ký cũ.
                 synth = adapters[name] if generator else partial(adapters[name], gpu=gpu)
-                synth(
-                    cfg,
-                    root / r["video"],
-                    root / d["video"],
-                    target,
-                    len(original["frames"]),
-                    original["frames"].shape[2],
-                    original["frames"].shape[1],
-                )
+                try:
+                    synth(
+                        cfg,
+                        root / r["video"],
+                        root / d["video"],
+                        target,
+                        len(original["frames"]),
+                        original["frames"].shape[2],
+                        original["frames"].shape[1],
+                    )
+                except Exception as exc:
+                    reason = face_error(exc)
+                    if reason is None:
+                        raise
+                    # Không ghi video nào của cặp (kể cả real) để real/fake vẫn đi theo cặp.
+                    skipped = {
+                        "skipped": reason,
+                        "generator": name,
+                        "audio_mode": job.get("audio_mode", "source"),
+                        "split": r["split"],
+                        "parent_clip_id": r["clip_id"],
+                        "donor_clip_id": d["clip_id"],
+                        "speaker_id": r.get("speaker_id"),
+                    }
+                    write_json(record, skipped)
+                    with guard:
+                        progress["done"] += 1
+                        progress["skipped"] += 1
+                        done = progress["done"]
+                    print(f"{head}: BỎ QUA ({reason}) | mới {done}/{pending}", flush=True)
+                    return []
                 fake = decode(target, max_side=plan["config"]["max_side"], sample_rate=48000)
             mode = job.get("audio_mode", plan["config"].get("audio_mode", "source"))
             # Không lấy PCM generator (đã qua 16kHz/codec) làm dấu phân biệt fake.
@@ -572,16 +605,25 @@ def generate(cfg, generator=None):
     finally:
         worker.close_all()
     missing = sum(result is None for result in results)
+    skipped = [
+        record
+        for record in map(read_json, sorted((out / "records").glob("*.json")))
+        if isinstance(record, dict)
+    ]
+    if skipped:
+        print(f"Bỏ qua {len(skipped)}/{total} cặp vì generator không thấy mặt", flush=True)
     if missing:
         # Chưa đủ cặp: không ghi candidates/review (review.csv chỉ tạo một lần khi đủ).
         return {
             "status": "partial",
             "pairs_done": total - missing,
             "pairs_remaining": missing,
+            "pairs_skipped": len(skipped),
             "next": "Hết giờ phiên: Save Version, attach output này làm PREVIOUS_GENERATION rồi chạy tiếp",
         }
     rows = [row for result in results for row in result]
     write_manifest(out / "candidates.jsonl", rows)
+    write_json(out / "skipped_pairs.json", skipped)
     if not (out / "review.csv").exists():
         csv_write(
             out / "review.csv", [{"sample_id": r["sample_id"], "decision": "pending"} for r in rows]
@@ -589,6 +631,7 @@ def generate(cfg, generator=None):
     return {
         "status": "complete",
         "samples": len(rows),
+        "pairs_skipped": len(skipped),
         "next": "Run review then finalize; pending media is not training data",
     }
 

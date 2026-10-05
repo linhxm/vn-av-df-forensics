@@ -164,6 +164,52 @@ def test_generation_stops_at_deadline_and_resumes_in_parallel(tmp_path):
     assert all(sha(out / r["video"]) == r["sha256"] for r in rows)
 
 
+def test_generation_skips_pairs_without_face_but_stops_on_other_errors(tmp_path):
+    from vn_av_df.common.runtime import fingerprint
+
+    root = tmp_path / "clean"
+    clean_bundle(root, [(f"s{i}", f"p{i // 2}") for i in range(6)])
+    cfg = {
+        "seed": 42,
+        "clean_dataset": str(root),
+        "plan": str(tmp_path / "plan.json"),
+        "generated_dataset": str(tmp_path / "generated"),
+        "generation": {"clips_per_split": 1, "partial_seconds": [0.4], "crf": 18, "max_side": 640},
+    }
+    make_plan(cfg)
+    jobs = read_json(cfg["plan"])["jobs"]
+    first = Path(jobs[0]["original"]["video"]).name
+    out = Path(cfg["generated_dataset"])
+
+    def broken(cfg, video, audio, output, n, w, h):
+        if Path(video).name == first:
+            raise RuntimeError("Worker failed: OSError: CUDA out of memory")
+        return paint_generator(cfg, video, audio, output, n, w, h)
+
+    # Lỗi không phải mất mặt: vẫn dừng như cũ.
+    with pytest.raises(RuntimeError, match="out of memory"):
+        generate(cfg, broken)
+
+    def faceless(cfg, video, audio, output, n, w, h):
+        if Path(video).name == first:
+            raise RuntimeError("Worker failed: ValueError: Face not detected! Ensure ...")
+        return paint_generator(cfg, video, audio, output, n, w, h)
+
+    done = generate(cfg, faceless)
+    assert done["status"] == "complete" and done["pairs_skipped"] == 1
+    key = fingerprint(jobs[0])[:20]
+    # Cặp bị bỏ không có video nào (kể cả real); các cặp khác đủ.
+    assert not list((out / "clips").glob(f"{key}_*"))
+    rows = load_candidates(out)
+    assert key not in {r["group_id"] for r in rows} and len(rows) == 3 * (len(jobs) - 1)
+    skipped = read_json(out / "skipped_pairs.json")
+    assert [s["skipped"] for s in skipped] == ["Face not detected"]
+    assert skipped[0]["parent_clip_id"] == jobs[0]["original"]["clip_id"]
+    # Chạy lại: cặp đã bỏ không sinh lại, kết quả giữ nguyên.
+    again = generate(cfg, paint_generator)
+    assert again["pairs_skipped"] == 1 and load_candidates(out) == rows
+
+
 def load_candidates(folder):
     from vn_av_df.data.groups import read_manifest
 
