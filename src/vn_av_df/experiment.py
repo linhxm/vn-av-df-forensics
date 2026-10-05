@@ -84,25 +84,71 @@ def prepare(cfg):
                     reports[key] = prepare(stage)
                     seen.add(key)
         return reports
+    import queue
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
     rows, selection = training_dataset(cfg, verify_media=True)
-    encoder = make_encoder(cfg["encoder"])
+    # Mỗi device (vd. cuda:0, cuda:1) workers_per_device encoder, mẫu chia động giữa các encoder.
+    # Device không nằm trong feature signature nên cache giống nhau dù trích ở GPU nào.
+    # workers_per_device > 1 khi phần chậm chạy CPU một luồng (dlib của AV-HuBERT).
+    copies = int(cfg["encoder"].get("workers_per_device", 1))
+    devices = [d for d in (cfg.get("prepare_devices") or [None]) for _ in range(copies)]
+    encoders = queue.Queue()
+    for device in devices:
+        encoders.put(
+            make_encoder(cfg["encoder"] if device is None else {**cfg["encoder"], "device": device})
+        )
     name = Path(cfg["cache"]).name
-    print(f"Prepare {name}: {len(rows)} mẫu, cache {cfg['cache']}", flush=True)
+    print(
+        f"Prepare {name}: {len(rows)} mẫu, cache {cfg['cache']}, device {devices}",
+        flush=True,
+    )
     start = time.perf_counter()
-    for i, row in enumerate(rows):
-        tick = time.perf_counter()
-        encoder.extract(
-            {"video": str(media_path(cfg["dataset"], row))},
-            Path(cfg["cache"]) / (row["sample_id"] + ".npz"),
-        )
-        # Mẫu đã có cache mất ~0 s; thời gian còn lại ước theo tốc độ trung bình đến giờ.
-        spent = time.perf_counter() - start
-        print(
-            f"Features {name} {i + 1}/{len(rows)} {row['sample_id']}: "
-            f"{time.perf_counter() - tick:.1f}s | đã chạy {spent / 60:.1f} phút, "
-            f"còn ~{spent / (i + 1) * (len(rows) - i - 1) / 60:.1f} phút",
-            flush=True,
-        )
+    guard, progress = threading.Lock(), {"done": 0}
+
+    def extract(group):
+        # Cả nhóm cùng parent qua một encoder: real/sham/partial có frame giống nhau, encoder
+        # dùng lại được kết quả theo frame (landmark AV-HuBERT).
+        encoder = encoders.get()
+        try:
+            for row in group:
+                tick = time.perf_counter()
+                encoder.extract(
+                    {"video": str(media_path(cfg["dataset"], row))},
+                    Path(cfg["cache"]) / (row["sample_id"] + ".npz"),
+                )
+                with guard:
+                    progress["done"] += 1
+                    done, spent = progress["done"], time.perf_counter() - start
+                # Mẫu đã có cache mất ~0 s; thời gian còn lại ước theo tốc độ trung bình đến giờ.
+                print(
+                    f"Features {name} {done}/{len(rows)} {row['sample_id']}: "
+                    f"{time.perf_counter() - tick:.1f}s | đã chạy {spent / 60:.1f} phút, "
+                    f"còn ~{spent / done * (len(rows) - done) / 60:.1f} phút",
+                    flush=True,
+                )
+        finally:
+            encoders.put(encoder)
+
+    groups = defaultdict(list)
+    for row in rows:
+        groups[row.get("source_clip_id") or row["sample_id"]].append(row)
+    try:
+        with ThreadPoolExecutor(max_workers=len(devices)) as pool:
+            futures = [pool.submit(extract, group) for group in groups.values()]
+            try:
+                for future in futures:
+                    future.result()
+            except BaseException:
+                # Một mẫu lỗi: không nhận nhóm mới, chờ nhóm đang chạy xong rồi báo lỗi.
+                for future in futures:
+                    future.cancel()
+                raise
+    finally:
+        signature = encoders.queue[0].signature
+        while not encoders.empty():  # Đóng worker riêng (AV-HuBERT) nếu encoder có.
+            getattr(encoders.get(), "close", lambda: None)()
     elapsed = time.perf_counter() - start
     write_json(
         Path(cfg["cache"]) / "extraction.json",
@@ -111,7 +157,8 @@ def prepare(cfg):
             "dataset_selection": selection,
             "elapsed_s": elapsed,
             "device": cfg["encoder"]["device"],
-            "feature_signature": encoder.signature,
+            "devices": devices,
+            "feature_signature": signature,
             "note": "Includes loading, decoding and reusable-cache checks",
         },
     )
@@ -121,6 +168,11 @@ def prepare(cfg):
 def cached(row, cfg, device):
     """Kiểm hash rồi chuyển native features thành input và grid output của model."""
     path = Path(cfg["cache"]) / (row["sample_id"] + ".npz")
+    if not path.with_suffix(".json").is_file():
+        raise FileNotFoundError(
+            f"Thiếu feature cache {path.with_suffix('.json')}: bước prepare chưa chạy xong "
+            "(lỗi/bị dừng giữa chừng hoặc khác dữ liệu/encoder). Chạy lại prepare đến hết rồi train."
+        )
     meta = read_json(path.with_suffix(".json"))
     expected = fingerprint({"assets": {"video": row["sha256"]}, "variant": {"kind": "clean"}})
     if meta["feature_sha256"] != sha(path) or meta["source_fingerprint"] != expected:

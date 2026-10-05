@@ -134,7 +134,7 @@ RUN_NAME = "train_part1_gru_run01"
 RESUME = False                           # True chỉ khi cùng data/config/code/cache
 ```
 
-Notebook chạy lần lượt: setup encoder → cache đặc trưng → train → báo cáo → test (tuỳ chọn) → ZIP.
+Notebook chạy lần lượt: setup encoder → cache đặc trưng → train → báo cáo → test (tuỳ chọn) → dọn Output (giữ `runs/<RUN_NAME>` và cache, không ZIP).
 - **Train:** `best.pt` của mỗi detector chọn theo validation loss; notebook không tự chọn kiến trúc tốt nhất. Thêm part vào tập train thì dùng `RUN_NAME` mới.
 - **Báo cáo** (validation, mỗi model/seed): loss/AUC theo epoch, ROC/PR, confusion matrix, timeline mẫu. Mỗi model có bảng theo 4 ô 2×2 (`by_condition`); P2 thêm AUC của từng nhánh (`branches`) và biểu đồ stage S.
 - **Test:** `RUN_TEST = True` để chạy; ghi `test.json`, `evaluation.json` và `test-lock.json`.

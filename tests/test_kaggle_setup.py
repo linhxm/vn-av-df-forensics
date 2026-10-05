@@ -61,9 +61,12 @@ def test_worker_isolated_and_ready_resume_rechecks_without_reinstall(
     root, commands, _ = installer
     monkeypatch.setenv("PYTHONPATH", "notebook-only-packages")
     monkeypatch.setenv("PIP_TARGET", "do-not-write-here")
+    monkeypatch.setenv("CUDA_HOME", "/usr/local/cuda-12.8")
     python = bootstrap.setup_worker(root, worker)
     assert python == root / f".venv-{worker}/bin/python"
     assert all("PYTHONPATH" not in env and "PIP_TARGET" not in env for _, env in commands)
+    # CUDA_HOME của Kaggle (12.x) làm fairseq build extension .cu lệch torch cu118.
+    assert all("CUDA_HOME" not in env for _, env in commands)
     for command, _ in commands:
         if "pip" in command:
             assert command[0] == str(python)

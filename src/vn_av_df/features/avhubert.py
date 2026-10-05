@@ -1,10 +1,11 @@
 """Worker AV-HuBERT tách môi trường fairseq khỏi FATE/transformers."""
 
+import json
 import sys
-import tempfile
 from pathlib import Path
 
-from vn_av_df.common.runtime import fingerprint, read_json, require_file, run, sha, write_json
+from vn_av_df import worker
+from vn_av_df.common.runtime import fingerprint, read_json, require_file, sha
 
 
 class AVHubertVideoEncoder:
@@ -12,6 +13,7 @@ class AVHubertVideoEncoder:
 
     def __init__(self, cfg):
         self.cfg = dict(cfg)
+        self.worker = None
         repo = Path(cfg["repo"])
         paths = {
             name: require_file(cfg[name], name) for name in ("checkpoint", "landmarks", "mean_face")
@@ -57,25 +59,30 @@ class AVHubertVideoEncoder:
             ):
                 return meta
         output.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=output.parent) as folder:
-            request = Path(folder) / "request.json"
-            write_json(
-                request,
-                dict(
-                    config=self.cfg,
-                    video=str(video),
-                    output=str(output),
-                    signature=self.signature,
-                    source_fingerprint=source,
-                ),
-            )
-            run(
+        # Worker sống suốt lượt trích (nạp fairseq/checkpoint/dlib một lần), mỗi encoder một
+        # worker; worker chết thì lần sau tự mở lại.
+        if self.worker is None or not self.worker.alive:
+            self.worker = worker.Worker(
                 [
                     self.cfg.get("python", sys.executable),
                     "-B",
                     Path(__file__).with_name("avhubert_worker.py"),
-                    request,
-                ],
-                timeout=3600,
+                    "--serve",
+                    json.dumps(self.cfg, sort_keys=True),
+                ]
             )
+        self.worker.call(
+            dict(
+                video=str(video),
+                output=str(output),
+                signature=self.signature,
+                source_fingerprint=source,
+            ),
+            timeout=3600,
+        )
         return read_json(output.with_suffix(".json"))
+
+    def close(self):
+        if self.worker is not None:
+            self.worker.close()
+            self.worker = None

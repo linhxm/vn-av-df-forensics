@@ -110,7 +110,10 @@ def installation_commands(worker, python, root, constraints):
         + ["torch==2.0.1", "torchvision==0.15.2", "torchaudio==2.0.2", "--index-url", TORCH_INDEX]
     ]
     if worker == "avhubert":
-        commands.append(pip + ["--no-build-isolation", "-e", root / "external/av_hubert/fairseq"])
+        # -v: pip giấu output build; cần lỗi compiler thật trong setup.log.
+        commands.append(
+            pip + ["--no-build-isolation", "-v", "-e", root / "external/av_hubert/fairseq"]
+        )
     else:
         commands.extend(
             [
@@ -207,6 +210,11 @@ def setup_worker(root, worker, require_cuda=True, env_root=None):
     env = os.environ.copy()
     # Không cho pip/conda hoặc PYTHONPATH của kernel đổi nơi cài/nơi import của worker.
     for name in ("PYTHONPATH", "PYTHONHOME", "PIP_TARGET", "PIP_PREFIX", "PIP_USER", "VIRTUAL_ENV"):
+        env.pop(name, None)
+    # Kaggle đặt CUDA_HOME (CUDA 12.x). fairseq thấy biến này thì build thêm extension .cu, torch
+    # cu118 từ chối vì lệch CUDA. Worker không cần extension CUDA tự build (torch có runtime riêng;
+    # mmcv dùng wheel dựng sẵn) nên bỏ biến khi cài.
+    for name in ("CUDA_HOME", "CUDA_PATH"):
         env.pop(name, None)
     env.update(
         # Kernel Jupyter đặt MPLBACKEND=module://matplotlib_inline...; worker không có gói đó,

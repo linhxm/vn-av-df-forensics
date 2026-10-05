@@ -400,3 +400,111 @@ def test_native_features_pooled_for_linear_but_not_reconstruction(tmp_path):
     assert meta["step_s"] == 0.2
     arrays, times, meta = feature_arrays(path, {"step_s": 0.04, "output_stride": 5}, "realrecon")
     assert arrays[0].shape == (13, 4) and len(times) == 3
+
+
+@pytest.mark.parametrize("devices,copies", [(None, 1), (["cuda:0", "cuda:1"], 2)])
+def test_prepare_extracts_every_sample_once_across_devices(tmp_path, monkeypatch, devices, copies):
+    from vn_av_df import experiment
+
+    # 3 parent, mỗi parent vài biến thể; một mẫu không có source_clip_id.
+    rows = [
+        {
+            "sample_id": f"p{i // 3}_{i % 3}",
+            "video": f"clips/{i}.mp4",
+            "source_clip_id": f"p{i // 3}",
+        }
+        for i in range(9)
+    ] + [{"sample_id": "lone", "video": "clips/lone.mp4"}]
+    seen, made, closed = [], [], []
+
+    class Encoder:
+        signature = "sig"
+
+        def __init__(self, cfg):
+            self.device = cfg.get("device")
+            made.append(self.device)
+
+        def extract(self, row, output):
+            seen.append((Path(output).stem, id(self)))
+
+        def close(self):
+            closed.append(id(self))
+
+    monkeypatch.setattr(experiment, "training_dataset", lambda cfg, verify_media: (rows, {}))
+    monkeypatch.setattr(experiment, "make_encoder", Encoder)
+    monkeypatch.setattr(experiment, "media_path", lambda root, row: Path(root) / row["video"])
+    cfg = {
+        "dataset": str(tmp_path),
+        "cache": str(tmp_path / "cache" / "avhubert"),
+        "encoder": {"device": "cuda", "workers_per_device": copies},
+        "prepare_devices": devices,
+    }
+    report = experiment.prepare(cfg)
+    # workers_per_device encoder mỗi device; mỗi mẫu trích đúng một lần, không bỏ sót.
+    expected = [d for d in (devices or ["cuda"]) for _ in range(copies)]
+    assert sorted(made) == sorted(expected) and report["samples"] == len(rows)
+    assert sorted(stem for stem, _ in seen) == sorted(r["sample_id"] for r in rows)
+    # Cùng parent → cùng encoder (dùng lại landmark); mọi encoder được đóng khi xong.
+    for parent in ("p0", "p1", "p2"):
+        assert len({e for stem, e in seen if stem.startswith(parent + "_")}) == 1
+    assert len(closed) == len(made)
+    info = read_json(tmp_path / "cache" / "avhubert" / "extraction.json")
+    assert info["feature_signature"] == "sig"
+
+
+def test_avhubert_reuses_one_worker_and_landmarks_of_identical_frames(tmp_path, monkeypatch):
+    from vn_av_df.features import avhubert, avhubert_worker
+
+    # Phía worker: frame giống hệt nhau chỉ dò dlib một lần; frame khác hoặc không đúng một mặt
+    # vẫn dò/đánh dấu đúng.
+    calls = []
+
+    class Face:
+        def part(self, j):
+            return type("P", (), {"x": j, "y": 2 * j})()
+
+    def detector(gray, upsample):
+        calls.append(int(gray.sum()))
+        return [object()] if gray.sum() else []
+
+    state = {
+        "detector": detector,
+        "predictor": lambda gray, box: Face(),
+        "landmarks": __import__("collections").OrderedDict(),
+    }
+    frame = np.full((4, 4, 3), 7, np.uint8)
+    first = avhubert_worker.face_landmarks(state, frame)
+    again = avhubert_worker.face_landmarks(state, frame.copy())
+    assert first.shape == (68, 2) and np.array_equal(first, again) and len(calls) == 1
+    assert avhubert_worker.face_landmarks(state, np.zeros_like(frame)) is None and len(calls) == 2
+
+    # Phía gọi: một worker cho nhiều mẫu, mở lại khi worker chết.
+    started, requests = [], []
+
+    class FakeWorker:
+        def __init__(self, command):
+            started.append(command)
+            self.alive = True
+
+        def call(self, request, timeout):
+            requests.append(request)
+            out = Path(request["output"])
+            out.write_bytes(b"x")
+            write_json(out.with_suffix(".json"), {"ok": True})
+
+        def close(self):
+            self.alive = False
+
+    monkeypatch.setattr(avhubert.worker, "Worker", FakeWorker)
+    encoder = avhubert.AVHubertVideoEncoder.__new__(avhubert.AVHubertVideoEncoder)
+    encoder.cfg, encoder.signature, encoder.worker = {"python": "py"}, "sig", None
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"video")
+    for i in range(3):
+        assert encoder.extract({"video": str(video)}, tmp_path / f"s{i}.npz") == {"ok": True}
+    assert len(started) == 1 and "--serve" in started[0] and len(requests) == 3
+    encoder.worker.alive = False
+    encoder.extract({"video": str(video)}, tmp_path / "s9.npz")
+    assert len(started) == 2
+    encoder.close()
+    assert encoder.worker is None

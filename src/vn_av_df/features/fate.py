@@ -294,6 +294,10 @@ class FATEVideoEncoder:
             )
         }
         self.options = options
+        # Số cửa sổ mỗi lượt model; chỉ đổi tốc độ/VRAM, không đổi đặc trưng nên không vào signature.
+        self.batch_windows = int(cfg.get("batch_windows", 8))
+        if self.batch_windows < 1:
+            raise ValueError("batch_windows must be a positive integer")
         self.signature = fingerprint(
             {
                 "backbone": self.backbone.signature,
@@ -352,40 +356,59 @@ class FATEVideoEncoder:
         ]
         if device.type == "cuda" and dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
             raise ValueError("GPU does not support bfloat16; use float16 or float32")
-        for time, index, inside in window_plan(n, self.options["window_s"], self.options["step_s"]):
-            vi = index.clip(0, n - 1)
-            video = crops[vi].copy()
-            video[~inside] = 0
-            # Exact PCM slices on the same physical grid, padded without wrapping.
-            sample_index = index[0] * 1920 + np.arange(len(index) * 1920)
-            audio_inside = (sample_index >= 0) & (sample_index < len(decoded["pcm"]))
-            audio = np.zeros(len(sample_index), np.float32)
-            audio[audio_inside] = decoded["pcm"][sample_index[audio_inside]]
-            inputs = self.backbone.processor(
-                videos=[torch.from_numpy(video).permute(0, 3, 1, 2)],
-                audio=[audio],
-                return_tensors="pt",
-                padding=True,
-                sampling_rate=48000,
+        processor = self.backbone.processor
+        # Tiền xử lý ảnh của PE-AV làm độc lập từng frame (resize/rescale/normalize, không lấy mẫu
+        # frame): làm một lần cho cả clip + một frame đen (vị trí ngoài clip) rồi cắt theo cửa sổ.
+        # Giống hệt xử lý từng cửa sổ nhưng không lặp lại ~window/step lần; ảnh nằm sẵn trên device.
+        frames = np.concatenate([crops, np.zeros_like(crops[:1])])
+        pixels = processor.video_processor(
+            videos=[torch.from_numpy(frames).permute(0, 3, 1, 2)], return_tensors="pt"
+        )["pixel_values_videos"][0].to(device)
+        context = (
+            torch.autocast("cuda", dtype=dtype)
+            if (device.type == "cuda" and dtype != torch.float32)
+            else nullcontext()
+        )
+        plan = list(window_plan(n, self.options["window_s"], self.options["step_s"]))
+        # Nhiều cửa sổ (cùng độ dài) một lượt model thay vì batch 1.
+        for first in range(0, len(plan), self.batch_windows):
+            chunk = plan[first : first + self.batch_windows]
+            audios = []
+            for _, index, _ in chunk:
+                # Exact PCM slices on the same physical grid, padded without wrapping.
+                sample_index = index[0] * 1920 + np.arange(len(index) * 1920)
+                audio_inside = (sample_index >= 0) & (sample_index < len(decoded["pcm"]))
+                audio = np.zeros(len(sample_index), np.float32)
+                audio[audio_inside] = decoded["pcm"][sample_index[audio_inside]]
+                audios.append(audio)
+            inputs = dict(
+                processor.feature_extractor(
+                    audios, return_tensors="pt", padding=True, sampling_rate=48000
+                )
             )
-            context = (
-                torch.autocast("cuda", dtype=dtype)
-                if (device.type == "cuda" and dtype != torch.float32)
-                else nullcontext()
+            frame_index = np.stack(
+                [np.where(inside, index.clip(0, n - 1), n) for _, index, inside in chunk]
             )
+            inputs["pixel_values_videos"] = pixels[torch.as_tensor(frame_index, device=device)]
             with context:
                 if self.backbone.vision_cache is not None:
-                    self.backbone.vision_cache.select(visual_source, np.where(inside, vi, -1))
+                    self.backbone.vision_cache.select(
+                        visual_source, np.where(frame_index < n, frame_index, -1).ravel()
+                    )
                 features = self.backbone(inputs)
-            af.append(temporal_descriptor(features["audio"][0], self.options["temporal_bins"]))
-            vf.append(temporal_descriptor(features["visual"][0], self.options["temporal_bins"]))
-            times.append(time)
-            am.append(np.mean(inside & decoded["audio_valid"][vi]) >= self.options["min_coverage"])
-            vm.append(
-                np.mean(inside & decoded["visual_valid"][vi] & seen[vi])
-                >= self.options["min_coverage"]
-            )
-            support.append([max(0, index[0] / 25), min(n / 25, (index[-1] + 1) / 25)])
+            for j, (time, index, inside) in enumerate(chunk):
+                vi = index.clip(0, n - 1)
+                af.append(temporal_descriptor(features["audio"][j], self.options["temporal_bins"]))
+                vf.append(temporal_descriptor(features["visual"][j], self.options["temporal_bins"]))
+                times.append(time)
+                am.append(
+                    np.mean(inside & decoded["audio_valid"][vi]) >= self.options["min_coverage"]
+                )
+                vm.append(
+                    np.mean(inside & decoded["visual_valid"][vi] & seen[vi])
+                    >= self.options["min_coverage"]
+                )
+                support.append([max(0, index[0] / 25), min(n / 25, (index[-1] + 1) / 25)])
         save_npz(
             output,
             audio=np.stack(af),

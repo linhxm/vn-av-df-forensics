@@ -2,8 +2,15 @@
 
 Không nội suy landmark qua khoảng mất mặt. Mỗi valid run/chunk được encoder
 xử lý độc lập; feature ở frame thiếu giữ zero và mask=False.
+
+Một lần: `python avhubert_worker.py request.json`. Chạy liên tục: `--serve <config JSON>`,
+nạp fairseq/checkpoint/dlib một lần rồi nhận từng yêu cầu (video, output, signature,
+source_fingerprint) qua stdin.
 """
 
+import collections
+import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -22,46 +29,91 @@ def runs(mask):
     return zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1))
 
 
-def main(request):
-    """Giải mã → landmark/ROI môi → filterbank → hai lượt encoder → cache."""
-    import cv2
-    import dlib
-    import torch
-    from python_speech_features import logfbank
-    from torch.nn import functional as F
+# Landmark theo nội dung frame (hash điểm ảnh): real, sham và phần ngoài đoạn partial của cùng
+# parent có frame giống hệt nhau nên dlib (phần chậm nhất, chạy CPU) không phải dò lại.
+LANDMARK_CACHE_FRAMES = 20000
 
-    cfg = request["config"]
+
+def load(cfg):
+    """Nạp fairseq, checkpoint và dlib một lần."""
+    import dlib
+    import torch  # noqa: F401 -- nạp trước fairseq
+
     upstream = Path(cfg["repo"]).resolve()
     sys.path[:0] = [str(upstream / "avhubert"), str(upstream / "fairseq")]
-    import fairseq
-    import hubert  # noqa: F401 -- đăng ký model vào fairseq
-    import hubert_pretraining  # noqa: F401 -- đăng ký task
-    from skimage import transform as tf
-
-    from vn_av_df.data.media import decode
-
+    # Module AV-HuBERT chọn kiểu import theo len(sys.argv): == 1 → import tuyệt đối (chạy rời);
+    # khác → import tương đối (như package), lỗi khi nạp từ thư mục avhubert/. Worker được gọi
+    # kèm request.json nên tạm để argv một phần tử trong lúc import.
+    argv, sys.argv = sys.argv, sys.argv[:1]
+    try:
+        import fairseq
+        import hubert  # noqa: F401 -- đăng ký model vào fairseq
+        import hubert_pretraining  # noqa: F401 -- đăng ký task
+    finally:
+        sys.argv = argv
     models, _, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cfg["checkpoint"]])
     model = models[0]
     if hasattr(model, "decoder") or model.cfg.encoder_embed_dim != 768:
         raise ValueError("Require AV-HuBERT Base no-finetuning checkpoint")
     device = cfg.get("device", "cpu")
     model.to(device).eval().requires_grad_(False)
+    return dict(
+        cfg=cfg,
+        model=model,
+        task=task,
+        device=device,
+        detector=dlib.get_frontal_face_detector(),
+        predictor=dlib.shape_predictor(cfg["landmarks"]),
+        mean_face=np.load(cfg["mean_face"], allow_pickle=False),
+        landmarks=collections.OrderedDict(),
+    )
+
+
+def face_landmarks(state, frame):
+    """68 landmark của đúng một mặt, hoặc None; frame giống hệt đã gặp thì dùng lại kết quả."""
+    import cv2
+
+    key = hashlib.blake2b(frame.tobytes(), digest_size=16).digest() + str(frame.shape).encode()
+    cache = state["landmarks"]
+    if key in cache:
+        cache.move_to_end(key)
+        return cache[key]
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = state["detector"](gray, 1)
+    points = None
+    if len(faces) == 1:
+        shape = state["predictor"](gray, faces[0])
+        points = np.array([(shape.part(j).x, shape.part(j).y) for j in range(68)], np.float32)
+    cache[key] = points
+    if len(cache) > LANDMARK_CACHE_FRAMES:
+        cache.popitem(last=False)
+    return points
+
+
+def extract(state, request):
+    """Giải mã → landmark/ROI môi → filterbank → hai lượt encoder → cache."""
+    import cv2
+    import torch
+    from python_speech_features import logfbank
+    from skimage import transform as tf
+    from torch.nn import functional as F
+
+    from vn_av_df.data.media import decode
+
+    cfg, model, task, device = state["cfg"], state["model"], state["task"], state["device"]
+    mean_face = state["mean_face"]
     decoded = decode(
         request["video"], cfg.get("max_duration", 60), cfg.get("max_side", 640), sample_rate=16000
     )
     frames, pcm = decoded["frames"], decoded["pcm"]
-    detector, predictor = dlib.get_frontal_face_detector(), dlib.shape_predictor(cfg["landmarks"])
-    mean_face = np.load(cfg["mean_face"], allow_pickle=False)
     landmarks = np.zeros((len(frames), 68, 2), np.float32)
     valid = decoded["audio_valid"] & decoded["visual_valid"]
     for i, frame in enumerate(frames):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = detector(gray, 1)
-        if len(faces) != 1:
+        points = face_landmarks(state, frame)
+        if points is None:
             valid[i] = False
             continue
-        shape = predictor(gray, faces[0])
-        landmarks[i] = [(shape.part(j).x, shape.part(j).y) for j in range(68)]
+        landmarks[i] = points
     crop = int(task.cfg.image_crop_size)
     if crop != 88 or int(task.cfg.stack_order_audio) != 4:
         raise ValueError("Unsupported AV-HuBERT preprocessing config; expected crop88/stack4")
@@ -163,5 +215,15 @@ def main(request):
     )
 
 
+def main(request):
+    extract(load(request["config"]), request)
+
+
 if __name__ == "__main__":
-    main(read_json(sys.argv[1]))
+    if sys.argv[1] == "--serve":
+        from vn_av_df.worker import serve
+
+        loaded = load(json.loads(sys.argv[2]))
+        serve(lambda request: extract(loaded, request))
+    else:
+        main(read_json(sys.argv[1]))
