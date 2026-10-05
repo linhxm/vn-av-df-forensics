@@ -53,7 +53,8 @@ def load(cfg):
         sys.argv = argv
     models, _, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cfg["checkpoint"]])
     model = models[0]
-    if hasattr(model, "decoder") or model.cfg.encoder_embed_dim != 768:
+    # AVHubertModel lưu kích thước ở encoder_embed_dim (không có thuộc tính cfg).
+    if hasattr(model, "decoder") or model.encoder_embed_dim != 768:
         raise ValueError("Require AV-HuBERT Base no-finetuning checkpoint")
     device = cfg.get("device", "cpu")
     model.to(device).eval().requires_grad_(False)
