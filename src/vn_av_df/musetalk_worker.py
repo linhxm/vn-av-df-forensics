@@ -87,7 +87,11 @@ def synthesize(models, request):
                 raise RuntimeError("Failed to write input frame")
             images.append(str(path))
         audio = donor["pcm"][: n * 1920]
-        wavfile.write(folder / "audio16.wav", 16000, resample_poly(audio, 1, 3).astype(np.float32))
+        # MuseTalk đếm frame = floor(số mẫu / 16000 * 25) bằng số thực: với một số độ dài
+        # (vd. 201, 203 frame) sai số làm tròn làm thiếu 1 frame. Thêm 10 ms im lặng ở cuối để
+        # đủ n frame; chỉ dùng chunks[:n] nên không đổi tiếng của các frame đã sinh.
+        audio16 = np.concatenate([resample_poly(audio, 1, 3), np.zeros(160)])
+        wavfile.write(folder / "audio16.wav", 16000, audio16.astype(np.float32))
         wavfile.write(
             folder / "audio48.wav", 48000, (np.clip(audio, -1, 1) * 32767).astype(np.int16)
         )

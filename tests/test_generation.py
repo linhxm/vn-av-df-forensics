@@ -183,11 +183,11 @@ def test_generation_skips_pairs_without_face_but_stops_on_other_errors(tmp_path)
 
     def broken(cfg, video, audio, output, n, w, h):
         if Path(video).name == first:
-            raise RuntimeError("Worker failed: OSError: CUDA out of memory")
+            raise RuntimeError("Worker exited (1): crashed")
         return paint_generator(cfg, video, audio, output, n, w, h)
 
-    # Lỗi không phải mất mặt: vẫn dừng như cũ.
-    with pytest.raises(RuntimeError, match="out of memory"):
+    # Worker chết (không phải lỗi riêng một cặp): vẫn dừng như cũ.
+    with pytest.raises(RuntimeError, match="Worker exited"):
         generate(cfg, broken)
 
     def faceless(cfg, video, audio, output, n, w, h):
@@ -208,6 +208,46 @@ def test_generation_skips_pairs_without_face_but_stops_on_other_errors(tmp_path)
     # Chạy lại: cặp đã bỏ không sinh lại, kết quả giữ nguyên.
     again = generate(cfg, paint_generator)
     assert again["pairs_skipped"] == 1 and load_candidates(out) == rows
+
+
+def test_generation_skips_generator_errors_but_stops_on_a_failing_streak(tmp_path, monkeypatch):
+    from vn_av_df import generation
+
+    root = tmp_path / "clean"
+    clean_bundle(root, [(f"s{i}", f"p{i // 2}") for i in range(6)])
+    cfg = {
+        "seed": 42,
+        "clean_dataset": str(root),
+        "plan": str(tmp_path / "plan.json"),
+        "generated_dataset": str(tmp_path / "generated"),
+        "generation": {"clips_per_split": 1, "partial_seconds": [0.4], "crf": 18, "max_side": 640},
+    }
+    make_plan(cfg)
+    out = Path(cfg["generated_dataset"])
+
+    def whisper(cfg, video, audio, output, n, w, h):
+        raise RuntimeError("Worker failed: ValueError: Whisper produced fewer frames\nTraceback")
+
+    # Mọi cặp lỗi generator liên tiếp: đủ ngưỡng thì dừng (lỗi hệ thống, không phải clip khó).
+    monkeypatch.setattr(generation, "MAX_SKIP_STREAK", 2)
+    with pytest.raises(RuntimeError, match="2 cặp liên tiếp"):
+        generate(cfg, whisper)
+    # Một cặp lỗi generator (output mới): bỏ cặp đó, vẫn hoàn tất; lý do lấy dòng đầu của lỗi.
+    monkeypatch.setattr(generation, "MAX_SKIP_STREAK", 99)
+    out = tmp_path / "generated_one"
+    first = Path(read_json(cfg["plan"])["jobs"][0]["original"]["video"]).name
+
+    def whisper_once(cfg, video, audio, output, n, w, h):
+        if Path(video).name == first:
+            whisper(cfg, video, audio, output, n, w, h)
+        return paint_generator(cfg, video, audio, output, n, w, h)
+
+    done = generate({**cfg, "generated_dataset": str(out)}, whisper_once)
+    assert done["status"] == "complete" and done["pairs_skipped"] == 1 and done["samples"] == 6
+    skipped = read_json(out / "skipped_pairs.json")
+    assert {(s["kind"], s["skipped"]) for s in skipped} == {
+        ("generator_error", "ValueError: Whisper produced fewer frames")
+    }
 
 
 def load_candidates(folder):

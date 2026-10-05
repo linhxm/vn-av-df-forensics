@@ -291,12 +291,25 @@ def validate_plan_settings(cfg, plan):
 
 
 # Lỗi generator không thấy mặt ở một số frame (bước cắt chỉ đòi YuNet thấy mặt ở ≥90% frame
-# lấy mẫu 4 fps; Wav2Lip/MuseTalk đòi mọi frame). Chỉ các lỗi này được bỏ qua cặp; lỗi khác dừng.
+# lấy mẫu 4 fps; Wav2Lip/MuseTalk đòi mọi frame).
 FACE_ERRORS = ("Face not detected", "Missing MuseTalk face", "Invalid face bbox")
+# Bỏ liên tiếp chừng này cặp thì dừng: lỗi hệ thống (hết VRAM, worker hỏng), không phải clip khó.
+MAX_SKIP_STREAK = 10
 
 
-def face_error(exc):
-    return next((m for m in FACE_ERRORS if m in str(exc)), None)
+def skip_reason(exc):
+    """Lý do bỏ cặp, hoặc None nếu phải dừng.
+
+    Bỏ qua: lỗi generator báo cho riêng một cặp ("Worker failed", worker vẫn sống).
+    Dừng: worker chết/timeout và lỗi ở code pipeline (decode, encode, nhãn).
+    """
+    text = str(exc)
+    face = next((m for m in FACE_ERRORS if m in text), None)
+    if face:
+        return "face", face
+    if text.startswith("Worker failed: "):
+        return "generator_error", text.removeprefix("Worker failed: ").splitlines()[0][:200]
+    return None
 
 
 def generate(cfg, generator=None):
@@ -384,7 +397,7 @@ def generate(cfg, generator=None):
         if leftover.is_dir():
             shutil.rmtree(leftover, ignore_errors=True)
     began = time.monotonic()
-    progress = {"done": 0, "skipped": 0}
+    progress = {"done": 0, "skipped": 0, "streak": 0}
     slots = queue.Queue()
     for gpu in gpus:
         slots.put(gpu)
@@ -440,12 +453,14 @@ def generate(cfg, generator=None):
                         original["frames"].shape[1],
                     )
                 except Exception as exc:
-                    reason = face_error(exc)
+                    reason = skip_reason(exc)
                     if reason is None:
                         raise
+                    kind, reason = reason
                     # Không ghi video nào của cặp (kể cả real) để real/fake vẫn đi theo cặp.
                     skipped = {
                         "skipped": reason,
+                        "kind": kind,
                         "generator": name,
                         "audio_mode": job.get("audio_mode", "source"),
                         "split": r["split"],
@@ -457,8 +472,13 @@ def generate(cfg, generator=None):
                     with guard:
                         progress["done"] += 1
                         progress["skipped"] += 1
-                        done = progress["done"]
+                        progress["streak"] += 1
+                        done, streak = progress["done"], progress["streak"]
                     print(f"{head}: BỎ QUA ({reason}) | mới {done}/{pending}", flush=True)
+                    if streak >= MAX_SKIP_STREAK:
+                        raise RuntimeError(
+                            f"{streak} cặp liên tiếp bị bỏ, lỗi cuối: {reason}; kiểm tra worker"
+                        ) from exc
                     return []
                 fake = decode(target, max_side=plan["config"]["max_side"], sample_rate=48000)
             mode = job.get("audio_mode", plan["config"].get("audio_mode", "source"))
@@ -579,6 +599,7 @@ def generate(cfg, generator=None):
             slots.put(gpu)
         with guard:
             progress["done"] += 1
+            progress["streak"] = 0
             done, spent = progress["done"], time.monotonic() - began
         print(
             f"{head}, donor {d['clip_id'] if mode == 'donor' else '(tiếng gốc)'}; "
@@ -611,7 +632,8 @@ def generate(cfg, generator=None):
         if isinstance(record, dict)
     ]
     if skipped:
-        print(f"Bỏ qua {len(skipped)}/{total} cặp vì generator không thấy mặt", flush=True)
+        reasons = Counter(record["skipped"] for record in skipped)
+        print(f"Bỏ qua {len(skipped)}/{total} cặp: {dict(reasons)}", flush=True)
     if missing:
         # Chưa đủ cặp: không ghi candidates/review (review.csv chỉ tạo một lần khi đủ).
         return {
