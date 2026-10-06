@@ -63,10 +63,47 @@ def save_checkpoint(path, state):
     atomic_bytes(path, stream.getvalue())
 
 
+ENCODER_CACHES = ("fate", "avhubert", "dinov2")  # Thứ tự trích: DINOv2 cần hộp miệng AV-HuBERT.
+
+
+def attach_caches(sources, target, writable=()):
+    """Gom cache encoder từ nhiều thư mục (Kaggle input chỉ đọc) vào `target/<encoder>`.
+
+    Encoder trong `writable` được chép để trích tiếp; encoder khác chỉ tạo symlink (chỉ đọc).
+    Trả về {encoder: thư mục nguồn}.
+    """
+    import shutil
+
+    found = {}
+    for source in map(Path, sources):
+        for key in ENCODER_CACHES:
+            folder = source / key
+            if folder.is_dir():
+                if key in found:
+                    raise ValueError(f"Cache {key} có ở cả {found[key]} và {folder}")
+                found[key] = folder
+    target = Path(target)
+    target.mkdir(parents=True, exist_ok=True)
+    for key, folder in found.items():
+        destination = target / key
+        if destination.is_symlink() or destination.exists():
+            continue  # Chạy lại cell: giữ bản đã gom/đang trích.
+        if key in writable:
+            shutil.copytree(folder, destination)
+        else:
+            destination.symlink_to(folder.resolve(), target_is_directory=True)
+    return found
+
+
 def prepare(cfg):
-    """Trích mỗi backbone một lần; test chỉ được extract, không fit thống kê."""
+    """Trích mỗi backbone một lần; test chỉ được extract, không fit thống kê.
+
+    cfg["prepare_encoders"] (vd. ["dinov2"]) giới hạn encoder được trích; None = mọi encoder
+    mà các kiến trúc đã chọn cần.
+    """
     if cfg.get("methods"):
         reports, seen = {}, set()
+        only = cfg.get("prepare_encoders")
         for name in cfg["architectures"]:
             spec = cfg["methods"][name]
             scoped = method_config(cfg, name)
@@ -80,7 +117,7 @@ def prepare(cfg):
             if artifact["encoder"]:
                 stages.append((spec["artifact_encoder"], {**scoped, **artifact}))
             for key, stage in stages:
-                if key not in seen:
+                if key not in seen and (only is None or key in only):
                     reports[key] = prepare(stage)
                     seen.add(key)
         return reports

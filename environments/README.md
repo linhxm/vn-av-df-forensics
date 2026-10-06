@@ -16,7 +16,7 @@ Hai notebook có cell gọi [bootstrap_worker.py](bootstrap_worker.py) sau bư�
 | Notebook | Worker tự tạo | Không cài trong bước worker |
 |---|---|---|
 | generate.ipynb | WORKERS/.venv-musetalk/bin/python nếu chọn MuseTalk | AV-HuBERT/FATE |
-| train.ipynb | WORKERS/.venv-avhubert/bin/python nếu chọn AV-HuBERT | MuseTalk/Wav2Lip |
+| prepare.ipynb | WORKERS/.venv-avhubert/bin/python nếu `ENCODERS` có `avhubert` | MuseTalk/Wav2Lip |
 
 Bật Internet và GPU rồi chạy các cell theo thứ tự. Bootstrap tự kiểm Python, phiên bản torch, tương thích NumPy, import thư viện và phép tính CUDA nhỏ. Receipt chỉ đánh dấu ready sau khi pip check và import/CUDA probe đạt. Đây **không phải** inference thử checkpoint thật.
 

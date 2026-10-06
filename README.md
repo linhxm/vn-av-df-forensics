@@ -10,15 +10,17 @@ Phát hiện và định vị lip-sync deepfake trong video tiếng Việt: **vi
 | 1. Thu thập, cắt, duyệt | Local (cắt có thể chạy Kaggle) | `data_pipeline/steps/01…05`, [cut.ipynb](notebooks/cut.ipynb) | Part clip sạch |
 | 2. Sinh fake | Kaggle | [generate.ipynb](notebooks/generate.ipynb) | Part real/fake chờ duyệt |
 | 2b. Duyệt fake | Local | `generation/04…07` | Part đã chốt (ZIP) |
-| 3. Train, báo cáo | Kaggle | [train.ipynb](notebooks/train.ipynb) | `runs/<RUN_NAME>/` |
+| 3a. Trích feature | Kaggle | [prepare.ipynb](notebooks/prepare.ipynb) | `cache/<dataset>/<encoder>/` (làm Kaggle dataset) |
+| 3b. Train, báo cáo | Kaggle | [train.ipynb](notebooks/train.ipynb) | `runs/<RUN_NAME>/` |
 | 4. Demo | Local | `training/05_demo.py` | http://127.0.0.1:8000 |
 
 Dữ liệu chia theo **part** (`vn-av-df-data-part1`, `-part2`, …), mỗi part là một đợt bổ sung, xử lý và đóng ZIP riêng. Local chọn part bằng `PART` trong [data_settings.py](data_settings.py); trên Kaggle chỉnh trong cell cấu hình của notebook.
 
-Ba notebook Kaggle ghi lên **W&B** (project `vn-av-df-forensics`). Run mở trước bước chính nên có cả log console và CPU/RAM/GPU theo thời gian:
+Các notebook Kaggle ghi lên **W&B** (project `vn-av-df-forensics`). Run mở trước bước chính nên có cả log console và CPU/RAM/GPU theo thời gian:
 - cut: phễu từng video (tiếng nói → cửa sổ → clip, lý do loại), theo speaker, thông số nguồn, clip mẫu;
 - generate: chia split (speaker/nguồn mỗi split), từng cặp sinh, số mẫu theo ô 2×2, đoạn fake cục bộ, phiên bản generator, video mẫu;
-- train: run prepare (dữ liệu đã chọn, thời gian trích feature) và mỗi detector/seed một run ghi **sau từng epoch** (stage A, S, detector, AUC theo ô 2×2 và theo nhánh P2); sau báo cáo/test bổ sung metric, bảng theo nhóm, dự đoán từng video, ROC/PR, ảnh.
+- prepare: dữ liệu đã chọn, thời gian trích từng encoder;
+- train: mỗi detector/seed một run ghi **sau từng epoch** (stage A, S, detector, AUC theo ô 2×2 và theo nhánh P2); sau báo cáo/test bổ sung metric, bảng theo nhóm, dự đoán từng video, ROC/PR, ảnh.
 
 Cần Kaggle secret `WANDB_API_KEY`; đặt `USE_WANDB = False` để tắt.
 
@@ -124,17 +126,31 @@ Sau khi tải output về local, chạy trong `generation/`:
 
 ## 3. Train và báo cáo
 
-Chỉnh trong cell cấu hình của [train.ipynb](notebooks/train.ipynb):
+Hai notebook, chạy ở các phiên khác nhau:
+
+**[prepare.ipynb](notebooks/prepare.ipynb): trích feature một lần cho mỗi part.**
 
 ```python
-DATASET_PARTS = ["vn-av-df-data-part1"]  # hoặc nhiều part, hoặc "all"
-ARCHITECTURES = ["fate_gru"]             # hoặc ["p2_syncartifact"], hoặc "all"
-SEEDS = [42]                             # thí nghiệm: [42, 43, 44]
-RUN_NAME = "train_part1_gru_run01"
-RESUME = False                           # True chỉ khi cùng data/config/code/cache
+DATASET_PARTS = ["vn-av-df-data-part1/vn-av-df-data-part1"]
+ENCODERS = "all"          # hoặc ["fate"], ["avhubert", "dinov2"], ["dinov2"]
+PREVIOUS_CACHE = []       # cache phiên trước: trích tiếp / lấy hộp miệng AV-HuBERT cho DINOv2
 ```
 
-Notebook chạy lần lượt: setup encoder → cache đặc trưng → train → báo cáo → test (tuỳ chọn) → dọn Output (giữ `runs/<RUN_NAME>` và cache, không ZIP).
+Setup encoder (worker AV-HuBERT chỉ khi chọn `avhubert`) → trích → dọn Output (giữ cache của encoder đã chọn). Part1 trên 2×T4: FATE ~5,6 h, AV-HuBERT ~4,7 h, DINOv2 ~0,4 h; cả 3 sát giới hạn 12 h nên tách 2 phiên. *Save Version* → *New Dataset* từ Output.
+
+**[train.ipynb](notebooks/train.ipynb): train/test từ cache, không cần encoder.**
+
+```python
+DATASET_PARTS = ["vn-av-df-data-part1/vn-av-df-data-part1"]  # trùng lúc prepare
+ARCHITECTURES = "all"    # 8 kiến trúc, hoặc danh sách, vd. ["fate_gru"], ["p2_sync_only", "p2_concat"]
+CACHE_INPUTS = [Path("/kaggle/input/<features>/vn-av-df-forensics/cache/vn-av-df-data")]
+SEEDS = [42]             # thí nghiệm: [42, 43, 44]
+RUN_NAME = "train_part1_run01"
+RESUME = False           # True chỉ khi cùng data/config/code/cache
+```
+
+- `"all"` = `fate_gru`, `avh_tcn`, `p2_syncartifact`, `p2_sync_only`, `p2_artifact_only`, `p2_concat`, `p2_sync_seen_fake`, `avh_realrecon`.
+- Notebook gắn cache (symlink, không chép), kiểm cache đủ encoder và đúng hash dữ liệu → train → báo cáo → test (tuỳ chọn). Output chỉ có `runs/<RUN_NAME>`.
 - **Train:** `best.pt` của mỗi detector chọn theo validation loss; notebook không tự chọn kiến trúc tốt nhất. Thêm part vào tập train thì dùng `RUN_NAME` mới.
 - **Báo cáo** (validation, mỗi model/seed): loss/AUC theo epoch, ROC/PR, confusion matrix, timeline mẫu. Mỗi model có bảng theo 4 ô 2×2 (`by_condition`); P2 thêm AUC của từng nhánh (`branches`) và biểu đồ stage S.
 - **Test:** `RUN_TEST = True` để chạy; ghi `test.json`, `evaluation.json` và `test-lock.json`.

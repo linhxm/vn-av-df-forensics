@@ -119,13 +119,13 @@ def setup_assets(cfg, only="all"):
     if cfg.get("methods"):
         from vn_av_df.features.registry import method_config
 
-        results = {}
+        results, only = {}, cfg.get("prepare_encoders")  # None = mọi encoder kiến trúc cần.
         for name in cfg["architectures"]:
             spec = cfg["methods"][name]
             scoped = method_config(cfg, name)
             scoped.pop("methods", None)
             for key in filter(None, (spec["encoder"], spec.get("artifact_encoder"))):
-                if key not in results:
+                if key not in results and (only is None or key in only):
                     results[key] = setup_assets({**scoped, "encoder": cfg["encoders"][key]}, only)
         return results
     if cfg["encoder"].get("kind") == "avhubert":

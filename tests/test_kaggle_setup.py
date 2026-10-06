@@ -168,7 +168,7 @@ def test_generated_probe_is_valid_python(worker, tmp_path):
     compile(bootstrap.probe_code(worker, tmp_path, tmp_path / "probe.json", True), "probe", "exec")
 
 
-@pytest.mark.parametrize("notebook,worker", [("generate", "musetalk"), ("train", "avhubert")])
+@pytest.mark.parametrize("notebook,worker", [("generate", "musetalk"), ("prepare", "avhubert")])
 @pytest.mark.parametrize("needed", [True, False])
 def test_notebook_bootstrap_configures_only_its_worker(notebook, worker, tmp_path, needed):
     path = Path(__file__).resolve().parents[1] / "notebooks" / f"{notebook}.ipynb"
@@ -183,6 +183,7 @@ def test_notebook_bootstrap_configures_only_its_worker(notebook, worker, tmp_pat
         "encoders": {"avhubert": {"python": "unchanged"}},
         "architectures": ["selected"],
         "methods": {"selected": {"encoder": "avhubert" if needed else "fate"}},
+        "prepare_encoders": ["avhubert", "dinov2"] if needed else ["fate", "dinov2"],
         "generation": {
             "generators_by_split": {"test": ["musetalk_1_5" if needed else "wav2lip_gan"]}
         },
@@ -244,9 +245,21 @@ def notebook_config_state(notebook, tmp_path, monkeypatch):
     return sources, state, calls
 
 
-@pytest.mark.parametrize("selection", ["all", ["fate_gru"], ["fate_linear", "p2_sync_only"]])
+MAIN = ["fate_gru", "avh_tcn", "p2_syncartifact"]
+VARIANTS = ["p2_sync_only", "p2_artifact_only", "p2_concat", "p2_sync_seen_fake", "avh_realrecon"]
+
+
+@pytest.mark.parametrize(
+    "selection,expected",
+    [
+        ("all", MAIN + VARIANTS),
+        (MAIN, MAIN),
+        (["fate_gru"], ["fate_gru"]),
+        (["fate_linear", "p2_sync_only"], ["fate_linear", "p2_sync_only"]),
+    ],
+)
 def test_training_notebook_uses_edited_models_parts_and_hyperparameters(
-    tmp_path, monkeypatch, selection
+    tmp_path, monkeypatch, selection, expected
 ):
     from vn_av_df import dataset
 
@@ -259,20 +272,50 @@ def test_training_notebook_uses_edited_models_parts_and_hyperparameters(
     state["TRAINING"].update(epochs=3, lr=0.002, hidden=32)
     state["RECONSTRUCTION"]["epochs"] = 2
     state["SYNC"]["shift_frames"] = [2, 4]
-    state["DINO_FEATURES"]["crop_size"] = 112
     exec(sources["train-config"], state)
     cfg = state["cfg"]
-    assert cfg["architectures"] == (
-        ["fate_gru", "avh_tcn", "p2_syncartifact"] if selection == "all" else selection
-    )
+    assert cfg["architectures"] == expected
     assert cfg["dataset_parts"] == ["chosen_part"] and cfg["seeds"] == [99]
     assert Path(cfg["runs"]).name == "custom_run"
     assert cfg["training"]["lr"] == 0.002 and cfg["training"]["epochs"] == 3
     assert cfg["reconstruction"]["epochs"] == 2
     assert cfg["sync"]["shift_frames"] == [2, 4]
+    assert calls == []  # Train chỉ đọc cache: không tải encoder, không cài worker.
+    assert state["RUN_TEST"] is False
+
+
+@pytest.mark.parametrize(
+    "selection,encoders,architectures",
+    [
+        ("all", ["fate", "avhubert", "dinov2"], MAIN),
+        (["dinov2", "avhubert"], ["avhubert", "dinov2"], ["avh_tcn", "p2_syncartifact"]),
+        (["fate"], ["fate"], ["fate_gru"]),
+    ],
+)
+def test_prepare_notebook_selects_encoders_and_feature_settings(
+    tmp_path, monkeypatch, selection, encoders, architectures
+):
+    from vn_av_df import dataset
+
+    monkeypatch.setattr(dataset, "training_dataset", lambda *args, **kwargs: ([], {"samples": 0}))
+    sources, state, calls = notebook_config_state("prepare", tmp_path, monkeypatch)
+    exec(sources["prepare-parameters"], state)
+    state.update(ENCODERS=selection, DATASET_PARTS=["chosen_part"], DEVICE="cpu")
+    state["DINO_FEATURES"]["crop_size"] = 112
+    exec(sources["prepare-config"], state)
+    cfg = state["cfg"]
+    assert cfg["prepare_encoders"] == encoders and cfg["architectures"] == architectures
+    assert cfg["dataset_parts"] == ["chosen_part"] and cfg["prepare_devices"] is None
     assert cfg["encoders"]["dinov2"]["crop_size"] == 112
     assert calls == ["encoder_setup"]
-    assert state["RUN_TEST"] is False
+
+
+def test_prepare_notebook_rejects_dinov2_without_avhubert_boxes(tmp_path, monkeypatch):
+    sources, state, _ = notebook_config_state("prepare", tmp_path, monkeypatch)
+    exec(sources["prepare-parameters"], state)
+    state.update(ENCODERS=["dinov2"], DEVICE="cpu")
+    with pytest.raises(ValueError, match="AV-HuBERT"):
+        exec(sources["prepare-config"], state)
 
 
 @pytest.mark.parametrize("use_history", [False, True])

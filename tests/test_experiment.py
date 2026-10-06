@@ -508,3 +508,63 @@ def test_avhubert_reuses_one_worker_and_landmarks_of_identical_frames(tmp_path, 
     assert len(started) == 2
     encoder.close()
     assert encoder.worker is None
+
+
+@pytest.mark.parametrize(
+    "only,expected",
+    [(None, ["fate", "avhubert", "dinov2"]), (["dinov2"], ["dinov2"]), (["fate"], ["fate"])],
+)
+def test_prepare_and_setup_only_touch_selected_encoders(tmp_path, monkeypatch, only, expected):
+    from vn_av_df import assets, experiment
+
+    p2 = {"encoder": "avhubert", "artifact_encoder": "dinov2"}
+    cfg = {
+        "cache": str(tmp_path / "cache"),
+        "encoder": {},
+        "encoders": {k: {"kind": k} for k in ("fate", "avhubert", "dinov2")},
+        "methods": {
+            "gru": {"encoder": "fate", "architecture": "gru"},
+            "p2": {**p2, "architecture": "syncartifact"},
+        },
+        "architectures": ["gru", "p2"],
+        "prepare_encoders": only,
+    }
+    for module, name in ((experiment, "prepare"), (assets, "setup_assets")):
+        original, seen = getattr(module, name), []
+
+        def fake(stage, *args, original=original, seen=seen):
+            if stage.get("methods"):
+                return original(stage, *args)
+            seen.append(stage["encoder"]["kind"])
+            return {}
+
+        monkeypatch.setattr(module, name, fake)
+        fake(cfg)
+        # DINOv2 luôn sau AV-HuBERT; encoder không chọn không được trích/tải.
+        assert seen == expected
+
+
+def test_attach_caches_links_read_only_and_copies_writable(tmp_path):
+    from vn_av_df.experiment import attach_caches
+
+    try:  # Windows không quyền admin/Developer Mode không tạo được symlink; Kaggle (Linux) thì có.
+        (tmp_path / "probe").symlink_to(tmp_path, target_is_directory=True)
+    except OSError:
+        pytest.skip("Hệ thống không cho tạo symlink")
+    first, second = tmp_path / "in1", tmp_path / "in2"
+    for folder, key in ((first, "fate"), (second, "avhubert"), (second, "dinov2")):
+        (folder / key).mkdir(parents=True)
+        (folder / key / "a.json").write_text("{}")
+    (second / "environment").mkdir()
+    target = tmp_path / "cache"
+    found = attach_caches([first, second], target, writable=["dinov2"])
+    assert sorted(found) == ["avhubert", "dinov2", "fate"]
+    assert (target / "fate").is_symlink() and (target / "fate/a.json").is_file()
+    assert not (target / "dinov2").is_symlink() and (target / "dinov2/a.json").is_file()
+    assert not (target / "environment").exists()
+    # Chạy lại cell: giữ nguyên bản đã gom.
+    (target / "dinov2/b.npz").write_bytes(b"x")
+    attach_caches([first, second], target, writable=["dinov2"])
+    assert (target / "dinov2/b.npz").is_file()
+    with pytest.raises(ValueError, match="fate"):
+        attach_caches([first, first], tmp_path / "other")
