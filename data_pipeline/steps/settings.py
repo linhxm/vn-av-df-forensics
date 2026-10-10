@@ -9,7 +9,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT.parent))
-from data_settings import DATASET_NAME, part_name  # noqa: E402
+# PART/SPLIT_* dùng ở 05_export (gán split khi export).
+from data_settings import (  # noqa: E402, F401
+    DATASET_NAME,
+    PART,
+    SPLIT_HISTORY,
+    SPLIT_RATIOS,
+    SPLIT_SEED,
+    part_name,
+)
 
 DATASET_VERSION = part_name()
 SOURCES = ROOT / "data/sources" / DATASET_NAME / DATASET_VERSION

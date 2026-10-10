@@ -12,6 +12,7 @@ from collections import Counter
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 SCHEMA = "vn-av-dataset-v1"
+SPLITS = ("train", "validation", "test")
 HEADS = {
     "lip_audio_mismatch",
     "phoneme_viseme",
@@ -90,8 +91,11 @@ def validate_bundle(root, probe=None):
         if not valid_id(sid) or sid in ids:
             raise ValueError(f"Invalid/duplicate clip_id: {sid}")
         ids.add(sid)
-        if "split" in row or "variant" in row:
-            raise ValueError("Exported datasets must not contain training splits or variants")
+        if "variant" in row:
+            raise ValueError("Clean datasets must not contain generated variants")
+        # Split gán lúc export (bản cũ chưa có): có thì mọi clip phải có split hợp lệ.
+        if ("split" in row) != ("split" in rows[0]) or row.get("split", "train") not in SPLITS:
+            raise ValueError(f"{sid}: missing/invalid split; export the part again")
         if not isinstance(row.get("source_id"), str) or not row["source_id"].strip():
             raise ValueError(f"{sid}: source_id required")
         sources.add(row["source_id"])
@@ -125,6 +129,7 @@ def validate_bundle(root, probe=None):
         "manifest_sha256": info["manifest_sha256"],
         "clips": len(rows),
         "sources": len(sources),
+        "splits": dict(Counter(row["split"] for row in rows if "split" in row)),
         "annotated_clips": dict(
             Counter(name for row in rows for name in row.get("relation_annotations", {}))
         ),

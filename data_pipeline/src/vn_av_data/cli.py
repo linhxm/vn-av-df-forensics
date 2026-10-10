@@ -11,14 +11,10 @@ def main(argv=None):
     for name in (
         "setup",
         "collect",
-        "assign",
-        "merge-reviews",
         "download",
-        "index",
         "cut",
         "review",
         "export",
-        "import-legacy-review",
         "validate",
     ):
         p = sub.add_parser(name)
@@ -34,22 +30,11 @@ def main(argv=None):
         if name == "collect":
             p.add_argument("--input", required=True)
             p.add_argument("--output", required=True)
-        elif name == "assign":
-            p.add_argument("--manifest", required=True)
-            p.add_argument("--output", required=True)
-            p.add_argument("--reviewers", required=True)
-        elif name == "merge-reviews":
-            p.add_argument("--manifest", required=True)
-            p.add_argument("--reviews", required=True)
-            p.add_argument("--output", required=True)
         elif name == "download":
             p.add_argument("--sources", required=True)
             p.add_argument("--output", default="data/raw")
             p.add_argument("--limit", type=int, default=0)
             p.add_argument("--dry-run", action="store_true")
-        elif name == "index":
-            p.add_argument("--root", required=True)
-            p.add_argument("--output", default="data/raw/sources.jsonl")
         elif name == "cut":
             p.add_argument("--manifest", default="data/raw/sources.jsonl")
             p.add_argument("--output", required=True)
@@ -62,12 +47,12 @@ def main(argv=None):
                 p.add_argument("--output", required=True)
                 p.add_argument("--dataset-id", required=True)
                 p.add_argument("--annotations", help="JSONL: clip_id and relation_annotations")
-        elif name == "import-legacy-review":
-            p.add_argument("--review", required=True, help="Legacy review CSV")
-            p.add_argument("--manifest", required=True, help="Legacy clip/assignment CSV")
-            p.add_argument("--root", required=True, help="Folder containing legacy clip files")
-            p.add_argument("--output", required=True)
-            p.add_argument("--dataset-id", required=True)
+                p.add_argument("--part", type=int, default=1)
+                p.add_argument("--split-seed", type=int, default=42)
+                p.add_argument("--split-ratios", help='JSON, vd. {"train":0.7,...}')
+                p.add_argument(
+                    "--split-history", nargs="*", default=[], help="split-lock part trước"
+                )
         elif name == "validate":
             p.add_argument("--dataset", required=True)
     args = parser.parse_args(argv)
@@ -84,14 +69,6 @@ def main(argv=None):
             cookies_from_browser=args.cookies_from_browser,
             force_ipv4=args.force_ipv4,
         )
-    elif args.command == "assign":
-        from vn_av_data.data.workflow import assign_reviewers
-
-        result = assign_reviewers(args.manifest, args.output, args.reviewers)
-    elif args.command == "merge-reviews":
-        from vn_av_data.data.workflow import merge_reviews
-
-        result = merge_reviews(args.manifest, args.reviews, args.output)
     elif args.command == "setup":
         from vn_av_data.assets import setup_assets
 
@@ -107,10 +84,6 @@ def main(argv=None):
             args.limit,
             args.dry_run,
         )
-    elif args.command == "index":
-        from vn_av_data.data.acquisition import index_sources
-
-        result = index_sources(args.root, args.output)
     elif args.command == "cut":
         from vn_av_data.data.curation import curate_sources
 
@@ -126,13 +99,15 @@ def main(argv=None):
         from vn_av_data.data.export import export_dataset
 
         result = export_dataset(
-            args.review, args.root, args.output, args.dataset_id, args.annotations
-        )
-    elif args.command == "import-legacy-review":
-        from vn_av_data.data.legacy import import_legacy_review
-
-        result = import_legacy_review(
-            args.review, args.manifest, args.root, args.output, args.dataset_id
+            args.review,
+            args.root,
+            args.output,
+            args.dataset_id,
+            args.annotations,
+            part=args.part,
+            seed=args.split_seed,
+            ratios=json.loads(args.split_ratios) if args.split_ratios else None,
+            history=args.split_history,
         )
     else:
         from vn_av_data.contract import validate_bundle

@@ -1,1 +1,0 @@
-{"video":"path/to/reviewed_musetalk.mp4","label":1,"fake_intervals":[[0,4]],"source_clip_id":"REPLACE_WITH_CLEAN_CLIP_ID","audio_source_clip_id":"REPLACE_WITH_DONOR_CLIP_ID","generator":"musetalk_1_5","generator_version":"REPLACE_WITH_COMMIT_AND_WEIGHT_HASH","review_status":"keep"}

@@ -12,7 +12,6 @@ from vn_av_df.features.registry import (
     combined_signature,
     feature_arrays,
     make_encoder,
-    method_config,
 )
 from vn_av_df.metrics import intervals
 from vn_av_df.models import output_valid, pool_score
@@ -21,25 +20,19 @@ from vn_av_df.models import output_valid, pool_score
 def chosen_checkpoint(cfg):
     if cfg.get("checkpoint"):
         return Path(cfg["checkpoint"])
-    training = Path(cfg["runs"]) / "training.json"
-    if training.exists() and cfg.get("demo_method"):
-        runs = read_json(training)["runs"]
-        selected = next(
-            (
-                r
-                for r in runs
-                if r["architecture"] == cfg["demo_method"] and r["seed"] == cfg["seeds"][0]
-            ),
-            None,
-        )
-        if selected is None:
-            raise ValueError(
-                "DEMO_METHOD/seed has no completed checkpoint; set CHECKPOINT explicitly"
-            )
-        return resolve_checkpoint(cfg, selected["checkpoint"])
-    return resolve_checkpoint(
-        cfg, read_json(Path(cfg["runs"]) / "comparison.json")["demo_checkpoint"]
+    # Demo dùng DEMO_METHOD + seed đầu trong training.json; không xếp hạng model.
+    runs = read_json(Path(cfg["runs"]) / "training.json")["runs"]
+    selected = next(
+        (
+            r
+            for r in runs
+            if r["architecture"] == cfg["demo_method"] and r["seed"] == cfg["seeds"][0]
+        ),
+        None,
     )
+    if selected is None:
+        raise ValueError("DEMO_METHOD/seed has no completed checkpoint; set CHECKPOINT explicitly")
+    return resolve_checkpoint(cfg, selected["checkpoint"])
 
 
 class Analyzer:
@@ -125,53 +118,6 @@ class Analyzer:
                     dataset_manifest_sha256=self.state["manifest_sha256"],
                     seed=self.state["seed"],
                 )
-        if output:
-            write_json(output, result)
-        return result
-
-
-class ComparisonAnalyzer:
-    """Cùng video, cùng checkpoint seed định trước; từng model có score/coverage riêng."""
-
-    def __init__(self, cfg):
-        self.cfg = cfg
-        self.comparison = read_json(Path(cfg["runs"]) / "comparison.json")
-
-    def analyze(self, video, output=None):
-        import gc
-
-        results, encoders = {}, {}
-        with tempfile.TemporaryDirectory() as folder:
-            for name in self.cfg["architectures"]:
-                run = next(
-                    (
-                        r
-                        for r in self.comparison["runs"]
-                        if r["architecture"] == name and r["seed"] == self.cfg["seeds"][0]
-                    ),
-                    None,
-                )
-                if run is None:
-                    raise ValueError(f"No validation-selected seed checkpoint for {name}")
-                scoped = method_config(self.cfg, name)
-                scoped["checkpoint"] = str(resolve_checkpoint(scoped, run["checkpoint"]))
-                scoped["demo_details"] = True
-                kind = scoped["encoder"].get("kind", "fate")
-                # Giải phóng backbone trước khi worker khác dùng GPU; cache đĩa vẫn còn.
-                for previous in list(encoders):
-                    if previous != kind:
-                        del encoders[previous]
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                if kind not in encoders:
-                    # AVH worker nạp model riêng; FATE giữ một bản cho B1/B2.
-                    encoders[kind] = make_encoder(scoped["encoder"])
-                analyzer = Analyzer(scoped, encoders[kind])
-                results[name] = analyzer.analyze(video, cache_folder=folder)
-                del analyzer
-                gc.collect()
-        result = {"selected_method": self.comparison["selected_architecture"], "methods": results}
         if output:
             write_json(output, result)
         return result

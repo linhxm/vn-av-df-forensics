@@ -1,4 +1,4 @@
-"""P1: tái dựng real-only ở 25 Hz, sau đó detector trên ô 0,2 giây.
+"""avh_realrecon (P1 cũ): tái dựng real-only ở 25 Hz, sau đó detector trên ô 0,2 giây.
 
 Đây là thiết kế của project, không phải implementation AuViRe chính thức.
 Normalizer và reconstructor được đóng băng trước supervised training.
@@ -68,7 +68,7 @@ class Reconstructor(nn.Module):
 
 
 class RealReconDetector(nn.Module):
-    """Visual/residual fusion, TCN nhỏ và binary head; stride ghi trong checkpoint."""
+    """Visual/residual fusion có gate, TCN nhỏ và binary head; stride ghi trong checkpoint."""
 
     def __init__(
         self,
@@ -80,8 +80,8 @@ class RealReconDetector(nn.Module):
         native_stride=5,
     ):
         super().__init__()
-        if native_stride < 1 or hidden < 4:
-            raise ValueError("Invalid stride/hidden")
+        if architecture != "realrecon" or native_stride < 1 or hidden < 4:
+            raise ValueError("Invalid architecture/stride/hidden")
         self.config = dict(
             audio_dim=audio_dim,
             visual_dim=visual_dim,
@@ -102,16 +102,10 @@ class RealReconDetector(nn.Module):
             nn.Linear(visual_dim + 2, hidden), nn.LayerNorm(hidden), nn.GELU()
         )
         self.gate = nn.Sequential(nn.Linear(hidden * 2, 64), nn.GELU(), nn.Linear(64, 2))
-        self.concat = nn.Linear(hidden * 2, hidden)
+        # Không dùng; giữ (đóng băng) để nạp được checkpoint avh_realrecon đã train.
+        self.concat = nn.Linear(hidden * 2, hidden).requires_grad_(False)
         self.temporal = nn.Sequential(*(TemporalBlock(hidden, d, dropout) for d in (1, 2, 4)))
         self.classifier = nn.Linear(hidden, 1)
-        # Không đếm các nhánh ablation không dùng vào trainable parameter budget.
-        if architecture != "realrecon":
-            self.gate.requires_grad_(False)
-        if architecture != "realrecon_concat":
-            self.concat.requires_grad_(False)
-        if architecture == "visual_tcn":
-            self.residual_projection.requires_grad_(False)
         self.freeze_reconstruction()
 
     def freeze_reconstruction(self):
@@ -151,14 +145,8 @@ class RealReconDetector(nn.Module):
         error = torch.stack([error[i : i + stride].mean(0) for i in range(0, len(error), stride)])
         mask = self.output_valid(valid)
         vp, ep = self.visual_projection(v), self.residual_projection(error)
-        kind = self.config["architecture"]
-        if kind == "visual_tcn":
-            fused = vp
-        elif kind == "realrecon_concat":
-            fused = self.concat(torch.cat([vp, ep], -1))
-        else:
-            weights = self.gate(torch.cat([vp, ep], -1)).softmax(-1)
-            fused = weights[:, :1] * vp + weights[:, 1:] * ep
+        weights = self.gate(torch.cat([vp, ep], -1)).softmax(-1)
+        fused = weights[:, :1] * vp + weights[:, 1:] * ep
         result = fused.new_zeros(len(fused))
         for left, right in valid_runs(mask):
             result[left:right] = self.classifier(self.temporal(fused[left:right]))[:, 0]

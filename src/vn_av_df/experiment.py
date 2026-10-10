@@ -44,6 +44,11 @@ def prediction_records(predictions):
             condition=condition(p["row"]),
             dataset_part=p["row"].get("dataset_part"),
             source_id=p["row"]["source_id"],
+            # Clip gốc/speaker cho bootstrap theo nhóm ở compare.ipynb.
+            source_clip_id=p["row"].get("source_clip_id"),
+            speaker_id=p["row"].get("speaker_id"),
+            generator=p["row"].get("generator"),
+            variant=p["row"].get("variant"),
             duration_s=p["row"]["duration_s"],
             fake_intervals=p["row"]["fake_intervals"],
             av_mismatch_intervals=p["row"].get("av_mismatch_intervals"),
@@ -809,42 +814,12 @@ def train_selected(cfg, resume=False):
     return report
 
 
-def compare(cfg, resume=False):
-    """API so sánh tường minh giữ cho thí nghiệm cũ; action train không gọi hàm này."""
-    report = train_selected(cfg, resume)
-    results = report["runs"]
-    # Architecture chosen from mean validation AUC across seeds, not test or best lucky seed.
-    scores = {
-        name: float(
-            np.mean(
-                [r["validation"]["video"]["roc_auc"] for r in results if r["architecture"] == name]
-            )
-        )
-        for name in cfg["architectures"]
-    }
-    selected = max(scores, key=scores.get)
-    chosen = next(
-        r for r in results if r["architecture"] == selected and r["seed"] == cfg["seeds"][0]
-    )
-    report = {
-        "dataset_selection": report["dataset_selection"],
-        "runs": results,
-        "mean_validation_auc": scores,
-        "selected_architecture": selected,
-        "demo_checkpoint": chosen["checkpoint"],
-        "selection": "mean validation ROC-AUC across seeds; demo uses first configured seed, never test",
-    }
-    write_json(Path(cfg["runs"]) / "comparison.json", report)
-    return report
-
-
 def evaluate(cfg):
     """Test với checkpoint/threshold đã khóa; chạy lại cùng protocol không đổi quyết định."""
     folder = Path(cfg["runs"])
-    legacy_compare = (folder / "comparison.json").is_file()
-    index_path = folder / ("comparison.json" if legacy_compare else "training.json")
+    index_path = folder / "training.json"
     comparison = read_json(index_path)
-    if not legacy_compare and comparison.get("status") != "complete":
+    if comparison.get("status") != "complete":
         raise ValueError("Finish the selected training runs before test evaluation")
     all_rows, selection = training_dataset(cfg)
     lock_path = Path(cfg["runs"]) / "test-lock.json"
@@ -928,35 +903,6 @@ def evaluate(cfg):
             flush=True,
         )
         reports.append({"architecture": run["architecture"], "seed": run["seed"], **report})
-    if not legacy_compare:
-        # Chỉ là danh mục báo cáo từng detector; không tính xếp hạng/paired comparisons.
-        write_json(folder / "evaluation.json", {"dataset_selection": selection, "runs": reports})
-        return reports
-    write_json(Path(cfg["runs"]) / "test-comparison.json", reports)
-    from vn_av_df.metrics import paired_auc_interval
-
-    summary = {}
-    for name in cfg["architectures"]:
-        values = [
-            r["video"]["roc_auc"]
-            for r in reports
-            if r["architecture"] == name and r["video"]["roc_auc"] is not None
-        ]
-        summary[name] = {
-            "seeds_measured": len(values),
-            "roc_auc_mean": float(np.mean(values)) if values else None,
-            "roc_auc_std": float(np.std(values, ddof=1)) if len(values) > 1 else None,
-        }
-    paired = {}
-    for index, first in enumerate(cfg["architectures"]):
-        for second in cfg["architectures"][index + 1 :]:
-            for seed in cfg["seeds"]:
-                paired[f"{first}-minus-{second}/seed{seed}"] = paired_auc_interval(
-                    all_predictions[(first, seed)],
-                    all_predictions[(second, seed)],
-                    cfg.get("bootstrap_replicates", 1000),
-                )
-    write_json(
-        Path(cfg["runs"]) / "test-summary.json", {"across_seeds": summary, "paired_auc": paired}
-    )
+    # Chỉ là danh mục báo cáo từng detector; so sánh nhiều kiến trúc ở notebooks/compare.ipynb.
+    write_json(folder / "evaluation.json", {"dataset_selection": selection, "runs": reports})
     return reports

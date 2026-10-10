@@ -20,13 +20,7 @@ DATASET = ROOT / "datasets" / DATASET_NAME
 DATASET_PARTS = [part_name()]
 # DATASET_PARTS = ["vn-av-df-data-part1", "vn-av-df-data-part2"]
 # DATASET_PARTS = "all"  # Chỉ các part đã tải/attach, không tự download.
-# Mặc định mỗi part chia riêng theo nhóm người/nguồn, tính tỷ lệ trên số clip sạch.
-# Tạm 70/15/15: part 1 (10 speaker) chia 80/10/10 thì validation chỉ có 1 người.
-SPLIT_RATIOS = {"train": 0.7, "validation": 0.15, "test": 0.15}
-# Tạm tắt kế thừa split giữa các part: không cần upload JSON của part trước.
-SPLIT_HISTORY = []
-# Bật lại: điền các split-lock bao phủ mọi part trước; JSON tích lũy đủ thì chỉ cần một file.
-# SPLIT_HISTORY = [ROOT / "datasets/vn-av-df-data/vn-av-df-data-part1/split-lock.json"]
+# Split train/validation/test đã gán ở 05_export (xem data_settings.py).
 RUN_NAME = "train_part1_run01"  # Output: runs/train_part1_run01/<model>_seed<seed>/.
 DEVICE = "cuda"  # Kaggle GPU. Use "cpu" for a local CPU-only environment.
 RESUME = False
@@ -48,9 +42,6 @@ MUSETALK_PYTHON = os.environ.get(
 )
 CHECKPOINT = None  # None dùng DEMO_METHOD + seed đầu trong training.json, không xếp hạng model.
 DEMO_METHOD = ARCHITECTURES[0]  # Hoặc chỉ rõ "avh_realrecon" nếu đã train model đó.
-VIDEO = ROOT / "inputs/example.mp4"
-EXTERNAL_MANIFEST = ROOT / "generation/external.example.jsonl"
-IMPORT_OUTPUT = ROOT / "datasets/multigenerator_v1"
 
 
 def config():
@@ -60,8 +51,6 @@ def config():
         "clean_dataset": str(CLEAN_DATASET),
         "generated_dataset": str(ROOT / "datasets" / DATASET_NAME / GENERATION_NAME),
         "data_part": PART,
-        "split_ratios": dict(SPLIT_RATIOS),
-        "split_history": [str(p) for p in SPLIT_HISTORY],
         "dataset": str(DATASET),
         "dataset_parts": DATASET_PARTS,
         "plan": str(ROOT / "generation/plans" / f"{GENERATION_NAME}.json"),
@@ -125,11 +114,6 @@ def config():
             "artifact_aux_weight": 0.5,  # P2: head phụ artifact học cùng nhãn AI theo ô.
         },
         "demo_output": str(ROOT / "outputs/demo"),
-        "video": str(VIDEO),
-        "analyze_output": str(ROOT / "outputs/result.json"),
-        "external_manifest": str(EXTERNAL_MANIFEST),
-        "import_output": str(IMPORT_OUTPUT),
-        "import_base": str(ROOT / "datasets" / DATASET_NAME / GENERATION_NAME),
     }
     cfg["encoders"] = {
         "fate": cfg["encoder"],
@@ -160,15 +144,9 @@ def config():
         },
     }
     cfg["methods"] = {
-        "fate_linear": {"encoder": "fate", "architecture": "linear"},
         "fate_gru": {"encoder": "fate", "architecture": "gru"},
-        "fate_tcn": {"encoder": "fate", "architecture": "tcn"},
-        "fate_transformer": {"encoder": "fate", "architecture": "transformer"},
-        "avh_realrecon": {"encoder": "avhubert", "architecture": "realrecon"},
-        "avh_linear": {"encoder": "avhubert", "architecture": "linear"},
         "avh_tcn": {"encoder": "avhubert", "architecture": "tcn"},
-        "avh_visual": {"encoder": "avhubert", "architecture": "visual_tcn"},
-        "avh_concat": {"encoder": "avhubert", "architecture": "realrecon_concat"},
+        "avh_realrecon": {"encoder": "avhubert", "architecture": "realrecon"},
     }
     p2 = {"encoder": "avhubert", "artifact_encoder": "dinov2"}
     cfg["methods"].update(
@@ -179,7 +157,7 @@ def config():
         p2_sync_seen_fake={**p2, "architecture": "syncartifact_unfrozen"},  # Sync học cả fake.
     )
     cfg["reconstruction"] = {"epochs": 20, "lr": 3e-4, "weight_decay": 1e-4, "patience": 5}
-    # Stage S của P2: real (0), sham và real dịch lệch tiếng ±3–15 frame (1); không thấy fake.
+    # Stage S của P2: real (0), sham và real dịch lệch tiếng ±3-15 frame (1); không thấy fake.
     cfg["sync"] = {
         "epochs": 20,
         "lr": 3e-4,
@@ -195,7 +173,6 @@ def config():
         "batch_size": 4,
         "seed": 42,
     }
-    cfg["demo_compare"] = False  # So sánh nhiều detector chỉ khi chủ động bật sau này.
     cfg["demo_method"] = DEMO_METHOD
     cfg["bootstrap_replicates"] = 1000
     return cfg

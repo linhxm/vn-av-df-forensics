@@ -9,9 +9,31 @@ from vn_av_df.data.groups import write_manifest
 from vn_av_df.data.media import decode, probe
 from vn_av_df.data.render import encode
 from vn_av_df.dataset import load_dataset
-from vn_av_df.generation import finalize, generate, make_plan, split_clean
-from vn_av_df.import_media import import_external
+from vn_av_df.generation import finalize, generate, make_plan
 from vn_av_df.web import demo_app, review_app
+
+# Tỷ lệ của fixture giữ 80/10/10 như khi các test này được viết.
+FIXTURE_RATIOS = {"train": 0.8, "validation": 0.1, "test": 0.1}
+
+
+def seal_clean(root, rows, part=1, history=()):
+    """Như 05_export: gán split theo nhóm, ghi split-lock và dataset_info của part sạch."""
+    from vn_av_data.data.split import assign_splits
+
+    rows, registry = assign_splits(rows, part, 42, FIXTURE_RATIOS, history)
+    write_manifest(root / "manifest.jsonl", rows)
+    write_json(root / "split-lock.json", registry)
+    write_json(
+        root / "dataset_info.json",
+        {
+            "schema_version": "vn-av-dataset-v1",
+            "dataset_id": f"fixture_part{part}",
+            "clips": len(rows),
+            "manifest_sha256": sha(root / "manifest.jsonl"),
+            "split": {k: registry[k] for k in ("data_part", "covered_parts", "counts")},
+        },
+    )
+    return rows
 
 
 def clean_bundle(root, identities):
@@ -40,17 +62,7 @@ def clean_bundle(root, identities):
                 "relation_annotations": {},
             }
         )
-    write_manifest(root / "manifest.jsonl", rows)
-    write_json(
-        root / "dataset_info.json",
-        {
-            "schema_version": "vn-av-dataset-v1",
-            "dataset_id": "fixture",
-            "clips": len(rows),
-            "manifest_sha256": sha(root / "manifest.jsonl"),
-        },
-    )
-    return rows
+    return seal_clean(root, rows)
 
 
 def paint_generator(cfg, video, audio, output, n, w, h):
@@ -284,16 +296,14 @@ def test_real_media_generation_review_export_and_resume(tmp_path, multigenerator
 
     generator = paint_generator
     assert generate(cfg, generator)["samples"] == expected
-    with pytest.raises(ValueError, match="Empty"):
-        finalize(cfg)
     with TestClient(review_app(cfg)) as client:
         items = client.get("/items").json()
+        # Mặc định keep: review chỉ đánh mẫu lỗi; đổi qua lại vẫn lưu đúng.
+        assert {item["decision"] for item in items} == {"keep"}
         assert client.get("/media/" + items[0]["sample_id"]).status_code == 200
-        for item in items:
-            assert (
-                client.post("/decision/" + item["sample_id"], json={"decision": "keep"}).status_code
-                == 200
-            )
+        for decision in ("reject", "keep"):
+            sid = items[0]["sample_id"]
+            assert client.post("/decision/" + sid, json={"decision": decision}).status_code == 200
     first = finalize(cfg)
     assert first["samples"] == expected
     bundle = load_dataset(cfg["generated_dataset"], verify_media=True)
@@ -331,39 +341,7 @@ def test_real_media_generation_review_export_and_resume(tmp_path, multigenerator
             == 409
         )
 
-    # A second generator must preserve clean parent splits when merged with this bundle.
-    external_video = tmp_path / "external.mp4"
-    d = decode(root / rows[0]["video"], max_side=640, sample_rate=48000)
-    d["frames"][:, 5:15, 5:15] = 231
-    encode(d["frames"], d["pcm"], external_video, 18)
-    item = {
-        "video": external_video.name,
-        "label": 1,
-        "fake_intervals": [[0, probe(external_video)["duration_s"]]],
-        "source_clip_id": "c0",
-        "audio_source_clip_id": "c1",
-        "generator": "second_generator_fixture",
-        "generator_version": "test-only",
-        "review_status": "keep",
-    }
-    external_manifest = tmp_path / "external.jsonl"
-    write_manifest(external_manifest, [item])
-    import_cfg = {
-        **cfg,
-        "external_manifest": str(external_manifest),
-        "import_output": str(tmp_path / "merged"),
-        "import_base": cfg["generated_dataset"],
-    }
-    assert import_external(import_cfg)["samples"] == expected + 1
-    merged = load_dataset(import_cfg["import_output"], verify_media=True)
-    clean_split = {r["clip_id"]: r["split"] for r in split_clean(rows, cfg["seed"])}
-    assert merged[-1]["split"] == clean_split["c0"]
-    item["audio_source_clip_id"] = "c2"
-    write_manifest(external_manifest, [item])
-    import_cfg["import_output"] = str(tmp_path / "invalid_merge")
-    with pytest.raises(ValueError, match="crosses splits"):
-        import_external(import_cfg)
-
+    clean_split = {r["clip_id"]: r["split"] for r in rows}
     if not multigenerator:
         # Part 2 only needs its new media and part 1's cumulative JSON split registry.
         from vn_av_df.dataset import training_dataset
@@ -381,23 +359,15 @@ def test_real_media_generation_review_export_and_resume(tmp_path, multigenerator
             "sha256": sha(new_video),
             "duration_s": probe(new_video)["duration_s"],
         }
-        write_manifest(root2 / "manifest.jsonl", [added])
-        write_json(
-            root2 / "dataset_info.json",
-            {
-                "schema_version": "vn-av-dataset-v1",
-                "dataset_id": "fixture_part2",
-                "clips": 1,
-                "manifest_sha256": sha(root2 / "manifest.jsonl"),
-            },
-        )
+        added.pop("split")
+        # Part 2 kế thừa split part 1 qua split-lock của part sạch (bật ở 05_export).
+        seal_clean(root2, [added], part=2, history=[root / "split-lock.json"])
         cfg2 = {
             **cfg,
             "data_part": 2,
             "clean_dataset": str(root2),
             "generated_dataset": str(tmp_path / "generated2"),
             "plan": str(tmp_path / "plan2.json"),
-            "split_history": [str(Path(cfg["generated_dataset"]) / "split-lock.json")],
         }
         assert make_plan(cfg2)["videos"] == 3
         assert generate(cfg2, generator)["samples"] == 3
@@ -441,7 +411,7 @@ def test_demo_public_result_has_only_scores_and_intervals(tmp_path):
 
     with TestClient(demo_app({"demo_output": str(tmp_path)}, Fixture)) as client:
         assert client.get("/api/health").json()["ready"] is False
-        assert client.get("/api/research").json()["test-comparison.json"] is None
+        assert client.get("/api/research").json()["runs"] is None
         job = client.post("/api/jobs", files={"video": ("clip.mp4", b"fixture")}).json()
         for _ in range(100):
             state = client.get("/api/jobs/" + job["id"]).json()

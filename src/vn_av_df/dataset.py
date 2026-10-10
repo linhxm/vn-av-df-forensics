@@ -145,6 +145,23 @@ def load_dataset(folder, manifest="manifest.jsonl", verify_media=False):
     return validate_rows(rows, root, verify_media)
 
 
+def part_selection(paths):
+    """Đường dẫn đầy đủ từng part (copy từ Kaggle) → (gốc chung, part tương đối với gốc).
+
+    Tên part (thư mục cuối, vd. vn-av-df-data-part1) đi vào hash lựa chọn dữ liệu, nên cache và
+    checkpoint vẫn khớp dù dataset được mount ở đâu.
+    """
+    import os
+
+    from vn_av_data.common.runtime import find_part
+
+    folders = [find_part(Path(p), "dataset_info.json").resolve() for p in paths]
+    if not folders:
+        raise ValueError("Need at least one dataset part")
+    root = folders[0].parent if len(folders) == 1 else Path(os.path.commonpath(folders))
+    return root, [f.relative_to(root).as_posix() for f in folders]
+
+
 def selected_parts(cfg):
     """Tìm part local/Kaggle; 'all' chỉ gồm các part đang có trên đĩa."""
     root = Path(cfg["dataset"]).resolve()
@@ -218,7 +235,7 @@ def training_dataset(cfg, verify_media=False):
 def temporal_targets(row, times, step, key="fake_intervals"):
     """Fraction of each output cell manipulated; context window is not the label extent.
 
-    key="av_mismatch_intervals" cho target lệch tiếng–miệng của nhánh sync P2.
+    key="av_mismatch_intervals" cho target lệch tiếng-miệng của nhánh sync P2.
     """
     if row.get(key) is None:
         return np.full(len(times), -1.0, np.float32)

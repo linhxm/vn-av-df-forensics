@@ -12,13 +12,12 @@ type Result = {
   evidence?: Partial<Record<Branch, number | null>>;
   evidence_scores?: Partial<Record<Branch, number[]>>;
 };
-type Comparison = { selected_method: string; methods: Record<string, Result> };
 type ResearchRun = { architecture: string; seed: number; video: { roc_auc: number | null; pr_auc: number | null; f1: number | null } };
-type Job = { id: string; status: string; result?: Result | Comparison; error?: string };
+type Job = { id: string; status: string; result?: Result; error?: string };
 const time = (seconds: number) => `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${(seconds % 60).toFixed(1).padStart(4, "0")}`;
 const score = (x: number | null) => x == null ? "Chưa đủ dữ liệu để chấm điểm" : x.toFixed(3);
 const BRANCHES: { key: Branch; label: string; color: string; note: string }[] = [
-  { key: "sync", label: "Nhánh sync (bất nhất quán tiếng–miệng)", color: "#b35c00", note: "Học từ real, sham và real bị dịch lệch tiếng; chưa từng thấy video fake." },
+  { key: "sync", label: "Nhánh sync (bất nhất quán tiếng-miệng)", color: "#b35c00", note: "Học từ real, sham và real bị dịch lệch tiếng; chưa từng thấy video fake." },
   { key: "artifact", label: "Nhánh artifact (dấu vết vùng miệng)", color: "#2f7d4a", note: "DINOv2 trên crop miệng, học cùng nhãn AI." },
 ];
 
@@ -40,9 +39,8 @@ function App() {
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState("");
   const [uploading, setUploading] = useState(false);
-  const [method, setMethod] = useState("");
   const [ready, setReady] = useState(false);
-  const [research, setResearch] = useState<Record<string, unknown> | null>(null);
+  const [research, setResearch] = useState<{ runs: ResearchRun[] | null } | null>(null);
   const video = useRef<HTMLVideoElement>(null);
   const busy = uploading || job?.status === "queued" || job?.status === "processing";
   useEffect(() => {
@@ -64,7 +62,7 @@ function App() {
   }, [job]);
   async function submit() {
     if (!file) return;
-    setUploading(true); setJob(null); setError(""); setMethod("");
+    setUploading(true); setJob(null); setError("");
     try {
       const body = new FormData(); body.append("video", file);
       const r = await fetch("/api/jobs", { method: "POST", body });
@@ -72,10 +70,9 @@ function App() {
       setJob(await r.json());
     } catch (e) { setError(String(e)); } finally { setUploading(false); }
   }
-  const comparison = job?.result && "methods" in job.result ? job.result : null;
-  const chosen = comparison ? method || comparison.selected_method : "";
-  const result: Result | undefined = comparison ? comparison.methods[chosen] : job?.result as Result | undefined;
-  const researchRuns = research?.["test-comparison.json"] as ResearchRun[] | null;
+  const result = job?.result;
+  // Kết quả test từng detector của run đang chọn (evaluation.json); so sánh đầy đủ ở compare.ipynb.
+  const researchRuns = research?.runs ?? null;
   const seek = (seconds: number) => { if (video.current) video.current.currentTime = seconds; };
   return <main>
     <h1>VN-AV-DF Forensics</h1>
@@ -83,9 +80,6 @@ function App() {
     <input aria-label="Video" type="file" accept="video/*" disabled={busy} onChange={e => setFile(e.target.files?.[0] ?? null)} />
     <button disabled={!file || busy || !ready} onClick={submit}>{busy ? "Đang xử lý…" : "Phân tích"}</button>
     {!ready && <p>Chưa có checkpoint đã train. Thu thập, duyệt dữ liệu và chạy training trước khi phân tích.</p>}
-    {comparison && <><h2>So sánh trên cùng video</h2><table><thead><tr><th>Phương pháp</th><th>Điểm</th><th>Quan sát được</th></tr></thead><tbody>
-      {Object.entries(comparison.methods).map(([name, r]) => <tr key={name}><td><button onClick={() => setMethod(name)}>{name}</button></td><td>{score(r.video_score)}</td><td>{r.coverage == null ? "-" : `${(r.coverage * 100).toFixed(1)}%`}</td></tr>)}
-    </tbody></table><p>Timeline đang xem: {chosen}. Model được chọn theo validation: {comparison.selected_method}.</p></>}
     <p role="status">{job?.status === "queued" ? "Đang chờ" : job?.status === "processing" ? "Đang phân tích video" : ""}</p>
     {(error || job?.error) && <p role="alert">{error || job?.error}</p>}
     {job && result && <section>
@@ -121,7 +115,7 @@ function App() {
       {!result.intervals.length && <p>Không có khoảng được báo trong lần phân tích này.</p>}
       <p><a href={`/api/jobs/${job.id}/report`} download>Tải kết quả JSON</a></p>
     </section>}
-    <details><summary>Kết quả nghiên cứu đã ghi nhận</summary>{researchRuns ? <table>
+    <details><summary>Kết quả test từng detector (run đang chọn)</summary>{researchRuns ? <table>
       <thead><tr><th>Phương pháp</th><th>Seed</th><th>ROC-AUC</th><th>PR-AUC</th><th>F1</th></tr></thead>
       <tbody>{researchRuns.map(r => <tr key={`${r.architecture}-${r.seed}`}><td>{r.architecture}</td><td>{r.seed}</td><td>{score(r.video.roc_auc)}</td><td>{score(r.video.pr_auc)}</td><td>{score(r.video.f1)}</td></tr>)}</tbody>
     </table> : <p>Chưa có kết quả test của bộ dữ liệu mới.</p>}</details>

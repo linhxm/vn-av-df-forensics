@@ -12,7 +12,7 @@ SYNC_ARTIFACT_MODELS = {
     "sync_only",
     "artifact_only",
 }
-NATIVE_MODELS = {"realrecon", "realrecon_concat", "visual_tcn", *SYNC_ARTIFACT_MODELS}
+NATIVE_MODELS = {"realrecon", *SYNC_ARTIFACT_MODELS}
 
 
 def method_config(cfg, name):

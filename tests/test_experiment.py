@@ -7,11 +7,11 @@ import torch
 from vn_av_df.common.runtime import fingerprint, read_json, save_npz, sha, write_json
 from vn_av_df.data.groups import write_manifest
 from vn_av_df.dataset import SCHEMA
-from vn_av_df.experiment import compare, evaluate, load_model, train_one
+from vn_av_df.experiment import evaluate, load_model, train_one, train_selected
 from vn_av_df.models import TemporalDetector
 
 
-@pytest.mark.parametrize("architecture", ["linear", "gru", "tcn", "transformer"])
+@pytest.mark.parametrize("architecture", ["gru", "tcn"])
 def test_masks_block_temporal_leakage_and_gradients(architecture):
     torch.manual_seed(2)
     model = TemporalDetector(8, 8, architecture, hidden=8, dropout=0).eval()
@@ -91,7 +91,7 @@ def project(tmp_path):
         "runs": str(tmp_path / "runs"),
         "device": "cpu",
         "encoder": {},
-        "architectures": ["gru", "tcn", "transformer"],
+        "architectures": ["gru", "tcn"],
         "seeds": [42],
         "held_out_generators": [],
         "training": {
@@ -106,21 +106,21 @@ def project(tmp_path):
     }, rows
 
 
-def test_compare_resume_test_thresholds_and_binary_output(project, tmp_path):
+def test_train_test_thresholds_lock_and_binary_output(project, tmp_path):
     cfg, rows = project
-    report = compare(cfg)
-    assert len(report["runs"]) == 3
+    report = train_selected(cfg)
+    assert len(report["runs"]) == 2
     before = {r["checkpoint"]: load_model(r["checkpoint"])[1]["thresholds"] for r in report["runs"]}
     results = evaluate(cfg)
-    assert len(results) == 3
+    assert len(results) == 2
     assert all("by_generator" in r for r in results)
     assert before == {p: load_model(p)[1]["thresholds"] for p in before}
-    assert (Path(cfg["runs"]) / "test-summary.json").is_file()
-    comparison_path = Path(cfg["runs"]) / "comparison.json"
-    write_json(comparison_path, {**report, "selection": "changed after test"})
+    assert read_json(Path(cfg["runs"]) / "evaluation.json")["runs"][0]["architecture"] == "gru"
+    index_path = Path(cfg["runs"]) / "training.json"
+    write_json(index_path, {**report, "note": "changed after test"})
     with pytest.raises(ValueError, match="Test protocol changed"):
         evaluate(cfg)
-    write_json(comparison_path, report)
+    write_json(index_path, report)
     cfg["training"]["epochs"] = 2
     train_one(cfg, "gru", 42, resume=True)
     assert len(read_json(Path(cfg["runs"]) / "gru_seed42/history.json")) == 2
@@ -134,6 +134,7 @@ def test_compare_resume_test_thresholds_and_binary_output(project, tmp_path):
             Path(output).write_bytes(source.read_bytes())
             return {"step_s": 0.2, "duration_s": 4.0}
 
+    cfg["demo_method"] = "gru"
     result = Analyzer(cfg, FixtureEncoder()).analyze("fixture.mp4")
     assert set(result) == {"video_score", "intervals"}
     assert 0 <= result["video_score"] <= 1
@@ -186,7 +187,7 @@ def test_training_never_reads_test_cache(project):
     train_one(cfg, "gru", 42)
 
 
-@pytest.mark.parametrize("methods", [["linear"], ["linear", "gru"], ["linear", "gru", "tcn"]])
+@pytest.mark.parametrize("methods", [["gru"], ["gru", "tcn"]])
 def test_selected_training_reports_without_automatic_comparison(project, methods, monkeypatch):
     from vn_av_df.actions import execute
     from vn_av_df.inference import chosen_checkpoint
@@ -198,7 +199,6 @@ def test_selected_training_reports_without_automatic_comparison(project, methods
     index = read_json(folder / "training.json")
     assert index["status"] == "complete"
     assert [r["architecture"] for r in index["runs"]] == methods
-    assert not list(folder.glob("*comparison*"))
     assert not (folder / "test-lock.json").exists()
     for name in methods:
         detector = folder / f"{name}_seed42"
@@ -220,8 +220,6 @@ def test_selected_training_reports_without_automatic_comparison(project, methods
         assert not (folder / "test-lock.json").exists()  # Rendering never calls test.
         evaluate(cfg)
         assert (folder / "evaluation.json").exists()
-        assert not (folder / "test-comparison.json").exists()
-        assert not (folder / "test-summary.json").exists()
         assert training_reports(folder, split="test")[0]["summary"]["split"] == "test"
 
 
@@ -229,9 +227,9 @@ def test_training_selection_cannot_silently_overwrite_run_index(project):
     from vn_av_df.experiment import train_selected
 
     cfg, _ = project
-    cfg["architectures"] = ["linear"]
+    cfg["architectures"] = ["gru"]
     train_selected(cfg)
-    cfg["architectures"] = ["linear", "gru"]
+    cfg["architectures"] = ["gru", "tcn"]
     with pytest.raises(ValueError, match="selection changed"):
         train_selected(cfg, resume=True)
 
@@ -257,7 +255,7 @@ def test_train_part1_then_union_requires_new_run_and_records_parts(project):
 
     part("vn-av-df-data-part1", rows)
     cfg.update(dataset_parts=["vn-av-df-data-part1"], architectures=["gru"])
-    compare(cfg)
+    train_selected(cfg)
     assert "vn-av-df-data-part1" in evaluate(cfg)[0]["by_part"]
     extra = []
     for r in rows:
@@ -288,8 +286,8 @@ def test_train_part1_then_union_requires_new_run_and_records_parts(project):
     with pytest.raises(ValueError, match="Test protocol changed"):
         evaluate(cfg)
     cfg["runs"] += "-parts1-2"
-    comparison = compare(cfg)
-    assert len(comparison["dataset_selection"]["parts"]) == 2
+    report = train_selected(cfg)
+    assert len(report["dataset_selection"]["parts"]) == 2
     result = evaluate(cfg)[0]
     assert set(result["by_part"]) == {"vn-av-df-data-part1", "vn-av-df-data-part2"}
     assert read_json(Path(cfg["runs"]) / "dataset-selection.json")["samples"] == 12
@@ -366,11 +364,10 @@ def test_realrecon_native_training_freeze_resume_and_inference(project, monkeypa
     assert any(Path(image).name == "reconstruction.png" for image in report["images"])
 
 
-@pytest.mark.parametrize("architecture", ["realrecon", "realrecon_concat", "visual_tcn"])
-def test_reconstruction_no_information_crosses_gap(architecture):
+def test_reconstruction_no_information_crosses_gap():
     from vn_av_df.models import build_model
 
-    model = build_model(8, 8, architecture, 8, 0, native_stride=5).eval()
+    model = build_model(8, 8, "realrecon", 8, 0, native_stride=5).eval()
     model.reconstruction_ready.fill_(True)
     a, v = torch.randn(100, 8), torch.randn(100, 8)
     mask = torch.ones(100, dtype=torch.bool)
@@ -382,7 +379,7 @@ def test_reconstruction_no_information_crosses_gap(architecture):
     assert torch.allclose(first[:10], second[:10])
 
 
-def test_native_features_pooled_for_linear_but_not_reconstruction(tmp_path):
+def test_native_features_pooled_for_tcn_but_not_reconstruction(tmp_path):
     from vn_av_df.features.registry import feature_arrays
 
     path = tmp_path / "cache.npz"
@@ -394,7 +391,7 @@ def test_native_features_pooled_for_linear_but_not_reconstruction(tmp_path):
         audio_valid=np.array([True] * 12 + [False]),
         visual_valid=np.ones(13, bool),
     )
-    arrays, times, meta = feature_arrays(path, {"step_s": 0.04, "output_stride": 5}, "linear")
+    arrays, times, meta = feature_arrays(path, {"step_s": 0.04, "output_stride": 5}, "tcn")
     assert arrays[0].shape == (3, 4)
     assert not arrays[2][-1]
     assert meta["step_s"] == 0.2

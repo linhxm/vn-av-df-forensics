@@ -135,6 +135,54 @@ def load_config(path, profile=None):
     return cfg
 
 
+def find_part(path, marker):
+    """Thư mục chứa `marker` (vd. manifest.jsonl): chính `path` hoặc thư mục con duy nhất có nó.
+
+    Đường dẫn copy từ panel Input của Kaggle có thể là gốc dataset, còn ZIP upload giữ thêm
+    một thư mục cùng tên part bên trong.
+    """
+    path = Path(path)
+    if (path / marker).is_file():
+        return path
+    found = [child for child in sorted(path.glob("*")) if (child / marker).is_file()]
+    if len(found) != 1:
+        raise FileNotFoundError(f"Không thấy {marker} trong {path} (hoặc thư mục con trực tiếp)")
+    return found[0]
+
+
+def prune_output(root, keep):
+    """Output Kaggle chỉ giữ các đường dẫn `keep` (tương đối với root); xoá phần còn lại của repo.
+
+    Cấu trúc thư mục vẫn đi từ `vn-av-df-forensics/`, tải về là đặt thẳng vào repo local.
+    Symlink (cache chỉ đọc) bị gỡ, không chép nội dung đích vào Output.
+    """
+    import shutil
+
+    root = Path(root)
+    keep = [root / k for k in keep]
+
+    def needed(path):
+        return any(path == k or path in k.parents for k in keep)
+
+    removed = []
+
+    def walk(folder):
+        for child in sorted(folder.iterdir()):
+            if any(k == child or k in child.parents for k in keep) and not child.is_symlink():
+                continue  # Nằm trong phần giữ: để nguyên.
+            if child.is_symlink() or not needed(child):
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child, ignore_errors=True)
+                else:
+                    child.unlink()
+                removed.append(child.relative_to(root).as_posix())
+            elif child.is_dir():
+                walk(child)
+
+    walk(root)
+    return removed
+
+
 def require_file(path, name):
     if not path or not Path(path).is_file():
         raise FileNotFoundError(f"Missing {name}: {path}. See README.md or run the setup command.")

@@ -13,19 +13,18 @@ def execute(action, cfg, resume=False):
         rows, info = validate_bundle(cfg["clean_dataset"], probe=probe)
         from collections import Counter
 
-        from vn_av_df.generation import prior_assignments, split_clean
-
+        if not info["splits"]:
+            raise ValueError(
+                "Clean part has no split; run 05_export again (split is assigned there)"
+            )
+        # Split đã gán ở 05_export; ở đây chỉ báo lại số clip và speaker theo split.
         result = {
             **info,
-            "speakers": dict(Counter(r.get("speaker_id") for r in rows)),
-            "splits": dict(
-                Counter(
-                    r["split"]
-                    for r in split_clean(
-                        rows, cfg["seed"], prior_assignments(cfg), cfg.get("split_ratios")
-                    )
-                )
-            ),
+            "speakers": {
+                split: sorted({r.get("speaker_id") or "-" for r in rows if r["split"] == split})
+                for split in ("train", "validation", "test")
+            },
+            "speaker_clips": dict(Counter(r.get("speaker_id") for r in rows)),
         }
     elif action == "generator_setup":
         from vn_av_df.generators import setup_generators
@@ -66,11 +65,6 @@ def execute(action, cfg, resume=False):
         from vn_av_df.experiment import evaluate
 
         result = evaluate(cfg)
-    elif action == "analyze":
-        from vn_av_df.inference import Analyzer, ComparisonAnalyzer
-
-        factory = ComparisonAnalyzer if cfg.get("demo_compare") else Analyzer
-        result = factory(cfg).analyze(cfg["video"], cfg["analyze_output"])
     elif action == "demo":
         import uvicorn
 
@@ -78,10 +72,6 @@ def execute(action, cfg, resume=False):
 
         uvicorn.run(demo_app(cfg), host="127.0.0.1", port=8000)
         return
-    elif action == "import":
-        from vn_av_df.import_media import import_external
-
-        result = import_external(cfg)
     elif action == "export":
         import shutil
 

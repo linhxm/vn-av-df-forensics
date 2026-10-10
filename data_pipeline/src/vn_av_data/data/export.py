@@ -1,6 +1,7 @@
-"""Export portable reviewed clips of one part, without training splits or controls.
+"""Export clip đã duyệt của một part kèm split train/validation/test (chưa có fake/control).
 
-Chạy lại sau khi duyệt thêm: dựng lại toàn bộ part, giữ nguyên nếu danh sách clip không đổi.
+Split gán ở đây theo nhóm người/nguồn (split.py) và ghi split-lock.json; generate chỉ đọc lại.
+Chạy lại sau khi duyệt thêm: dựng lại toàn bộ part, giữ nguyên nếu manifest không đổi.
 """
 
 import csv
@@ -14,6 +15,7 @@ from vn_av_data.common.runtime import sha, write_json
 from vn_av_data.contract import SCHEMA, valid_id, validate_annotations, validate_bundle
 from vn_av_data.data.manifest import read_manifest, write_manifest
 from vn_av_data.data.media import probe
+from vn_av_data.data.split import assign_splits
 
 
 def review_path(root, value):
@@ -34,7 +36,18 @@ def review_path(root, value):
     return candidate
 
 
-def export_dataset(review, root, output, dataset_id, annotations=None):
+def export_dataset(
+    review,
+    root,
+    output,
+    dataset_id,
+    annotations=None,
+    part=1,
+    seed=42,
+    ratios=None,
+    history=(),
+):
+    """`part`, `seed`, `ratios`, `history` (split-lock part trước, tuỳ chọn) quyết định split."""
     root, output = Path(root).resolve(), Path(output).resolve()
     if not valid_id(dataset_id):
         raise ValueError("dataset_id must contain letters, digits, underscore or hyphen")
@@ -92,7 +105,7 @@ def export_dataset(review, root, output, dataset_id, annotations=None):
         for key in ("url", "source_sha256", "global_speaker_ids"):
             if entry.get(key):
                 row[key] = entry[key]
-        # Thông số nguồn cho nghiên cứu fps/độ phân giải/độ nén (R1–R3).
+        # Thông số nguồn cho nghiên cứu fps/độ phân giải/độ nén (R1-R3).
         for key, kind in (
             ("source_fps", float),
             ("source_width", int),
@@ -108,6 +121,7 @@ def export_dataset(review, root, output, dataset_id, annotations=None):
         raise ValueError("Annotations reference clips not included in the reviewed export")
     if not rows:
         raise ValueError("No reviewed keep clips to export")
+    rows, registry = assign_splits(rows, part, seed, ratios, history)
     # Dựng ở thư mục tạm để bản export dở dang không bao giờ trông như bộ dữ liệu hoàn chỉnh.
     stage = output.with_name(output.name + ".partial")
     if stage.exists():
@@ -117,6 +131,7 @@ def export_dataset(review, root, output, dataset_id, annotations=None):
     for row, video in zip(rows, media):
         shutil.copy2(video, stage / row["video"])
     write_manifest(stage / "manifest.jsonl", rows)
+    write_json(stage / "split-lock.json", registry)
     info = {
         "schema_version": SCHEMA,
         "dataset_id": dataset_id,
@@ -125,10 +140,16 @@ def export_dataset(review, root, output, dataset_id, annotations=None):
         "review_sha256": sha(review),
         "annotations_sha256": sha(annotations) if annotations else None,
         "exporter_sha256": sha(__file__),
+        "split": {
+            key: registry[key]
+            for key in ("data_part", "split_ratios", "seed", "covered_parts", "groups", "counts")
+        },
     }
     write_json(stage / "dataset_info.json", info)
     _, report = validate_bundle(stage, probe=probe)
     report.update(
+        splits=registry["counts"],
+        split_groups=registry["groups"],
         decisions=dict(Counter(e.get("decision") for e in entries)),
         duplicate_clips_skipped=duplicates,
     )

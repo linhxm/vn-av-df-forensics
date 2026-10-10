@@ -3,11 +3,12 @@
 from collections import Counter
 
 import pytest
+from vn_av_data.data.split import load_history, split_clean
 
 from vn_av_df.common.runtime import read_json, sha, write_json
 from vn_av_df.data.groups import write_manifest
 from vn_av_df.dataset import SCHEMA, media_path, training_dataset
-from vn_av_df.generation import make_plan, prior_assignments, split_clean, validate_plan_settings
+from vn_av_df.generation import make_plan, validate_plan_settings
 
 
 def bundle(root, part, split="train", speaker=None):
@@ -110,31 +111,30 @@ def test_incremental_split_inherits_old_speaker_and_rejects_transitive_bridge():
 
 
 def test_optional_registry_keeps_source_hash_identity_and_checks_preceding_part(tmp_path):
-    assert prior_assignments({"data_part": 2}) == []
+    assert load_history([], 2) == ([], [])
     history = split_clean([clean(i) for i in range(3)])
     history[0]["source_sha256"] = "raw-hash"
     path = tmp_path / "split-lock.json"
     write_json(path, {"schema": "vn-av-df-split-registry-v1", "assignments": history})
-    cfg = {"split_history": [str(path)]}
     assigned = split_clean(
-        [{**clean(90), "source_sha256": "raw-hash"}], history=prior_assignments(cfg)
+        [{**clean(90), "source_sha256": "raw-hash"}], history=load_history([path], 1)[0]
     )
     assert assigned[0]["split"] == history[0]["split"]
     write_json(path, {"assignments": history})
     with pytest.raises(ValueError, match="complete source identities"):
-        prior_assignments(cfg)
+        load_history([path], 1)
     write_json(
         path, {"schema": "vn-av-df-split-registry-v1", "data_part": 1, "assignments": history}
     )
     with pytest.raises(ValueError, match="immediately preceding"):
-        prior_assignments({**cfg, "data_part": 3})
-    assert prior_assignments({**cfg, "data_part": 2}) == history
+        load_history([path], 3)
+    assert load_history([path], 2)[0] == history
 
 
-def test_independent_split_uses_80_10_10_without_breaking_speaker_groups():
+def test_independent_split_uses_70_15_15_without_breaking_speaker_groups():
     rows = [clean(i, speaker=f"person{i // 2}") for i in range(200)]
     assigned = split_clean(rows)
-    assert Counter(r["split"] for r in assigned) == {"train": 160, "validation": 20, "test": 20}
+    assert Counter(r["split"] for r in assigned) == {"train": 140, "validation": 30, "test": 30}
     speakers = {}
     for row in assigned:
         speakers.setdefault(row["speaker_id"], set()).add(row["split"])
@@ -160,34 +160,38 @@ def test_invalid_split_ratios_fail_before_assignment(ratios):
 
 
 @pytest.mark.parametrize("part", [1, 2, 6])
-def test_plan_for_any_independent_part_needs_no_history(tmp_path, monkeypatch, part):
+def test_plan_reads_export_split_and_freezes_settings(tmp_path, monkeypatch, part):
     from vn_av_df import generation
 
+    ratios = {"train": 0.8, "validation": 0.1, "test": 0.1}
     rows = [{**clean(i), "duration_s": 6} for i in range(100)]
+    assigned = {r["clip_id"]: r["split"] for r in split_clean(rows, ratios=ratios)}
+    rows = [{**r, "split": assigned[r["clip_id"]]} for r in rows]
     monkeypatch.setattr(
         generation, "validate_bundle", lambda *a, **kw: (rows, {"manifest_sha256": "fixture"})
     )
+    write_json(tmp_path / "dataset_info.json", {"split": {"covered_parts": [part]}})
     cfg = {
-        "clean_dataset": "unused",
+        "clean_dataset": str(tmp_path),
         "data_part": part,
-        "split_history": [],
         "seed": 42,
         "plan": str(tmp_path / "plan.json"),
         "generation": {"clips_per_split": 0},
     }
+    # Split lấy nguyên từ part sạch (05_export), generate không chia lại.
     assert make_plan(cfg)["splits"] == {"train": 80, "validation": 10, "test": 10}
     plan = read_json(cfg["plan"])
-    lock = read_json(tmp_path / "plan_split-lock.json")
-    assert lock["covered_parts"] == [part]
-    assert lock["split_ratios"] == {"train": 0.8, "validation": 0.1, "test": 0.1}
-    assert plan["prior_assignments"] == []
+    assert plan["split"] == {"covered_parts": [part]}
+    assert {r["clip_id"]: r["split"] for r in plan["assignments"]} == assigned
     validate_plan_settings(cfg, plan)
-    changed = {**cfg, "split_ratios": {"train": 0.7, "validation": 0.15, "test": 0.15}}
     with pytest.raises(ValueError, match="frozen plan"):
-        validate_plan_settings(changed, plan)
-    legacy = {k: v for k, v in plan.items() if k != "split_ratios"}
-    with pytest.raises(ValueError, match="frozen plan"):
-        validate_plan_settings(cfg, legacy)
+        validate_plan_settings({**cfg, "seed": 7}, plan)
+    unsplit = [{k: v for k, v in r.items() if k != "split"} for r in rows]
+    monkeypatch.setattr(
+        generation, "validate_bundle", lambda *a, **kw: (unsplit, {"manifest_sha256": "x"})
+    )
+    with pytest.raises(ValueError, match="no split"):
+        make_plan({**cfg, "plan": str(tmp_path / "plan2.json")})
 
 
 def test_reenable_history_requires_all_independent_parts(tmp_path):
@@ -204,10 +208,10 @@ def test_reenable_history_requires_all_independent_parts(tmp_path):
             },
         )
         paths.append(str(path))
-    cfg = {"data_part": 3, "split_history": paths[1:]}
     with pytest.raises(ValueError, match="cover all preceding parts"):
-        prior_assignments(cfg)
-    history = prior_assignments({**cfg, "split_history": paths})
+        load_history(paths[1:], 3)
+    history, covered = load_history(paths, 3)
+    assert covered == [1, 2]
     assert len(history) == 20
     # Reusing a previous identity still inherits its split when the feature is enabled.
     new = split_clean([clean(999, history[0]["speaker_id"])], history=history)

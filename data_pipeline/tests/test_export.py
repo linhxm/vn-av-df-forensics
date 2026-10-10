@@ -20,7 +20,7 @@ def reviewed(tmp_path, monkeypatch):
     root = tmp_path / "reviewed"
     root.mkdir()
     rows = []
-    for i in range(3):
+    for i in range(4):  # 4 nguồn độc lập: còn ≥3 nhóm để chia split khi loại một clip.
         path = root / f"clip{i}.mp4"
         path.write_bytes(f"fixture-video-{i}".encode())
         rows.append(
@@ -58,11 +58,17 @@ def test_export_relocation_labels_and_rerun(reviewed, tmp_path):
     )
     output = tmp_path / "export"
     report = export_dataset(review, root, output, "fixture_v001", labels)
-    assert report["clips"] == 3
+    assert report["clips"] == 4
+    assert set(report["splits"]) == {"train", "validation", "test"}
     relocated = tmp_path / "other_machine" / "dataset"
     shutil.copytree(output, relocated)
     rows, _ = validate_bundle(relocated)
-    assert all("split" not in row and row["video"].startswith("clips/") for row in rows)
+    # Split gán lúc export, ghi kèm split-lock để generate/part sau đọc lại.
+    assert all(row["split"] and row["video"].startswith("clips/") for row in rows)
+    lock = json.loads((relocated / "split-lock.json").read_text(encoding="utf-8"))
+    assert {r["clip_id"]: r["split"] for r in lock["assignments"]} == {
+        r["clip_id"]: r["split"] for r in rows
+    }
     assert rows[0]["relation_annotations"]["motion_speech"]["positive"] == [[1, 2]]
     assert rows[0]["source_start_s"] == 10
     # Chạy lại: không đổi thì giữ bản cũ; duyệt thêm thì dựng lại cả part.
@@ -71,7 +77,7 @@ def test_export_relocation_labels_and_rerun(reviewed, tmp_path):
     rows_now[2]["decision"] = "reject"
     write_csv(review, rows_now)
     report = export_dataset(review, root, output, "fixture_v001", labels)
-    assert report["replaced"] and validate_bundle(output)[1]["clips"] == 2
+    assert report["replaced"] and validate_bundle(output)[1]["clips"] == 3
     assert not (tmp_path / "export.old").exists() and not (tmp_path / "export.partial").exists()
     (relocated / rows[0]["video"]).write_bytes(b"changed")
     with pytest.raises(ValueError, match="hash mismatch"):
@@ -114,7 +120,7 @@ def test_dedup_and_invalid_annotation_do_not_silently_lose_labels(reviewed, tmp_
     rows.insert(1, {**rows[0], "clip_id": "duplicate"})
     write_csv(review, rows)
     report = export_dataset(review, root, tmp_path / "dedup", "test")
-    assert report["clips"] == 3
+    assert report["clips"] == 4
     assert report["duplicate_clips_skipped"] == ["duplicate"]
     labels = tmp_path / "labels.jsonl"
     labels.write_text(

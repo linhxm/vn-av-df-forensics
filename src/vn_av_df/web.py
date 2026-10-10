@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
+from vn_av_data.serving.review_page import review_page
 
 from vn_av_df.common.runtime import write_json
 from vn_av_df.data.groups import read_manifest
@@ -34,11 +35,10 @@ def demo_app(cfg, analyzer_factory=None):
         try:
             jobs[sid]["status"] = "processing"
             if not analyzer:
-                from vn_av_df.inference import Analyzer, ComparisonAnalyzer
+                from vn_av_df.inference import Analyzer
 
-                factory = ComparisonAnalyzer if cfg.get("demo_compare") else Analyzer
                 # Demo cần điểm theo ô để vẽ timeline AI và timeline từng nhánh bằng chứng P2.
-                analyzer.append((analyzer_factory or factory)({**cfg, "demo_details": True}))
+                analyzer.append((analyzer_factory or Analyzer)({**cfg, "demo_details": True}))
             result = analyzer[0].analyze(path, root / sid / "result.json")
             jobs[sid].update(status="complete", result=result)
         except Exception as exc:
@@ -66,14 +66,11 @@ def demo_app(cfg, analyzer_factory=None):
 
     @app.get("/api/research")
     def research():
-        """Chỉ trả artifact thực; dataset trống thì không tạo số liệu minh họa."""
+        """Kết quả test từng detector của run đang chọn (evaluation.json); chưa test thì None."""
         from vn_av_df.common.runtime import read_json
 
-        folder = Path(cfg.get("runs", "runs"))
-        return {
-            name: read_json(folder / name) if (folder / name).is_file() else None
-            for name in ("comparison.json", "test-comparison.json")
-        }
+        path = Path(cfg.get("runs", "runs")) / "evaluation.json"
+        return {"runs": read_json(path)["runs"] if path.is_file() else None}
 
     @app.post("/api/jobs")
     async def submit(video: UploadFile = File(...)):
@@ -189,14 +186,36 @@ def review_app(cfg):
     return app
 
 
-REVIEW_PAGE = """<!doctype html><meta charset="utf-8"><title>Review dataset</title>
-<style>body{max-width:900px;margin:25px auto;font:16px system-ui}video{width:100%}button,select{padding:10px;margin:6px}</style>
-<h1>Duyệt dữ liệu Real/Fake</h1><p>Keep: media hoạt động, thấy rõ người nói, thao tác sinh đúng khoảng ghi nhận. Không chọn dựa trên điểm detector. Đây là duyệt chất lượng dữ liệu, không phải đầu ra model.</p>
-<select id="list"></select><video id="v" controls></video><pre id="info"></pre>
-<button onclick="save('keep')">Keep</button><button onclick="save('reject')">Reject</button><button onclick="save('uncertain')">Uncertain</button><p id="message"></p>
-<script>let rows=[],index=0;const list=document.getElementById('list');
-function show(){let r=rows[index];document.getElementById('v').src='/media/'+r.sample_id;document.getElementById('info').textContent=JSON.stringify(r,null,2);list.value=index;}
-list.onchange=()=>{index=Number(list.value);show()};
-fetch('/items').then(r=>r.json()).then(x=>{rows=x;rows.forEach((r,i)=>{let o=document.createElement('option');o.value=i;o.textContent=(i+1)+' '+r.sample_id;list.append(o)});if(rows.length)show()});
-async function save(decision){let response=await fetch('/decision/'+rows[index].sample_id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision})});if(!response.ok){document.getElementById('message').textContent=await response.text();return}rows[index].decision=decision;index=Math.min(index+1,rows.length-1);show()}
-</script>"""
+# Mẫu sinh mặc định keep: chỉ đánh reject/uncertain mẫu lỗi. Real gốc cùng clip chiếu cạnh để đối chiếu.
+REVIEW_PAGE = review_page(
+    "Duyệt dữ liệu Real/Fake",
+    "Keep: media hoạt động, thấy rõ người nói, thao tác sinh đúng khoảng ghi nhận (vạch đỏ: đoạn fake, "
+    "vạch cam: đoạn lệch tiếng của sham). Không chọn dựa trên điểm detector; đây là duyệt chất lượng "
+    "dữ liệu, không phải đầu ra model.",
+    items="/items",
+    media="/media/{key}",
+    save="/decision/{key}",
+    key="sample_id",
+    filters=["decision", "split", "variant", "generator", "audio_mode", "speaker_id"],
+    tags=["variant", "generator"],
+    info=[
+        "sample_id",
+        "split",
+        "variant",
+        "label",
+        "generator",
+        "audio_mode",
+        "speaker_id",
+        "source_clip_id",
+        "duration_s",
+        "fake_intervals",
+        "av_mismatch_intervals",
+        "audio_source_id",
+        "generator_version",
+        "decision",
+    ],
+    search=["sample_id", "source_clip_id", "speaker_id", "source_id"],
+    pending=["uncertain", "pending"],
+    timeline={"fake_intervals": "Đoạn fake", "av_mismatch_intervals": "Đoạn lệch tiếng (sham)"},
+    pair={"match": "source_clip_id", "where": {"variant": "real"}},
+)

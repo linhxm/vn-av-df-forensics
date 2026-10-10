@@ -260,7 +260,7 @@ def check(row):
         return f"availability {row['availability']}"
     duration = float(row.get("duration_s") or 0)
     if not MIN_SOURCE_SECONDS <= duration <= MAX_SOURCE_HOURS * 3600:
-        return f"duration {duration:.0f}s outside {MIN_SOURCE_SECONDS}s–{MAX_SOURCE_HOURS}h"
+        return f"duration {duration:.0f}s outside {MIN_SOURCE_SECONDS}s-{MAX_SOURCE_HOURS}h"
     # Dung sai 0,5: 25 fps danh định đôi khi ghi 24,99; 23,976 fps vẫn bị loại.
     if float(row.get("native_fps") or 0) < MIN_FPS - 0.5:
         return f"fps {float(row.get('native_fps') or 0):.2f} < {MIN_FPS}"

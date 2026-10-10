@@ -2,14 +2,13 @@
 
 import csv
 import io
-import math
 import queue
 import random
 import shutil
 import tempfile
 import threading
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
@@ -18,12 +17,11 @@ from vn_av_data.contract import validate_bundle
 
 from vn_av_df import worker
 from vn_av_df.common.runtime import atomic_bytes, fingerprint, read_json, sha, write_json
-from vn_av_df.data.groups import connected_groups, read_manifest, write_manifest
+from vn_av_df.data.groups import read_manifest, write_manifest
 from vn_av_df.data.media import decode, probe
 from vn_av_df.data.render import encode
 from vn_av_df.dataset import SCHEMA, validate_rows
 
-DEFAULT_SPLIT_RATIOS = {"train": 0.8, "validation": 0.1, "test": 0.1}
 AUDIO_MODES = ("source", "donor")
 
 
@@ -41,22 +39,6 @@ def fake_audio_modes(options, split):
     return list(modes)
 
 
-def split_ratios(value=None):
-    """Tỷ lệ theo số clip sạch; giữ nguyên nhóm nên số thực tế có thể lệch mục tiêu."""
-    value = DEFAULT_SPLIT_RATIOS if value is None else value
-    if (
-        not isinstance(value, dict)
-        or set(value) != set(DEFAULT_SPLIT_RATIOS)
-        or any(
-            isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v < 1
-            for v in value.values()
-        )
-        or not math.isclose(sum(value.values()), 1.0, abs_tol=1e-9)
-    ):
-        raise ValueError("split_ratios must contain positive train/validation/test summing to 1")
-    return {key: float(value[key]) for key in DEFAULT_SPLIT_RATIOS}
-
-
 def csv_write(path, rows):
     text = io.StringIO(newline="")
     writer = csv.DictWriter(text, fieldnames=list(rows[0]))
@@ -65,95 +47,17 @@ def csv_write(path, rows):
     atomic_bytes(path, text.getvalue().encode("utf-8-sig"))
 
 
-def prior_assignments(cfg):
-    """Danh sách rỗng chia part độc lập; điền lịch sử để bật lại kế thừa split."""
-    return prior_registry(cfg)[0]
-
-
-def prior_registry(cfg):
-    """Gộp lịch sử tùy chọn, kiểm đủ part khi bật lại sau nhiều part chia độc lập."""
-    paths = cfg.get("split_history", [])
-    if not paths:
-        return [], []
-    prior = {}
-    versions = []
-    covered = set()
-    for path in paths:
-        lock = read_json(path)
-        if lock.get("schema") != "vn-av-df-split-registry-v1":
-            raise ValueError("Need a cumulative split-lock with complete source identities")
-        versions.append(lock.get("data_part", 0))
-        # Registry cũ luôn tích lũy; registry mới ghi rõ part thực sự có trong file.
-        covered.update(lock.get("covered_parts", range(1, lock.get("data_part", 0) + 1)))
-        for row in lock["assignments"]:
-            key = row["clip_id"]
-            if key in prior and prior[key] != row:
-                raise ValueError("Conflicting split history for the same clip")
-            prior[key] = row
-    if paths and not prior:
-        raise ValueError("Empty split history")
-    if cfg.get("data_part", 1) > 1 and max(versions) != cfg["data_part"] - 1:
-        raise ValueError("Use the cumulative split-lock of the immediately preceding part")
-    if cfg.get("data_part", 1) > 1 and covered != set(range(1, cfg["data_part"])):
-        raise ValueError("Split history must cover all preceding parts; include independent locks")
-    return list(prior.values()), sorted(covered)
-
-
-def split_clean(rows, seed=42, history=(), ratios=None):
-    """Mặc định 80/10/10 trong part; chỉ giữ split part cũ khi có history."""
-    ratios = split_ratios(ratios)
-    current = [{**r, "sample_id": r["clip_id"]} for r in rows]
-    ids = {r["clip_id"] for r in current}
-    if len(ids) != len(current) or ids & {r["clip_id"] for r in history}:
-        raise ValueError("Duplicate clean clip across parts; keep each clip in one part")
-    old_hashes = {r["sha256"] for r in history if r.get("sha256")}
-    if any(r.get("sha256") in old_hashes for r in current):
-        raise ValueError("Duplicate clean media across parts")
-    if any(r.get("split") not in {"train", "validation", "test"} for r in history):
-        raise ValueError("Invalid split history")
-    groups = connected_groups([*history, *current])
-    if len(groups) < 3 and not history:
-        raise ValueError("Need three independent speaker/source groups before generation")
-    random.Random(seed).shuffle(groups)
-    groups.sort(key=len, reverse=True)
-    total = len(rows) + len(history)
-    target = {split: ratio * total for split, ratio in ratios.items()}
-    counts = Counter()
-    result = []
-    fresh = []
-    for group in groups:
-        locked = {r["split"] for r in group if r["clip_id"] not in ids}
-        if len(locked) > 1:
-            raise ValueError("New part connects previously separated splits; review identities")
-        if locked:
-            split = next(iter(locked))
-            counts[split] += len(group)
-            result.extend({**r, "split": split} for r in group if r["clip_id"] in ids)
-        else:
-            fresh.append(group)
-    for i, group in enumerate(fresh):
-        empty = [s for s in target if not counts[s]]
-        choices = empty if len(fresh) - i == len(empty) else list(target)
-        split = min(
-            choices,
-            key=lambda s: sum(
-                (counts[t] + (len(group) if t == s else 0) - target[t]) ** 2 for t in target
-            ),
-        )
-        counts[split] += len(group)
-        result.extend({**r, "split": split} for r in group)
-    return result
-
-
 def make_plan(cfg):
-    """Khóa parent/split/generator, hỗ trợ generator test-only và giữ audio gốc."""
+    """Khóa parent/donor/generator theo split đã gán ở 05_export; giữ audio gốc."""
     dest = Path(cfg["plan"])
     if dest.exists():
         raise FileExistsError("Plan exists; reuse it to resume or choose a new run name")
     rows, info = validate_bundle(cfg["clean_dataset"], probe=probe)
-    history, covered = prior_registry(cfg)
-    ratios = split_ratios(cfg.get("split_ratios"))
-    rows = split_clean(rows, cfg["seed"], history, ratios)
+    if any("split" not in r for r in rows):
+        raise ValueError("Clean part has no split; run 05_export again (split is assigned there)")
+    split_info = read_json(Path(cfg["clean_dataset"]) / "dataset_info.json").get("split", {})
+    history = len(split_info.get("covered_parts", [1])) > 1
+    rows = [{**r, "sample_id": r["clip_id"]} for r in rows]
     count = int(cfg["generation"]["clips_per_split"])
     if count < 0:
         raise ValueError("clips_per_split is 0 for all, otherwise positive")
@@ -220,11 +124,9 @@ def make_plan(cfg):
     plan = {
         "schema": "vn-av-df-plan-v1",
         "data_part": cfg.get("data_part", 1),
-        "split_ratios": ratios,
-        "covered_parts": sorted({*covered, cfg.get("data_part", 1)}),
+        "split": split_info,
         "manifest_sha256": info["manifest_sha256"],
         "seed": cfg["seed"],
-        "prior_assignments": history,
         "assignments": rows,
         "jobs": jobs,
         "config": cfg["generation"],
@@ -232,22 +134,6 @@ def make_plan(cfg):
         "skipped_without_donor": skipped,
     }
     write_json(dest, plan)
-    registry = {
-        "schema": "vn-av-df-split-registry-v1",
-        "data_part": cfg.get("data_part", 1),
-        "split_ratios": ratios,
-        "covered_parts": plan["covered_parts"],
-        "manifest_sha256": info["manifest_sha256"],
-        "seed": cfg["seed"],
-        "assignments": [*history, *rows],
-        "groups": len(connected_groups([*history, *rows])),
-        "counts": dict(Counter(r["split"] for r in [*history, *rows])),
-        "note": "Source/identity grouped; channel-disjointness and near-duplicate review required separately",
-    }
-    write_json(
-        dest.with_name(dest.stem + "_split-lock.json"),
-        registry,
-    )
     total = sum(
         2 + int(j.get("emit_real", True)) + int(j.get("sham_donor") is not None) for j in jobs
     )
@@ -277,15 +163,11 @@ def compose_partial(original, fake, span):
 
 
 def validate_plan_settings(cfg, plan):
-    """Không âm thầm đổi tỷ lệ/lịch sử của plan đã khóa khi chạy lại notebook."""
-    # Plan trước khi có cấu hình tỷ lệ dùng 70/15/15; không diễn giải lại thành 80/10/10.
-    ratios = plan.get("split_ratios", {"train": 0.7, "validation": 0.15, "test": 0.15})
+    """Không âm thầm đổi cấu hình sinh của plan đã khóa khi chạy lại notebook."""
     if (
         plan["config"] != cfg["generation"]
         or plan["seed"] != cfg["seed"]
         or plan.get("data_part", 1) != cfg.get("data_part", 1)
-        or ratios != split_ratios(cfg.get("split_ratios"))
-        or plan.get("prior_assignments", []) != prior_assignments(cfg)
     ):
         raise ValueError("Generation settings differ from frozen plan; use a new plan/output")
 
@@ -313,7 +195,11 @@ def skip_reason(exc):
 
 
 def generate(cfg, generator=None):
-    """Sinh bằng worker thực; giữ audio chung cho V-only, provenance và resume nghiêm ngặt."""
+    """Sinh bằng worker thực; giữ audio chung cho V-only, provenance và resume nghiêm ngặt.
+
+    cfg["generation_generators"] (vd. ["wav2lip_gan"]) giới hạn generator của phiên này: cặp
+    của generator khác để phiên sau (PREVIOUS_GENERATION), nên mỗi phiên chỉ cài một worker.
+    """
     from vn_av_df.generators import generator_adapter
 
     plan = read_json(cfg["plan"])
@@ -325,9 +211,7 @@ def generate(cfg, generator=None):
         or plan["manifest_sha256"] != info["manifest_sha256"]
     ):
         raise ValueError("Clean dataset differs from plan")
-    assigned = split_clean(
-        originals, plan["seed"], plan.get("prior_assignments", []), cfg.get("split_ratios")
-    )
+    assigned = [{**r, "sample_id": r["clip_id"]} for r in originals]
     if "assignments" in plan and assigned != plan["assignments"]:
         raise ValueError("Changed split assignments in plan")
     locked = {r["clip_id"]: r for r in assigned}
@@ -342,52 +226,55 @@ def generate(cfg, generator=None):
             or job["sham_donor"]["split"] != job["original"]["split"]
         ):
             raise ValueError("Changed sham donor or split")
+    planned = {j.get("generator", "wav2lip_gan") for j in plan["jobs"]}
+    active = set(cfg.get("generation_generators") or planned)
+    if active - planned:
+        raise ValueError(f"Generators not in plan: {sorted(active - planned)}")
     adapters, provenance = {}, {}
-    for name in {j.get("generator", "wav2lip_gan") for j in plan["jobs"]}:
+    for name in sorted(active):
         if generator is None:
             adapter = generator_adapter(name)
             adapters[name], provenance[name] = adapter.synthesize, adapter.provenance(cfg)
         else:
             adapters[name] = generator
             provenance[name] = {"generator": "test_fixture", "version": "test-only"}
+    # Provenance từng generator kiểm riêng: các phiên (mỗi phiên một generator) chung output.
     signature = fingerprint(
         {
             "plan": plan,
-            "generator": provenance,
             "implementation": sha(__file__),
             "render": sha(Path(__file__).parent / "data/render.py"),
         }
     )
     lock = out / "generation.json"
+    run_log = {"signature": signature, "provenance": {}, "plan": plan, "sessions": []}
     if lock.exists():
-        if read_json(lock)["signature"] != signature:
+        run_log = {**run_log, **read_json(lock)}
+        if run_log["signature"] != signature:
             raise ValueError("Changed generation run; choose new output")
     elif out.exists() and any(out.iterdir()):
         raise ValueError("Output has no generation lock")
-    write_json(lock, {"signature": signature, "provenance": provenance, "plan": plan})
-    # Giữ biên bản chia part trong ZIP; chỉ tích lũy khi chủ động cung cấp history.
-    write_json(
-        out / "split-lock.json",
-        {
-            "schema": "vn-av-df-split-registry-v1",
-            "data_part": plan.get("data_part", 1),
-            "split_ratios": split_ratios(cfg.get("split_ratios")),
-            "covered_parts": plan.get(
-                "covered_parts", list(range(1, plan.get("data_part", 1) + 1))
-            ),
-            "assignments": [*plan.get("prior_assignments", []), *assigned],
-        },
-    )
+    for name in active:
+        if run_log["provenance"].get(name, provenance[name]) != provenance[name]:
+            raise ValueError(f"{name} differs from earlier sessions of this output")
+    run_log["provenance"].update(provenance)
+    write_json(lock, run_log)
+    # Biên bản chia split của part sạch đi kèm part đã sinh (ZIP).
+    if (root / "split-lock.json").is_file():
+        shutil.copy2(root / "split-lock.json", out / "split-lock.json")
     # GPU sinh song song (mỗi GPU một worker); không cấu hình = tuần tự như trước.
     gpus = list(cfg.get("generation_gpus") or [None])
     # Hạn giờ (epoch giây): quá hạn thì không nhận cặp mới; phần đã sinh giữ để phiên sau làm tiếp.
     deadline = cfg.get("generation_deadline")
     total = len(plan["jobs"])
     pending = sum(
-        not (out / "records" / f"{fingerprint(job)[:20]}.json").exists() for job in plan["jobs"]
+        not (out / "records" / f"{fingerprint(job)[:20]}.json").exists()
+        and job.get("generator", "wav2lip_gan") in active
+        for job in plan["jobs"]
     )
     print(
-        f"Generate {total} cặp ({total - pending} đã có từ lượt trước) trên {len(gpus)} GPU: "
+        f"Generate {total} cặp ({total - pending} đã có hoặc để phiên khác), phiên này "
+        f"{pending} cặp của {sorted(active)} trên {len(gpus)} GPU: "
         f"theo split {plan['split_counts']}, "
         f"{len(plan.get('skipped_without_donor', []))} parent bỏ vì không có donor",
         flush=True,
@@ -398,6 +285,7 @@ def generate(cfg, generator=None):
             shutil.rmtree(leftover, ignore_errors=True)
     began = time.monotonic()
     progress = {"done": 0, "skipped": 0, "streak": 0}
+    seconds = defaultdict(list)  # Thời gian từng cặp theo generator, ghi vào generation.json.
     slots = queue.Queue()
     for gpu in gpus:
         slots.put(gpu)
@@ -420,6 +308,8 @@ def generate(cfg, generator=None):
             if any(sha(out / p["video"]) != p["sha256"] for p in previous):
                 raise ValueError("Generated file changed")
             return previous
+        if name not in active:
+            return None  # Cặp của generator để phiên khác.
         gpu = slots.get()
         if deadline is not None and time.time() > deadline:
             slots.put(gpu)
@@ -474,6 +364,7 @@ def generate(cfg, generator=None):
                         progress["skipped"] += 1
                         progress["streak"] += 1
                         done, streak = progress["done"], progress["streak"]
+                        seconds[name].append(time.monotonic() - tick)
                     print(f"{head}: BỎ QUA ({reason}) | mới {done}/{pending}", flush=True)
                     if streak >= MAX_SKIP_STREAK:
                         raise RuntimeError(
@@ -569,7 +460,7 @@ def generate(cfg, generator=None):
                         "audio_fake_intervals": [],
                         "visual_fake_intervals": intervals,
                         "audio_mode": mode if is_fake else None,
-                        # Lệch tiếng–miệng đã biết: sham = đoạn ghép; fake chưa đo được nên null.
+                        # Lệch tiếng-miệng đã biết: sham = đoạn ghép; fake chưa đo được nên null.
                         "av_mismatch_intervals": spans
                         if kind == "sham"
                         else []
@@ -601,6 +492,7 @@ def generate(cfg, generator=None):
             progress["done"] += 1
             progress["streak"] = 0
             done, spent = progress["done"], time.monotonic() - began
+            seconds[name].append(time.monotonic() - tick)
         print(
             f"{head}, donor {d['clip_id'] if mode == 'donor' else '(tiếng gốc)'}; "
             f"{'/'.join(dests)}; partial {length / 25:.2f}s tại {a / 25:.2f}s | "
@@ -625,6 +517,21 @@ def generate(cfg, generator=None):
                 raise
     finally:
         worker.close_all()
+        # Chi phí thật của phiên: dùng cho bảng chi phí/dự tính GPU của báo cáo.
+        run_log["sessions"].append(
+            {
+                "started_unix": round(time.time() - (time.monotonic() - began)),
+                "elapsed_s": round(time.monotonic() - began, 1),
+                "gpus": len(gpus),
+                "generators": sorted(active),
+                "pairs_done": progress["done"],
+                "pairs_skipped": progress["skipped"],
+                "seconds_per_pair": {
+                    k: round(sum(v) / len(v), 1) for k, v in sorted(seconds.items())
+                },
+            }
+        )
+        write_json(lock, run_log)
     missing = sum(result is None for result in results)
     skipped = [
         record
@@ -636,19 +543,27 @@ def generate(cfg, generator=None):
         print(f"Bỏ qua {len(skipped)}/{total} cặp: {dict(reasons)}", flush=True)
     if missing:
         # Chưa đủ cặp: không ghi candidates/review (review.csv chỉ tạo một lần khi đủ).
+        left = Counter(
+            job.get("generator", "wav2lip_gan")
+            for job, result in zip(plan["jobs"], results)
+            if result is None
+        )
         return {
             "status": "partial",
             "pairs_done": total - missing,
             "pairs_remaining": missing,
+            "remaining_by_generator": dict(left),
             "pairs_skipped": len(skipped),
-            "next": "Hết giờ phiên: Save Version, attach output này làm PREVIOUS_GENERATION rồi chạy tiếp",
+            "next": "Save Version, attach output này làm PREVIOUS_GENERATION, chọn GENERATORS "
+            "theo remaining_by_generator rồi chạy tiếp",
         }
     rows = [row for result in results for row in result]
     write_manifest(out / "candidates.jsonl", rows)
     write_json(out / "skipped_pairs.json", skipped)
     if not (out / "review.csv").exists():
+        # Mặc định keep: review chỉ để đánh reject/uncertain mẫu lỗi.
         csv_write(
-            out / "review.csv", [{"sample_id": r["sample_id"], "decision": "pending"} for r in rows]
+            out / "review.csv", [{"sample_id": r["sample_id"], "decision": "keep"} for r in rows]
         )
     return {
         "status": "complete",
@@ -674,12 +589,11 @@ def finalize(cfg):
     kept = [{**r, "review_status": "keep"} for r in rows if review[r["sample_id"]] == "keep"]
     validate_rows(kept, root, verify_media=True)
     generation = read_json(root / "generation.json")
-    # Part bổ sung có thể chỉ thuộc train; kiểm đủ train/validation ở dataset gộp.
-    splits = (
-        {r["split"] for r in kept}
-        if generation["plan"].get("prior_assignments")
-        else {"train", "validation", "test"}
-    )
+    # Part kế thừa split của part trước có thể chỉ thuộc train; kiểm đủ ở dataset gộp.
+    plan = generation["plan"]
+    covered = plan.get("split", {}).get("covered_parts", [1])
+    history = bool(plan.get("prior_assignments")) or len(covered) > 1
+    splits = {r["split"] for r in kept} if history else {"train", "validation", "test"}
     for split in splits:
         if {r["label"] for r in kept if r["split"] == split} != {0, 1}:
             raise ValueError(f"Review needs real and fake in {split}")

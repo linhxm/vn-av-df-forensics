@@ -1,6 +1,6 @@
-"""Controlled temporal baselines on the same frozen FATE descriptors.
+"""Head thời gian của baseline trên feature đóng băng: GRU (B-FATE) và TCN (B-AVH).
 
-These are GRU/TCN/Transformer baselines, not reproductions of AuViRe or FATE's task head.
+Không phải bản tái hiện AuViRe hay task head của FATE.
 """
 
 import math
@@ -8,11 +8,11 @@ import math
 import torch
 from torch import nn
 
-ARCHITECTURES = ("linear", "gru", "tcn", "transformer")
+ARCHITECTURES = ("gru", "tcn")
 
 
 class TemporalDetector(nn.Module):
-    """B1 linear hoặc head thời gian; input là một clip [T,D], mask [T]."""
+    """Head thời gian; input là một clip [T,D], mask [T]."""
 
     def __init__(self, audio_dim, visual_dim, architecture="gru", hidden=128, dropout=0.1):
         super().__init__()
@@ -28,15 +28,11 @@ class TemporalDetector(nn.Module):
         self.fusion = nn.Sequential(
             nn.Linear(audio_dim + visual_dim, hidden), nn.LayerNorm(hidden), nn.GELU()
         )
-        if architecture == "linear":
-            self.fusion = nn.Identity()
-            self.classifier = nn.Linear(audio_dim + visual_dim, 1)
-            return
         if architecture == "gru":
             self.temporal = nn.GRU(
                 hidden, hidden, num_layers=2, dropout=dropout, batch_first=True, bidirectional=True
             )
-        elif architecture == "tcn":
+        else:
             self.temporal = nn.ModuleList(
                 nn.Sequential(
                     nn.Conv1d(hidden, hidden, 3, padding=d, dilation=d),
@@ -44,12 +40,6 @@ class TemporalDetector(nn.Module):
                     nn.Dropout(dropout),
                 )
                 for d in (1, 2, 4)
-            )
-        else:
-            self.temporal = nn.TransformerEncoder(
-                nn.TransformerEncoderLayer(hidden, 4, hidden * 4, dropout, batch_first=True),
-                2,
-                enable_nested_tensor=False,
             )
         self.classifier = nn.Linear(hidden * (2 if architecture == "gru" else 1), 1)
 
@@ -64,8 +54,6 @@ class TemporalDetector(nn.Module):
                 [audio.masked_fill(~valid[:, None], 0), visual.masked_fill(~valid[:, None], 0)], -1
             )
         )
-        if self.config["architecture"] == "linear":
-            return self.classifier(x)[:, 0].masked_fill(~valid, 0)
         # Process contiguous valid runs independently: missing evidence cannot leak through time.
         edges = torch.diff(
             torch.cat([valid.new_tensor([False]), valid, valid.new_tensor([False])]).int()
@@ -75,20 +63,11 @@ class TemporalDetector(nn.Module):
             z = x[a:b][None]
             if self.config["architecture"] == "gru":
                 z, _ = self.temporal(z)
-            elif self.config["architecture"] == "tcn":
+            else:
                 z = z.transpose(1, 2)
                 for block in self.temporal:
                     z = z + block(z)
                 z = z.transpose(1, 2)
-            else:
-                pos = torch.arange(b - a, device=x.device)[:, None]
-                freq = torch.exp(
-                    torch.arange(0, x.shape[-1], 2, device=x.device)
-                    * (-math.log(10000) / x.shape[-1])
-                )
-                pe = torch.zeros_like(z[0])
-                pe[:, 0::2], pe[:, 1::2] = torch.sin(pos * freq), torch.cos(pos * freq)
-                z = self.temporal(z + pe)
             result[a:b] = self.classifier(z)[0, :, 0]
         return result
 
@@ -121,7 +100,7 @@ def build_model(
         return SyncArtifactDetector(
             audio_dim, visual_dim, architecture, hidden, dropout, native_stride, artifact_dim
         )
-    if architecture in {"realrecon", "realrecon_concat", "visual_tcn"}:
+    if architecture == "realrecon":
         from vn_av_df.reconstruction import RealReconDetector
 
         return RealReconDetector(

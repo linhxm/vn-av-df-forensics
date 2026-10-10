@@ -15,9 +15,7 @@ def generator_adapter(name):
 
 
 def setup_generators(cfg):
-    """Chuẩn bị đúng các generator được cấu hình trong plan."""
+    """Chuẩn bị generator của phiên (generation_generators) hoặc mọi generator trong plan."""
     mapping = cfg["generation"].get("generators_by_split", {"train": ["wav2lip_gan"]})
-    return {
-        name: generator_adapter(name).setup(cfg)
-        for name in sorted({g for names in mapping.values() for g in names})
-    }
+    names = cfg.get("generation_generators") or {g for names in mapping.values() for g in names}
+    return {name: generator_adapter(name).setup(cfg) for name in sorted(names)}

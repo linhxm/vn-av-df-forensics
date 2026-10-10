@@ -20,7 +20,7 @@ import numpy as np
 
 from vn_av_df.common.runtime import read_json, save_npz, sha, write_json
 
-MOUTH_BOX_SCALE = 1.6  # Hộp vuông quanh landmark 48–67, nới để gồm môi/răng/viền ghép.
+MOUTH_BOX_SCALE = 1.6  # Hộp vuông quanh landmark 48-67, nới để gồm môi/răng/viền ghép.
 
 
 def runs(mask):

@@ -184,6 +184,8 @@ def test_notebook_bootstrap_configures_only_its_worker(notebook, worker, tmp_pat
         "architectures": ["selected"],
         "methods": {"selected": {"encoder": "avhubert" if needed else "fate"}},
         "prepare_encoders": ["avhubert", "dinov2"] if needed else ["fate", "dinov2"],
+        # Generator của phiên generate: chỉ cài worker MuseTalk khi phiên này sinh MuseTalk.
+        "generation_generators": ["musetalk_1_5"] if needed else ["wav2lip_gan"],
         "generation": {
             "generators_by_split": {"test": ["musetalk_1_5" if needed else "wav2lip_gan"]}
         },
@@ -245,6 +247,14 @@ def notebook_config_state(notebook, tmp_path, monkeypatch):
     return sources, state, calls
 
 
+def part_folder(root, name="vn-av-df-data-part7", nested=True):
+    """Part như Kaggle mount: gốc dataset (tên slug) chứa thư mục part có dataset_info.json."""
+    folder = root / (f"slug-{name}" if nested else "") / name
+    folder.mkdir(parents=True)
+    (folder / "dataset_info.json").write_text("{}")
+    return folder.parent if nested else folder
+
+
 MAIN = ["fate_gru", "avh_tcn", "p2_syncartifact"]
 VARIANTS = ["p2_sync_only", "p2_artifact_only", "p2_concat", "p2_sync_seen_fake", "avh_realrecon"]
 
@@ -255,7 +265,7 @@ VARIANTS = ["p2_sync_only", "p2_artifact_only", "p2_concat", "p2_sync_seen_fake"
         ("all", MAIN + VARIANTS),
         (MAIN, MAIN),
         (["fate_gru"], ["fate_gru"]),
-        (["fate_linear", "p2_sync_only"], ["fate_linear", "p2_sync_only"]),
+        (["avh_realrecon", "p2_sync_only"], ["avh_realrecon", "p2_sync_only"]),
     ],
 )
 def test_training_notebook_uses_edited_models_parts_and_hyperparameters(
@@ -266,8 +276,12 @@ def test_training_notebook_uses_edited_models_parts_and_hyperparameters(
     monkeypatch.setattr(dataset, "training_dataset", lambda *args, **kwargs: ([], {"samples": 0}))
     sources, state, calls = notebook_config_state("train", tmp_path, monkeypatch)
     exec(sources["train-parameters"], state)
+    # Đường dẫn đầy đủ copy từ Kaggle (gốc dataset): tự vào thư mục part bên trong.
     state.update(
-        ARCHITECTURES=selection, SEEDS=[99], DATASET_PARTS=["chosen_part"], RUN_NAME="custom_run"
+        ARCHITECTURES=selection,
+        SEEDS=[99],
+        DATA_PARTS=[part_folder(tmp_path)],
+        RUN_NAME="custom_run",
     )
     state["TRAINING"].update(epochs=3, lr=0.002, hidden=32)
     state["RECONSTRUCTION"]["epochs"] = 2
@@ -275,13 +289,14 @@ def test_training_notebook_uses_edited_models_parts_and_hyperparameters(
     exec(sources["train-config"], state)
     cfg = state["cfg"]
     assert cfg["architectures"] == expected
-    assert cfg["dataset_parts"] == ["chosen_part"] and cfg["seeds"] == [99]
+    assert cfg["dataset_parts"] == ["vn-av-df-data-part7"] and cfg["seeds"] == [99]
+    assert Path(cfg["dataset"]).name == "slug-vn-av-df-data-part7"
     assert Path(cfg["runs"]).name == "custom_run"
     assert cfg["training"]["lr"] == 0.002 and cfg["training"]["epochs"] == 3
     assert cfg["reconstruction"]["epochs"] == 2
     assert cfg["sync"]["shift_frames"] == [2, 4]
     assert calls == []  # Train chỉ đọc cache: không tải encoder, không cài worker.
-    assert state["RUN_TEST"] is False
+    assert state["RUN_TEST"] is True  # Test ngay sau train.
 
 
 @pytest.mark.parametrize(
@@ -300,12 +315,21 @@ def test_prepare_notebook_selects_encoders_and_feature_settings(
     monkeypatch.setattr(dataset, "training_dataset", lambda *args, **kwargs: ([], {"samples": 0}))
     sources, state, calls = notebook_config_state("prepare", tmp_path, monkeypatch)
     exec(sources["prepare-parameters"], state)
-    state.update(ENCODERS=selection, DATASET_PARTS=["chosen_part"], DEVICE="cpu")
+    parts = [
+        part_folder(tmp_path, nested=False),
+        part_folder(tmp_path / "other", "vn-av-df-data-part8"),
+    ]
+    state.update(ENCODERS=selection, DATA_PARTS=parts, DEVICE="cpu")
     state["DINO_FEATURES"]["crop_size"] = 112
     exec(sources["prepare-config"], state)
     cfg = state["cfg"]
     assert cfg["prepare_encoders"] == encoders and cfg["architectures"] == architectures
-    assert cfg["dataset_parts"] == ["chosen_part"] and cfg["prepare_devices"] is None
+    # Nhiều part ở các dataset khác nhau: gốc chung, part tương đối với gốc đó.
+    assert cfg["dataset_parts"] == [
+        "vn-av-df-data-part7",
+        "other/slug-vn-av-df-data-part8/vn-av-df-data-part8",
+    ]
+    assert cfg["prepare_devices"] is None
     assert cfg["encoders"]["dinov2"]["crop_size"] == 112
     assert calls == ["encoder_setup"]
 
@@ -313,22 +337,28 @@ def test_prepare_notebook_selects_encoders_and_feature_settings(
 def test_prepare_notebook_rejects_dinov2_without_avhubert_boxes(tmp_path, monkeypatch):
     sources, state, _ = notebook_config_state("prepare", tmp_path, monkeypatch)
     exec(sources["prepare-parameters"], state)
-    state.update(ENCODERS=["dinov2"], DEVICE="cpu")
+    state.update(ENCODERS=["dinov2"], DEVICE="cpu", DATA_PARTS=[part_folder(tmp_path)])
     with pytest.raises(ValueError, match="AV-HuBERT"):
         exec(sources["prepare-config"], state)
 
 
-@pytest.mark.parametrize("use_history", [False, True])
+@pytest.mark.parametrize(
+    "generators,session",
+    [("all", ["musetalk_1_5", "wav2lip_gan"]), (["wav2lip_gan"], ["wav2lip_gan"])],
+)
 def test_generation_notebook_uses_edited_part_and_generator_settings(
-    tmp_path, monkeypatch, use_history
+    tmp_path, monkeypatch, generators, session
 ):
     sources, state, calls = notebook_config_state("generate", tmp_path, monkeypatch)
+    clean = tmp_path / "slug-clean-part2" / "vn-av-df-data-part2"
+    clean.mkdir(parents=True)
+    (clean / "manifest.jsonl").write_text("")
     state.update(
         PART=2,
         GENERATION_NAME="vn-av-df-data-part2",
         CLIPS_PER_SPLIT=0,
-        CLEAN_DATASET=tmp_path / "clean2",
-        SPLIT_HISTORY=[tmp_path / "prior.json"] if use_history else [],
+        CLEAN_PART=clean.parent,  # Gốc dataset Kaggle: tự vào thư mục có manifest.jsonl.
+        GENERATORS=generators,
         CRF=20,
         MUSETALK_BATCH_SIZE=2,
         PARTIAL_SECONDS=[0.8],
@@ -336,13 +366,16 @@ def test_generation_notebook_uses_edited_part_and_generator_settings(
     state["settings"].ROOT = tmp_path
     exec(sources["generate-config"], state)
     cfg = state["cfg"]
-    assert cfg["data_part"] == 2 and cfg["clean_dataset"] == str(tmp_path / "clean2")
+    assert cfg["data_part"] == 2 and cfg["clean_dataset"] == str(clean)
     assert Path(cfg["generated_dataset"]).name == "vn-av-df-data-part2"
     assert cfg["generation"]["clips_per_split"] == 0 and cfg["generation"]["crf"] == 20
     assert cfg["generation"]["partial_seconds"] == [0.8]
     assert cfg["generation"]["fake_audio_modes_by_split"]["train"] == ["donor"]
     assert "audio_mode" not in cfg["generation"]
     assert cfg["musetalk"]["batch_size"] == 2
-    assert cfg["split_history"] == ([str(tmp_path / "prior.json")] if use_history else [])
-    assert cfg["split_ratios"] == {"train": 0.7, "validation": 0.15, "test": 0.15}
+    assert cfg["generation_generators"] == session
+    assert "split_ratios" not in cfg  # Split gán ở 05 export, không cấu hình ở generate.
     assert calls == ["validate", "plan", "generator_setup"]
+    state["GENERATORS"] = ["sadtalker"]
+    with pytest.raises(ValueError, match="GENERATORS"):
+        exec(sources["generate-config"], state)

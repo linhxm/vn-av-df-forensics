@@ -26,3 +26,4 @@ __pycache__/
 /demo/*.tsbuildinfo
 /demo/vite.config.js
 /demo/vite.config.d.ts
+/reports/
