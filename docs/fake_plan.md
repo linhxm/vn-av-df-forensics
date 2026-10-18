@@ -18,7 +18,7 @@ Một part có **800 clip real** (40 người × 20 clip) và sinh ra khoảng *
 | ⑤ **donor** | Generator vẽ lại môi theo **tiếng thật của một clip khác** của cùng người, rồi dùng tiếng đó làm tiếng của video. Người đó "nói" một câu họ chưa từng nói ở cảnh này | Có | Môi | Khớp |
 | ⑥ **both** | Sửa **một cụm** trong câu thành giọng AI, rồi generator vẽ môi theo tiếng đã sửa. Giả cả môi lẫn tiếng | Có | Môi + một cụm tiếng | Khớp |
 
-- **full:** giả cả clip. **partial:** chỉ giả **một** đoạn 0,3–3 s (đủ ngắn để chỉ là một từ); phần còn lại là gốc.
+- **full:** giả cả clip. **partial:** chỉ giả **một** đoạn 0,3-3 s (đủ ngắn để chỉ là một từ); phần còn lại là gốc.
 - Ô ③ có 3 kiểu: **A** đọc lại cả câu bằng giọng AI, **B** sửa một cụm rồi ghép vào tiếng gốc, **C** sửa trực tiếp trên sóng âm (chỉ có ở test).
 - "Clip khác" ở ② và ⑤ luôn là clip của **cùng người, cùng split**.
 
@@ -56,7 +56,7 @@ Phần in đậm ở cột test là người, generator và giọng **chưa th�
 |---|---|
 | `datasets/vn-av-df-data/<part>/clips/` | toàn bộ file mp4 (real + fake), encode cùng một cấu hình |
 | `datasets/vn-av-df-data/<part>/manifest.jsonl` | mỗi dòng một file: split, người, ô, full/partial, generator, giọng, nhãn AI, các đoạn bị giả |
-| `datasets/vn-av-df-data/<part>/shortcut_audit.json` | kiểm lối tắt: khoảng lặng, độ to, độ dài có tự đoán được nhãn không (cờ đỏ nếu AUC ngoài 0,3–0,7) |
+| `datasets/vn-av-df-data/<part>/shortcut_audit.json` | kiểm lối tắt: khoảng lặng, độ to, độ dài có tự đoán được nhãn không (cờ đỏ nếu AUC ngoài 0,3-0,7) |
 
 ## Bạn sẽ nhận được gì
 
@@ -64,7 +64,7 @@ Mỗi part được gửi dưới dạng **một file zip** `vn-av-df-data-partN
 
 | File trong part | Nội dung |
 |---|---|
-| `clips/<clip_id>.mp4` | 800 clip real, 4–7 s, 25 fps, cạnh ngắn ≤ 720, H.264 + AAC 48 kHz; **tiếng đã được dịch cho khớp môi** (độ lệch đo bằng SyncNet ở bước dữ liệu) |
+| `clips/<clip_id>.mp4` | 800 clip real, 4-7 s, 25 fps, cạnh ngắn ≤ 720, H.264 + AAC 48 kHz; **tiếng đã được dịch cho khớp môi** (độ lệch đo bằng SyncNet ở bước dữ liệu) |
 | `manifest.jsonl` | mỗi dòng một clip: `clip_id`, `speaker_id`, `gender`, `split`, `duration_s`, nguồn (`url`, `channel`, đoạn giây trong video gốc), độ lệch đã sửa (`audio_lag_frames`, `av_sync_status`), `flags` |
 | `speakers.csv` | 40 người: giới, split, kênh, số video |
 | `split-lock.json` | khoá phân chia train / validation / test theo người (**không đổi split**) |
@@ -81,17 +81,17 @@ Kèm theo: link repo code (notebook `notebooks/generate.ipynb`), và weight IP-L
 | **Nhiều người** là ưu tiên (40 người / part, thêm part = thêm người) | Lỗi giảm rõ khi tăng **số nguồn real khác nhau**. Thêm ảnh từ cùng nguồn gần như không giúp: giảm số ảnh real đi 10 lần, AUC chỉ từ 0,886 xuống 0,879. Ít người thì detector dễ học "đây là ai" thay vì "có bị giả không" | [1], [2], [3] |
 | **Cân 20 nam / 20 nữ** | Bộ dữ liệu lệch giới làm detector kém hơn ở nhóm ít; cân giới thì công bằng hơn mà không giảm độ chính xác | [4] |
 | **Chia split theo người** (12 / 3 / 5 mỗi giới) | Không người nào xuất hiện ở hai split, nên test đo đúng khả năng với **người chưa thấy**. Bộ lớn nhất hiện nay (AV-Deepfake1M++) chỉ làm vậy ở test, còn train / validation chia ngẫu nhiên theo mẫu | [5] |
-| **20 clip / người**, lấy từ 2–3 video khác nhau | Tìm người mới là phần khó nhất; thêm clip từ người đã có gần như không tốn công thu thập. 20 vẫn thấp hơn nhiều so với các bộ lớn (88–139 real / người), nên còn lợi: gấp đôi real cho model học từ real, đủ clip tham chiếu, đo báo nhầm trên 200 real / part | [5], [6] |
+| **20 clip / người**, lấy từ 2-3 video khác nhau | Tìm người mới là phần khó nhất; thêm clip từ người đã có gần như không tốn công thu thập. 20 vẫn thấp hơn nhiều so với các bộ lớn (88-139 real / người), nên còn lợi: gấp đôi real cho model học từ real, đủ clip tham chiếu, đo báo nhầm trên 200 real / part | [5], [6] |
 | **Mọi fake sinh từ chính clip real** (paired) | Fake cùng nguồn với real tốt hơn fake khác nguồn **+4,7 điểm AUC** trung bình trên 14 bộ, với cùng số video | [7] |
 | **Mỗi clip chỉ chạy một nửa số generator** (2 / 4, test 3 / 6), giọng giữ nguyên | Cùng chi phí GPU với "10 clip × mọi generator", nhưng gấp đôi số clip real làm nền và mỗi clip real lặp ít hơn. Gần cách AV-Deepfake1M (đúng 3 fake mỗi real, phương pháp rút cho từng fake) | [6] |
 | **Có AI / không AI ≈ 69 % / 31 %** | Tỉ lệ cùng vùng với các bộ lớn (AV-Deepfake1M 75 % fake, AV-Deepfake1M++ 69 %). Fake quá nhiều làm detector báo nhầm nhiều trên video thật; vì vậy báo cáo thêm ngưỡng theo tỉ lệ báo nhầm cố định và precision ở nhiều tỉ lệ fake ngoài đời | [6], [8] |
 | **Generator và giọng chỉ có ở test** (LatentSync, Diff2Lip, VoxCPM2, viXTTS, F5 inpainting) | Đo khả năng phát hiện phương pháp **chưa từng thấy**; số phương pháp giả cũng là trục làm detector tổng quát tốt hơn | [1] |
-| **② sham** (tiếng thật ghép lệch, không AI) | Tách hai câu hỏi "có AI không" và "tiếng có khớp môi không"; nếu thiếu, detector chỉ học "lệch = giả" | thiết kế v001–v002 |
-| **Partial: đúng 1 đoạn, 0,3–3 s** | Clip ngắn (4–7 s) thì các bộ khác cũng chỉ 1 đoạn (LAV-DF: 62,72 % video 1 đoạn, đoạn trung bình 0,65 s; AV-Deepfake1M: 1 đoạn / 10 s). Đoạn ngắn tới 0,3 s để có cả kiểu sửa một từ | [9], [6] |
-| **Sửa độ lệch tiếng–hình của real, encode giống hệt real và fake** | Video YouTube hay lệch 1–2 frame. Generator luôn khớp ở độ lệch 0, nên nếu không sửa, detector học "khớp hoàn hảo = giả". Encode khác nhau thì detector học khác biệt nén | §9 nghiên cứu |
+| **② sham** (tiếng thật ghép lệch, không AI) | Tách hai câu hỏi "có AI không" và "tiếng có khớp môi không"; nếu thiếu, detector chỉ học "lệch = giả" | thiết kế v001-v002 |
+| **Partial: đúng 1 đoạn, 0,3-3 s** | Clip ngắn (4-7 s) thì các bộ khác cũng chỉ 1 đoạn (LAV-DF: 62,72 % video 1 đoạn, đoạn trung bình 0,65 s; AV-Deepfake1M: 1 đoạn / 10 s). Đoạn ngắn tới 0,3 s để có cả kiểu sửa một từ | [9], [6] |
+| **Sửa độ lệch tiếng-hình của real, encode giống hệt real và fake** | Video YouTube hay lệch 1-2 frame. Generator luôn khớp ở độ lệch 0, nên nếu không sửa, detector học "khớp hoàn hảo = giả". Encode khác nhau thì detector học khác biệt nén | §9 nghiên cứu |
 | **Kiểm lối tắt khoảng lặng / độ to / độ dài** | Hai bộ phổ biến (FakeAVCeleb, AV-Deepfake1M) có lối tắt: fake mở đầu bằng khoảng lặng, một bộ phân loại chỉ nhìn khoảng lặng đạt > 98 % | [10] |
 
-Chi tiết và số liệu đầy đủ: `docs/v003_model_research.md` §9–§10.
+Chi tiết và số liệu đầy đủ: `docs/v003_model_research.md` §9-§10.
 
 ## Nghiên cứu đã tham khảo
 

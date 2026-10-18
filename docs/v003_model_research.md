@@ -208,7 +208,7 @@ v001 đã ghi "lệch A/V sẵn có của real chưa đo" (v001 §9) nhưng chư
 | 50QybEYOOD4 | 1 người (lời dẫn đè cảnh) | — | 8/22 | 1,6 |
 | ptzxTlDaw-A | 1 người (vlog, ghép cảnh) | — | 2/7 | 1,9 |
 
-- Kết luận: video quay mặt người nói lệch **ổn định** 1–2 frame (tiếng trễ 40–80 ms, dưới ngưỡng mắt thường); video có lời dẫn đè hình cho độ lệch lung tung → bộ đo đồng thời **phát hiện mặt trên hình không phải người nói** ở mức video (lỗ hổng v001 §9 "chưa kiểm mặt trong clip đúng người nói").
+- Kết luận: video quay mặt người nói lệch **ổn định** 1-2 frame (tiếng trễ 40-80 ms, dưới ngưỡng mắt thường); video có lời dẫn đè hình cho độ lệch lung tung → bộ đo đồng thời **phát hiện mặt trên hình không phải người nói** ở mức video (lỗ hổng v001 §9 "chưa kiểm mặt trong clip đúng người nói").
 
 ### 9.3. Chọn bộ đo
 
@@ -224,18 +224,18 @@ v001 đã ghi "lệch A/V sẵn có của real chưa đo" (v001 §9) nhưng chư
 
 (Số theo IC-SyncNet Bảng 1 và PVSync; độ chính xác = đoán đúng ±1 frame.)
 
-- SyncNet kém ở cửa sổ ngắn nhưng ngang các model mới khi gộp đủ dài; ta gộp 15–20 clip × 100–175 frame mỗi video → **SyncNet đủ dùng**, và khớp thực nghiệm 9.2.
+- SyncNet kém ở cửa sổ ngắn nhưng ngang các model mới khi gộp đủ dài; ta gộp 15-20 clip × 100-175 frame mỗi video → **SyncNet đủ dùng**, và khớp thực nghiệm 9.2.
 - Không dùng StableSyncNet làm bộ đo chính: nó thuộc LatentSync (generator chỉ ở test); sửa real theo "điểm 0" của nó có thể vô tình làm real giống fake LatentSync hơn.
 - AV-HuBERT (SpeechForensics) làm ý kiến thứ hai khi trích feature trên Kaggle (fairseq không chạy dễ trên Windows), không chặn pipeline.
 
 ### 9.4. Quyết định
 
-1. **Đo trong bước cắt** (`03_cut`): sau mỗi video, SyncNet trên tối đa 20 clip rải đều; độ lệch video = đỉnh đường cong trung bình. Trạng thái: `ok` (đỉnh ≥ 3,0 và ≥ 80% clip đồng ý ±1 frame, ≥ 3 clip), `few` (đạt nhưng < 3 clip: vẫn sửa, gắn cờ xem kỹ), `unreliable` (còn lại: mọi clip tự loại, cờ `sync_unreliable`, người duyệt chọn lại được). Ngưỡng 3,0 đặt giữa nhóm tin được (5,2–5,9) và nhóm hỏng (1,6–1,9) của batch 1.
+1. **Đo trong bước cắt** (`03_cut`): sau mỗi video, SyncNet trên tối đa 20 clip rải đều; độ lệch video = đỉnh đường cong trung bình. Trạng thái: `ok` (đỉnh ≥ 3,0 và ≥ 80% clip đồng ý ±1 frame, ≥ 3 clip), `few` (đạt nhưng < 3 clip: vẫn sửa, gắn cờ xem kỹ), `unreliable` (còn lại: mọi clip tự loại, cờ `sync_unreliable`, người duyệt chọn lại được). Ngưỡng 3,0 đặt giữa nhóm tin được (5,2-5,9) và nhóm hỏng (1,6-1,9) của batch 1.
 2. **Sửa khi export:** dịch tiếng của mọi clip theo độ lệch của video về 0 (copy hình, encode lại tiếng, đệm lặng ≤ vài frame ở mép); manifest ghi `audio_lag_frames`, `av_sync_status`. Lệch lớn nhưng ổn định vẫn sửa, không bỏ. Không chọn clip theo điểm sync (giữ nguyên tắc v001).
 3. **Augment khi train: dịch tiếng so với hình k ∈ [−1, +2] frame** (dương = tiếng trễ), đều cho real và fake, nhãn giữ nguyên. Căn cứ:
    - **Ngưỡng nhận biết của người (ITU-R BT.1359, thử nghiệm chủ quan trên clip người đọc tin):** bắt đầu nhận ra khi tiếng **sớm ~45 ms** hoặc **trễ ~125 ms**; chấp nhận được tới khoảng +90 / −185 ms. Không đối xứng: tiếng trễ được chịu đựng gấp ~3 lần. ATSC còn đề xuất chặt hơn (sớm ≤ 15 ms, trễ ≤ 45 ms) cho phát sóng. Khoảng −1…+2 frame (sớm 40 ms … trễ 80 ms) nằm trong vùng chưa nhận ra của BT.1359.
    - **"Điểm 0" giữa các công cụ lệch ~1 frame:** ModEFormer thấy LRS2 lệch ~1 frame so với LRS3/VoxCeleb2 dù đều đã sửa bằng SyncNet; Wav2Lip train trên LRS2, LatentSync theo StableSyncNet → fake của các generator có thể lệch nhau ±1 frame.
-   - **Sai số đo:** độ phân giải 1 frame (9.2) → real sau khi sửa còn sai ±0,5–1 frame.
+   - **Sai số đo:** độ phân giải 1 frame (9.2) → real sau khi sửa còn sai ±0,5-1 frame.
    - **Augment lớn có hại:** DFD-Lab augment lệch tới ±200 ms làm giảm hiệu năng trên dữ liệu ngoài ở cả 3 model; PVSync coi clip lệch > 3 frame so với mode của bộ dữ liệu là dữ liệu bẩn.
    - Thí nghiệm chọn biên độ (không / ±1 / −1…+2 / ±3, đo AUC + đường báo nhầm khi real bị dịch k = −3…+3) để sau.
 4. **Không nghiên cứu lệch thời gian thuần** (cùng tiếng, dịch đi) như một loại fake trong v003. Ô ② sham vẫn là thay tiếng bằng đoạn nói khác.
@@ -264,7 +264,7 @@ Bao nhiêu clip real mỗi người, mỗi clip real sinh bao nhiêu fake, tỉ 
 | GenD (WACV 2026, arXiv 2508.06248) | Fake cùng nguồn với real (paired) hơn không paired +4,7 điểm AUC trung bình trên 14 bộ, cùng tổng số video; unpaired học vẹt nhanh hơn | Fake phải sinh từ chính clip real |
 | Layton et al. (USENIX Security 2024; thí nghiệm trên giọng nói) | Train 90 % fake → trên tập toàn real báo nhầm nhiều hơn báo đúng; về 25 % fake giảm mạnh báo nhầm nhưng cũng giảm bắt fake. "Model phải train với phân bố lớp giống tập đánh giá". Khuyên: tăng media thật, báo nhiều chỉ số (ROC, PR, FPR/TPR, điểm thô), báo theo nhiều base-rate (×10 / ÷10) | Tỉ lệ + ngưỡng phải khớp tỉ lệ fake ngoài đời |
 | Smeu et al. (CVPR 2025) | FakeAVCeleb, AV-Deepfake1M: fake mở đầu bằng khoảng lặng; bộ phân loại chỉ nhìn khoảng lặng > 98 % | Cần kiểm lối tắt cấu trúc |
-| Referee (arXiv 2510.27475), ID-Reveal (ICCV 2021), POI-Forensics | Phương pháp dùng tham chiếu người cần ít real: Referee 1 clip 1–3 s đủ (AUC 99,71 %), ID-Reveal 6 s | 3 clip tham chiếu ≈ 16 s là đủ |
+| Referee (arXiv 2510.27475), ID-Reveal (ICCV 2021), POI-Forensics | Phương pháp dùng tham chiếu người cần ít real: Referee 1 clip 1-3 s đủ (AUC 99,71 %), ID-Reveal 6 s | 3 clip tham chiếu ≈ 16 s là đủ |
 | GBDF (2022) | Lệch giới → kém ở nữ; cân giới công bằng hơn, không giảm độ chính xác | Giữ cân giới (20 nam / 20 nữ mỗi part) |
 | Deepfake-Eval-2024 (arXiv 2503.02857) | Deepfake ngoài đời 2024: detector mã nguồn mở giảm ~50 % AUC (video) so với benchmark học thuật | Benchmark cần nhiễu thực tế |
 
@@ -285,25 +285,25 @@ Bao nhiêu clip real mỗi người, mỗi clip real sinh bao nhiêu fake, tỉ 
 | | Trước | Sau |
 |---|---|---|
 | Người / part | 50 (25 nam + 25 nữ), split 15 / 4 / 6 mỗi giới | **40 (20 nam + 20 nữ)**, split **12 / 3 / 5** mỗi giới (60 / 15 / 25 %); raw giữ nguyên |
-| Clip real / người | 10 | **20** (đã duyệt), từ 2–3 video khác nhau |
-| Chỉ tiêu cắt nguồn 1 người | 30–50 | **40–60** (chỉ tiêu tối đa, không bắt buộc); thời lượng giữ ≥ 20 phút |
+| Clip real / người | 10 | **20** (đã duyệt), từ 2-3 video khác nhau |
+| Chỉ tiêu cắt nguồn 1 người | 30-50 | **30-40** mỗi input (chỉ tiêu tối đa, không bắt buộc); thời lượng giữ ≥ 20 phút. Ban đầu chốt 40-60; hạ ngày 18/10 sau 9 video đầu của batch 1: URL nhập theo từng video nên chỉ tiêu tính cho từng video, người có 3-4 video sẽ có 160-240 ứng viên cho 20 clip cần chọn |
 | Generator / clip real | mọi generator (4 / 6) | **một nửa: 2 (train, validation), 3 (test)**, rút cân bằng (mỗi generator chạy bằng nhau, chia đều 3 ô, bộ generator chung clip đổi theo vòng); phần tiếng giữ nguyên (1 hệ giọng mỗi clip) |
 | File / clip real | 13 / 18 | **9 (6 AI) / 12 (9 AI)** |
 | Một part | 500 clip, 7.100 file | **800 clip, ~7.800 file** (5.400 AI / 2.400 không AI = 69 % / 31 %; train 2 : 1) |
-| Lần chạy lip-sync / part | 2.240 | **1.800** (train + validation 1.200, test 600) + 800 job giọng; GPU ~55–100 giờ |
+| Lần chạy lip-sync / part | 2.240 | **1.800** (train + validation 1.200, test 600) + 800 job giọng; GPU ~55-100 giờ |
 | Ngưỡng | F1 tối đa trên validation | + ngưỡng **FPR 1 % / 5 %** trên real validation, báo precision ở tỉ lệ fake **50 % / 10 % / 1 %**, FPR riêng cho real và sham; demo dùng ngưỡng FPR 5 % |
 | Kiểm lối tắt | — | `shortcut_audit.json` khi finalize: AUC của khoảng lặng đầu / cuối, tỉ lệ lặng, độ to, độ dài (một mình) với nhãn AI; ngoài [0,3; 0,7] → cờ đỏ |
 | ref-norm | bỏ clip tham chiếu | bỏ clip tham chiếu **và mọi file sinh từ chúng** |
 
 Lý do chính:
-- **Người là nút thắt**, không phải clip. Thêm clip từ người đã có gần như không tốn công thu thập. 20 clip vẫn xa vùng bão hoà của các bộ lớn (88–139 real / người), nên còn lợi: real cho AVH-Align gấp đôi, 3 clip tham chiếu không chiếm 30 % số clip, FPR đo trên 200 real / part (10 người test × 20).
-- **Một nửa generator mỗi clip**: cùng GPU lip-sync với "10 clip × mọi generator" nhưng gấp đôi clip real làm nền, mỗi clip real lặp ít hơn (6–9 file AI thay vì 10–15), gần cách AV-Deepfake1M (~3 fake / real, phương pháp rút cho từng fake). Mất so sánh "mọi generator trên cùng clip"; so sánh tổng hợp theo generator / ô vẫn cân.
-- **Không cố định số clip khác nhau theo người** (20–60): người nhiều clip lấn át (identity leakage), AUC gộp lệch, cùng GPU làm được thêm part (thêm người).
+- **Người là nút thắt**, không phải clip. Thêm clip từ người đã có gần như không tốn công thu thập. 20 clip vẫn xa vùng bão hoà của các bộ lớn (88-139 real / người), nên còn lợi: real cho AVH-Align gấp đôi, 3 clip tham chiếu không chiếm 30 % số clip, FPR đo trên 200 real / part (10 người test × 20).
+- **Một nửa generator mỗi clip**: cùng GPU lip-sync với "10 clip × mọi generator" nhưng gấp đôi clip real làm nền, mỗi clip real lặp ít hơn (6-9 file AI thay vì 10-15), gần cách AV-Deepfake1M (~3 fake / real, phương pháp rút cho từng fake). Mất so sánh "mọi generator trên cùng clip"; so sánh tổng hợp theo generator / ô vẫn cân.
+- **Không cố định số clip khác nhau theo người** (20-60): người nhiều clip lấn át (identity leakage), AUC gộp lệch, cùng GPU làm được thêm part (thêm người).
 - **Không dùng nhóm "real_only"** (clip chỉ làm real): phương án một nửa generator cho tỉ lệ tốt hơn mà mọi real đều có fake cặp (GenD).
 
 ### 10.5. So với chuẩn (AV-Deepfake1M++)
 
-Hơn: chia theo người ở cả train / validation / test; ② sham (lệch không AI); 6 ô, 4 tác vụ; sửa độ lệch tiếng–hình của real; encode giống hệt real và fake; tiếng Việt.
+Hơn: chia theo người ở cả train / validation / test; ② sham (lệch không AI); 6 ô, 4 tác vụ; sửa độ lệch tiếng-hình của real; encode giống hệt real và fake; tiếng Việt.
 Kém: quy mô (200 người = 5 part, ~39 nghìn file vs 7.109 người, 2 triệu video); một loại nguồn (YouTube); **chưa có bản test nhiễu thực tế** (nén lại, giảm độ phân giải, rớt frame…), việc kế tiếp nên làm (chỉ cần ffmpeg trên file đã sinh, không tốn GPU sinh).
 
 ### 10.6. Nguồn
@@ -312,4 +312,4 @@ Kém: quy mô (200 người = 5 part, ~39 nghìn file vs 7.109 người, 2 tri�
 - Bộ dữ liệu: FakeAVCeleb arXiv 2108.05080 · Celeb-DF arXiv 1909.12962 · LAV-DF arXiv 2204.06228 · KoDF arXiv 2103.10094 · DFDC arXiv 2006.07397 · AV-Deepfake1M arXiv 2311.15308 · AV-Deepfake1M++ arXiv 2507.20579
 
 
-**Đoạn giả (18/10/2026):** giữ **1 đoạn** mỗi bản partial (LAV-DF: 62,72 % video 1 đoạn, 10,55 % 2 đoạn, đoạn trung bình 0,65 s; AV-Deepfake1M: ⌈độ dài / 10 s⌉ đoạn → clip < 10 s có 1 đoạn). Không có nghiên cứu đối chứng cho thấy train nhiều đoạn giúp định vị; 2 đoạn để làm thí nghiệm phụ sau. Đổi: độ dài đoạn **0,3–3 s** (gồm sửa 1 từ); thêm chỉ số định vị **AP@IoU 0,5 / 0,75 / 0,95 và AR@1/5/10**.
+**Đoạn giả (18/10/2026):** giữ **1 đoạn** mỗi bản partial (LAV-DF: 62,72 % video 1 đoạn, 10,55 % 2 đoạn, đoạn trung bình 0,65 s; AV-Deepfake1M: ⌈độ dài / 10 s⌉ đoạn → clip < 10 s có 1 đoạn). Không có nghiên cứu đối chứng cho thấy train nhiều đoạn giúp định vị; 2 đoạn để làm thí nghiệm phụ sau. Đổi: độ dài đoạn **0,3-3 s** (gồm sửa 1 từ); thêm chỉ số định vị **AP@IoU 0,5 / 0,75 / 0,95 và AR@1/5/10**.

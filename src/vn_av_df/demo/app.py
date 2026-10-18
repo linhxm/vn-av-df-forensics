@@ -85,13 +85,13 @@ def timeline_figure(result, truth=None):
 def sync_text(sync):
     if sync.get("status") not in ("ok", "few"):
         return (
-            "Không đo được độ lệch tiếng–hình (mặt không rõ / không phải người nói?): giữ nguyên."
+            "Không đo được độ lệch tiếng-hình (mặt không rõ / không phải người nói?): giữ nguyên."
         )
     ms = sync["audio_lag_ms"]
     if not ms:
         return f"Tiếng và hình khớp (độ lệch 0 ms, độ tin {sync['conf']:.1f})."
     text = (
-        f"Độ lệch tiếng–hình đo được: {'tiếng trễ' if ms >= 0 else 'tiếng sớm'} {abs(ms)} ms "
+        f"Độ lệch tiếng-hình đo được: {'tiếng trễ' if ms >= 0 else 'tiếng sớm'} {abs(ms)} ms "
         f"(độ tin {sync['conf']:.1f}); đã dịch về 0 trước khi chấm."
     )
     if sync.get("noticeable"):

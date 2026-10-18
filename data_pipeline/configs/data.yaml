@@ -38,8 +38,8 @@ cut:
   max_source_hours: 12
   identity_consistency: 0.5    # nguồn nhiều người: 5 điểm phải cùng mặt (cos với trung bình)
   single:
-    min_clips: 40              # chỉ tiêu ứng viên (tối đa cố lấy): ≤ 5 phút tiếng nói → 40 clip
-    max_clips: 60              # ≥ 20 phút tiếng nói → 60 clip (để chọn được 20 clip tốt)
+    min_clips: 30              # chỉ tiêu ứng viên (tối đa cố lấy): ≤ 5 phút tiếng nói → 30 clip
+    max_clips: 40              # ≥ 20 phút tiếng nói → 40 clip (dư cho việc chọn 20 clip tốt)
     low_speech_minutes: 5
     full_speech_minutes: 20
     attempts_factor: 2.5       # tối đa ~2,5 cửa sổ kiểm cho mỗi clip cần lấy

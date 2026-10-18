@@ -24,6 +24,8 @@ Mỗi bước chạy được ở local bằng script trong `generation/` và `t
 
 Môi trường worker (generator, TTS, AV-HuBERT): [environments/README.md](environments/README.md).
 
+Notebook trong `notebooks/` được **sinh từ `tools/make_notebooks.py`**: muốn đổi notebook (kể cả `REPO_URL` khi đổi repo GitHub) thì sửa script rồi chạy `python tools/make_notebooks.py .`, không sửa tay.
+
 ## 6 cell và số sample mỗi clip real
 
 | | ORIGINAL AUDIO | SPLICED REAL AUDIO | AI VOICE |
@@ -98,7 +100,7 @@ Chỉ ghi cho **quá trình train**: notebook `prepare` và `train` (`USE_WANDB 
 
 | Bước (job_type) | Ghi theo thời gian | Ghi lúc kết thúc / artifact |
 |---|---|---|
-| `prepare` | tiến độ, mẫu/phút theo encoder | tỉ lệ frame hợp lệ; **kiểm chéo độ lệch tiếng–hình bằng AV-HuBERT** trên clip real; `extraction.json` |
+| `prepare` | tiến độ, mẫu/phút theo encoder | tỉ lệ frame hợp lệ; **kiểm chéo độ lệch tiếng-hình bằng AV-HuBERT** trên clip real; `extraction.json` |
 | `train` (mỗi model × seed) | mỗi epoch: loss tổng + từng đầu (frame / video), grad norm, lr, giây/epoch, VRAM, **AUC validation 4 tác vụ**, AUC validation (ai) theo ô / generator / giọng / kind | epoch tốt nhất, lý do dừng, giờ train, số tham số, có augment hay không; `best.pt` + `history.json` |
 | `evaluate` (một lần) | — | bảng tổng (AUC, AP, EER, F1, FAR), phân rã, theo người, ref-norm, định vị, **ROC**, histogram điểm theo ô; `evaluation.json` + `test-lock.json` + mọi `metrics.json` + `predictions-test.npz` |
 | `report` | — | bảng AUC mean ± std theo seed, **các cổng + CI 95%**; `report.md` + `gates.json` |
@@ -112,9 +114,9 @@ Chạy ở phiên tương tác có GPU, mở link `gradio.live` in ra ở cell c
 | Tab | Làm gì |
 |---|---|
 | 1. Tạo fake từ video real | video ≤ 60 s → chọn ô ③ voice / ④ source / ⑤ donor (tải thêm tiếng thật khác) / ⑥ both, full hoặc partial (đoạn tự chọn hoặc nhập giây), generator, hệ giọng, câu mới cho cụm sửa → video fake + nhãn thật. Dùng lại đúng các hàm của pipeline sinh |
-| 2. Phân tích video | chuẩn hoá → **đo và sửa độ lệch tiếng–hình bằng SyncNet** (báo riêng nếu lệch vượt ngưỡng BT.1359) → đặc trưng như lúc train → mỗi model chạy theo cửa sổ 7 s → điểm 4 tác vụ, kết luận theo ngưỡng validation (`metrics.json`), timeline có vẽ chồng nhãn thật. Thêm 1–3 video real của cùng người để dùng tham chiếu (TriHead) |
+| 2. Phân tích video | chuẩn hoá → **đo và sửa độ lệch tiếng-hình bằng SyncNet** (báo riêng nếu lệch vượt ngưỡng BT.1359) → đặc trưng như lúc train → mỗi model chạy theo cửa sổ 7 s → điểm 4 tác vụ, kết luận theo ngưỡng validation (`metrics.json`), timeline có vẽ chồng nhãn thật. Thêm 1-3 video real của cùng người để dùng tham chiếu (TriHead) |
 
-- Mặc định cài Wav2Lip + LatentSync 1.5 và F5-TTS tiếng Việt; muốn generator / giọng khác thì sửa `GENERATORS`, `VOICES` (mỗi môi trường cài thêm 5–15 phút).
+- Mặc định cài Wav2Lip + LatentSync 1.5 và F5-TTS tiếng Việt; muốn generator / giọng khác thì sửa `GENERATORS`, `VOICES` (mỗi môi trường cài thêm 5-15 phút).
 - Chưa có checkpoint: `RUN_DIR = None` → chỉ chạy `speechforensics` (không cần train) để thử luồng.
 - Video tối đa 60 s (giới hạn của bộ trích AV-HuBERT). Link `gradio.live` là công khai trong thời gian chạy: chỉ dùng video được phép, tắt khi xong.
 

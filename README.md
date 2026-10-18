@@ -11,7 +11,7 @@ v003 is rebuilt from scratch. The earlier study (v001-v002, closed 14 October 20
 | **Real video** | ① real | ② sham (full + partial) | ③ AI voice: track A (whole sentence), B (one phrase, spliced); test adds C (inpainting) |
 | **Lip-synced video** | ④ source | ⑤ donor | ⑥ both (lips driven by track B) |
 
-- **Real data:** parts of 800 clips (20 men + 20 women × 20 clips, 4-7 s, 720p, audio–video offset corrected), split by speaker.
+- **Real data:** parts of 800 clips (20 men + 20 women × 20 clips, 4-7 s, 720p, audio-video offset corrected), split by speaker.
 - **Generators:** Wav2Lip, MuseTalk 1.5, IP-LAP, VideoReTalking for train/validation/test; LatentSync 1.5 and Diff2Lip appear **only at test time**.
 - **Voices:** VieNeu-TTS, F5-TTS (Vietnamese), OmniVoice, Seed-VC for train/validation/test; VoxCPM2, viXTTS and F5 inpainting appear **only at test time**.
 - **Labels:** visual / audio / audio-visual mismatch intervals; `fake_intervals` is their union.
