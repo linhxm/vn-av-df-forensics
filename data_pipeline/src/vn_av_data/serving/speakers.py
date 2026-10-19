@@ -1,6 +1,6 @@
 """Bước 05 review: duyệt theo speaker, một màn hình (127.0.0.1:8001).
 
-Mỗi speaker: chọn đúng `clips_per_speaker` clip (mặc định 20) và gán giới. Clip nhóm theo video.
+Mỗi speaker: chọn 15-20 clip (min / max_clips_per_speaker) và gán giới. Clip nhóm theo video.
 Đủ 10 thì có thể bỏ qua toàn bộ clip còn lại của speaker đó. Mọi thao tác ghi thẳng vào ledger.
 Speaker đã nằm trong part là đóng băng (chỉ xem).
 """
@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
+from vn_av_data.data.parts import clip_range
 from vn_av_data.features.face import normalize
 from vn_av_data.ledger import now
 from vn_av_data.serving.speaker_page import PAGE
@@ -45,7 +46,7 @@ def photo_urls(speaker):
 
 
 def create_app(ws, ledger, cfg):
-    per_speaker = cfg["parts"]["clips_per_speaker"]
+    lo, hi = clip_range(cfg["parts"])
     target = cfg["parts"]["speakers_per_gender"]  # tiến độ tính cho part kế tiếp
     app = FastAPI()
 
@@ -74,7 +75,8 @@ def create_app(ws, ledger, cfg):
 
     @app.get("/", response_class=HTMLResponse)
     def page():
-        return PAGE.replace("__PER__", str(per_speaker)).replace("__TARGET__", str(target))
+        page = PAGE.replace("__MIN__", str(lo)).replace("__MAX__", str(hi))
+        return page.replace("__TARGET__", str(target))
 
     @app.get("/api/state")
     def state():
@@ -94,7 +96,7 @@ def create_app(ws, ledger, cfg):
         for s in rows:
             n, k = counts.get(s["speaker_id"], (0, 0))
             k = k or 0
-            ready = s["review"] == "done" and k == per_speaker and s["part"] is None
+            ready = s["review"] == "done" and lo <= k <= hi and s["part"] is None
             if ready and s["gender"] in done:
                 done[s["gender"]] += 1
             speakers.append(
@@ -109,7 +111,7 @@ def create_app(ws, ledger, cfg):
                     "suggestion": bool(s["suggestion"]),
                 }
             )
-        return {"speakers": speakers, "complete": done, "target": target, "per": per_speaker}
+        return {"speakers": speakers, "complete": done, "target": target, "min": lo, "max": hi}
 
     @app.get("/api/speaker/{sid}")
     def detail(sid: str):
@@ -168,8 +170,8 @@ def create_app(ws, ledger, cfg):
         s = speaker(c["speaker_id"])
         editable(s)
         if body.decision == "keep" and c["decision"] != "keep":
-            if keep_count(s["speaker_id"]) >= per_speaker:
-                raise HTTPException(409, f"Đã chọn đủ {per_speaker} clip; bỏ chọn một clip trước")
+            if keep_count(s["speaker_id"]) >= hi:
+                raise HTTPException(409, f"Đã chọn tối đa {hi} clip; bỏ chọn một clip trước")
             if c["location"] != "local":
                 raise HTTPException(409, "Clip không còn ở máy")
         with ledger.tx() as conn:

@@ -72,15 +72,15 @@ footer{border-top:1px solid var(--line);background:var(--panel);display:flex;ali
 <div id="toast"></div><div id="modal"><div><b>Clip này của ai?</b><div id="cands"></div>
 <div class="row" style="margin-top:8px"><button id="newSpk">Speaker mới</button><button id="closeM">Huỷ</button></div></div></div>
 <script>
-const PER=__PER__,TARGET=__TARGET__,$=id=>document.getElementById(id);
+const MIN=__MIN__,MAX=__MAX__,TARGET=__TARGET__,$=id=>document.getElementById(id);
 let S=null,D=null,cur=-1,tab=0,page=0,clips=[];
 async function api(url,body){const r=await fetch(url,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  if(!r.ok){const t=await r.text();let m=t;try{m=JSON.parse(t).detail}catch(e){}toast(m);throw new Error(m)}return r.json()}
 function toast(m){const t=$('toast');t.textContent=m;t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',2600)}
 function visible(){const f=$('filter').value;return S.speakers.filter(s=>f==='all'||(f==='pending'?s.review==='pending'&&s.part===null:s.suggestion&&s.part===null))}
 async function loadState(){S=await api('/api/state');const c=S.complete;
- $('prog').textContent=`${S.speakers.length} speaker · sẵn cho part kế tiếp (đủ ${PER} clip, duyệt xong): Nam ${c.M}/${TARGET} · Nữ ${c.F}/${TARGET} · còn chờ ${S.speakers.filter(s=>s.review==='pending'&&s.part===null).length}`;
- const j=$('jump');j.innerHTML=S.speakers.map(s=>`<option value="${s.id}">${s.id} · ${s.keep}/${PER} · ${s.review}${s.gender?' · '+s.gender:''}${s.part?' · part '+s.part:''}</option>`).join('');
+ $('prog').textContent=`${S.speakers.length} speaker · sẵn cho part kế tiếp (${MIN}-${MAX} clip, duyệt xong): Nam ${c.M}/${TARGET} · Nữ ${c.F}/${TARGET} · còn chờ ${S.speakers.filter(s=>s.review==='pending'&&s.part===null).length}`;
+ const j=$('jump');j.innerHTML=S.speakers.map(s=>`<option value="${s.id}">${s.id} · ${s.keep}/${MAX} · ${s.review}${s.gender?' · '+s.gender:''}${s.part?' · part '+s.part:''}</option>`).join('');
  if(D)j.value=D.id}
 async function openSpeaker(id){D=await api('/api/speaker/'+id);clips=[];D.videos.forEach((v,vi)=>v.clips.forEach(c=>clips.push({...c,vi})));
  tab=0;page=0;cur=clips.length?0:-1;const firstPending=clips.findIndex(c=>c.decision==='pending');if(firstPending>=0){cur=firstPending;tab=clips[cur].vi}
@@ -103,12 +103,15 @@ function renderGrid(){const list=tabClips(),n=pageSize(),pages=Math.max(1,Math.c
  <span class="n">${i+1}</span>${c.flags?'<span class="f">⚠</span>':''}${c.decision==='keep'?'<span class="k">✔</span>':''}</div>`).join('');
  $('pText').textContent=`trang ${page+1}/${pages} · ${list.length} clip`;
  [...$('grid').children].forEach(t=>{t.onclick=()=>{cur=+t.dataset.i;play();renderGrid()};t.ondblclick=()=>{cur=+t.dataset.i;toggle('keep')}})}
-function renderSlots(){const keep=clips.filter(c=>c.decision==='keep');$('count').textContent=`${keep.length}/${PER}`;
- $('slots').innerHTML=Array.from({length:PER},(_,k)=>{const c=keep[k];return c?`<div class="slot full" data-id="${c.clip_id}" style="background-image:url(/media/strip/${c.clip_id})" title="Bấm để bỏ chọn"><span class="x">✕</span></div>`:'<div class="slot"></div>'}).join('');
+function renderSlots(){const keep=clips.filter(c=>c.decision==='keep');$('count').textContent=`${keep.length}/${MAX}`;
+ $('slots').innerHTML=Array.from({length:MAX},(_,k)=>{const c=keep[k];return c?`<div class="slot full" data-id="${c.clip_id}" style="background-image:url(/media/strip/${c.clip_id})" title="Bấm để bỏ chọn"><span class="x">✕</span></div>`:'<div class="slot"></div>'}).join('');
  [...$('slots').children].forEach(s=>{if(s.dataset.id)s.onclick=()=>{cur=clips.findIndex(c=>c.clip_id===s.dataset.id);setDecision('pending')}});
  const left=clips.filter(c=>c.decision==='pending').length;
- $('banner').className=keep.length>=PER?'ok':'';
- $('banner').textContent=keep.length>=PER?`ĐỦ ${PER} clip - bấm N để sang speaker tiếp (bỏ qua ${left} clip còn lại)${D.gender?'':' · nhớ gán giới (M/F)'}`:(clips.length<PER?`Speaker chỉ có ${clips.length} clip (< ${PER}) - bấm N để chờ batch sau, hoặc E nếu không dùng được`:'')}
+ const sex=D.gender?'':' · nhớ gán giới (M/F)';$('banner').className=keep.length>=MIN?'ok':'';
+ // Đạt từ MIN clip; còn clip tốt thì chọn thêm tới MAX (số clip không được là tiêu chí chọn người).
+ $('banner').textContent=keep.length>=MAX?`ĐỦ ${MAX} clip - bấm N để sang speaker tiếp (bỏ qua ${left} clip còn lại)${sex}`
+  :keep.length>=MIN?`ĐẠT ${keep.length} clip (${MIN}-${MAX}) - còn clip tốt thì chọn thêm tới ${MAX}, không thì bấm N${sex}`
+  :(clips.length<MIN?`Speaker chỉ có ${clips.length} clip (< ${MIN}) - bấm N để chờ batch sau, hoặc E nếu không dùng được`:'')}
 function play(){const c=clips[cur],v=$('video');if(!c){v.removeAttribute('src');$('strip').removeAttribute('src');$('cinfo').textContent='Không có clip';return}
  if(c.vi!==tab){tab=c.vi;renderTabs()}renderGrid.follow=true;
  v.src='/media/clip/'+c.clip_id;if($('auto').checked)v.play().catch(()=>{});$('strip').src='/media/strip/'+c.clip_id;
@@ -121,7 +124,7 @@ async function gender(g){if(D.part)return toast('Speaker đã khoá');await api(
 async function nextSpeaker(step=1,finish=true){
  if(finish&&D&&!D.part&&D.review==='pending'){const k=clips.filter(c=>c.decision==='keep').length;
   // Chưa đủ clip: để chờ (không đánh dấu xong); batch sau có thêm clip thì speaker hiện lại.
-  if(k<PER)toast(`${D.id} để chờ (${k}/${PER} clip), batch sau có thêm clip sẽ duyệt tiếp`);
+  if(k<MIN)toast(`${D.id} để chờ (${k}/${MIN} clip tối thiểu), batch sau có thêm clip sẽ duyệt tiếp`);
   else{if(!D.gender&&!confirm('Chưa gán giới (M/F). Vẫn sang speaker tiếp?'))return;
    await api('/api/speaker/'+D.id,{review:'done'})}}
  await loadState();const list=visible(),ids=S.speakers.map(s=>s.id),here=D?ids.indexOf(D.id):-1;

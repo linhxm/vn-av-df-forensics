@@ -87,7 +87,10 @@ class Ledger:
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
+        # timeout: chờ tối đa 60 s khi lệnh khác (vd. review + cut ở 2 terminal) đang ghi.
+        self.conn = sqlite3.connect(
+            self.path, timeout=60, check_same_thread=False, isolation_level=None
+        )
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.lock = threading.RLock()

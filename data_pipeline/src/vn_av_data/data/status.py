@@ -3,7 +3,8 @@
 import shutil
 
 
-def collect_status(ws, ledger, per_speaker=20):
+def collect_status(ws, ledger, clip_range=(15, 20)):
+    lo, hi = clip_range
     q = ledger.rows
     batches = []
     for b in q("SELECT * FROM batches ORDER BY batch"):
@@ -47,7 +48,7 @@ def collect_status(ws, ledger, per_speaker=20):
         if s["review"] == "done"
         and s["gender"] in ("M", "F")
         and s["part"] is None
-        and keep.get(s["speaker_id"], 0) == per_speaker
+        and lo <= keep.get(s["speaker_id"], 0) <= hi
     ]
     local_mb = ledger.scalar("SELECT SUM(size_mb) FROM clips WHERE location='local'") or 0
     usage = shutil.disk_usage(ws.root if ws.root.exists() else ws.root.parent)

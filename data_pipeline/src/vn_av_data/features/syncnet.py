@@ -9,7 +9,7 @@ Mỗi clip: hộp mặt YuNet mỗi frame (làm mượt median 13 frame như run
 (mở rộng 40%) → đặc trưng 5 frame hình / 0,2 s MFCC → khoảng cách theo độ lệch -15..+15 frame.
 Quy ước: `audio_lag` > 0 = tiếng trễ hơn hình (đo được bằng cách dịch tiếng biết trước).
 Độ lệch của một video = đỉnh của đường cong trung bình mọi clip đo; tin được khi đỉnh đủ nhọn
-và đa số clip đồng ý (±1 frame). Lý do và ngưỡng: docs/v003_model_research.md §9.
+và đa số clip đồng ý (±1 frame). Lý do và ngưỡng: docs/v003_data.md §6.
 """
 
 import numpy as np

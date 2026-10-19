@@ -22,13 +22,13 @@ Quy ước mức tin:
 
 | Hạng mục | Giá trị | Mục |
 |---|---|---|
-| Đơn vị phát hành | **part** = 40 người (20 nam + 20 nữ) × 20 clip = **800 clip real** | §3 |
+| Đơn vị phát hành | **part** = 40 người (20 nam + 20 nữ) × **15-20 clip** = **600-800 clip real** | §3 |
 | Split | theo người, mỗi giới 12 / 3 / 5 (train 24, validation 6, test 10 người; 60 / 15 / 25 %) | §2, §7 |
 | Clip | 4-7 s, 25 fps, ≤ 720p, đúng 1 mặt người đang nói, tiếng Việt gốc | §5 |
 | Nguồn | YouTube; nguồn 1 người ≥ 20 phút, 3-10 video; chỉ video ngang, ≥ 720p, ≥ 25 fps | §4 |
 | Chỉ tiêu cắt nguồn 1 người | 30-40 clip ứng viên **mỗi input** (tối đa), rải đều theo thời gian | §5.3 |
 | Độ lệch tiếng-hình | đo bằng SyncNet theo video trong bước cắt; dịch tiếng về 0 khi export; video không đo được tự loại | §6 |
-| Duyệt | người chọn 20 clip / người, gán giới, góc mặt lệch ≤ ~30 % | §7 |
+| Duyệt | người chọn 15-20 clip / người (còn clip tốt thì chọn đủ 20), gán giới, góc mặt lệch ≤ ~30 % | §7 |
 | Quy mô mục tiêu | ≥ 5 part = 200 người ○ | §3 |
 
 **Một câu:** nút thắt là **số người khác nhau**, không phải số clip; mọi luật chọn, cắt, duyệt đều nhằm có nhiều người, mỗi người đủ clip từ nhiều buổi quay, và real không mang đặc điểm cấu trúc nào (độ lệch tiếng-hình, nén) khác với fake sẽ sinh từ chính nó.
@@ -100,7 +100,8 @@ Phần dùng để **chấm** là test. Test của v003 đo tổng quát theo 3 
 | Phương án đã cân nhắc | Kết luận |
 |---|---|
 | 10 clip / người | thiết kế ban đầu. Mỏng: model học chỉ từ real (AVH-Align) có ~3 giờ real cho 4 part; 3 clip tham chiếu chiếm 30 % số clip; FPR đo trên ít real |
-| **20 clip / người** | **chọn** (18/10) |
+| 20 clip / người, cố định | chọn 18/10; thay bằng 15-20 ngày 19/10 |
+| **15-20 clip / người** | **chọn (19/10)**, kèm các biện pháp chống lệch bên dưới |
 | 20-60 clip ngẫu nhiên | bỏ: người nhiều clip lấn át (identity leakage); AUC gộp bị người nhiều clip chi phối; cân giới / split theo clip lệch; cùng GPU làm được thêm part (thêm người) |
 | 10 clip sinh fake + 10 clip chỉ làm real (real_only) | bỏ, vì phương án "mọi clip đều sinh fake, mỗi clip một nửa số generator" cho tỉ lệ tốt hơn mà mọi real đều có fake cặp (xem v003_generation §4) |
 
@@ -109,7 +110,20 @@ Vì sao 20 chứ không 10:
 2. 20 vẫn xa vùng bão hoà của các bộ lớn (88-139 real mỗi người), nên thêm clip còn lợi rõ: gấp đôi real cho model học từ real; 3 clip tham chiếu không còn chiếm 30 %; FPR đo trên 200 real / part thay vì 100; gấp đôi clip real làm nền cho fake.
 3. Khi nào 10 tốt hơn: GPU là nút thắt, hoặc nhiều khách podcast không đủ 20 clip tốt. Quy tắc ưu tiên: **không đổi người lấy clip**; nếu mất nhiều người tốt, có thể hạ chuẩn part xuống 16 clip thay vì bỏ người.
 
-**20 clip nên đến từ 2-3 video khác nhau** (khác buổi quay, ánh sáng, áo, góc máy). 20 clip cắt liền từ một video gần như là một mẫu lặp.
+**19/10: đổi sang 15-20 clip mỗi người** (user chốt; part sau cũng cần, làm đồng bộ cho mọi part). Lý do: người tốt nhưng chỉ có 15-19 clip dùng được không bị rơi; với luật cắt mới, clip ngắn hơn nên số cửa sổ không phải nút thắt, nút thắt là clip **tốt** khi duyệt. Một part còn **600-800 clip**.
+
+**Biện pháp để số clip khác nhau không làm lệch kết quả:**
+
+| Rủi ro | Biện pháp | Ở đâu |
+|---|---|---|
+| Người nhiều clip lấn át khi train (identity leakage) | lấy mẫu train theo **1 / số clip của người đó** → mỗi người đóng góp như nhau; mọi người cùng số clip thì giữ shuffle thường | `training.speaker_balance`, `train.speaker_weights` |
+| AUC gộp bị người nhiều clip chi phối | báo thêm **AUC cân theo người** (trọng số 1 / số file của người đó); AUC trong từng người và CI bootstrap theo người vốn có | `evaluate.speaker_balanced_auc`, cột "ai (cân theo người)" trong `report.md` |
+| Split lệch số clip (người ít clip dồn vào test) | chia split vẫn ưu tiên tuyệt đối chỉ tiêu người theo giới; trong giới hạn đó **cân tổng clip** mỗi split theo tỉ lệ số người | `parts.assign_splits` |
+| Số clip mang thông tin nhãn | không thể: mọi clip của mọi người sinh **cùng số file** (9 / 12), tỉ lệ fake / real mỗi người như nhau | v003_generation §4 |
+| Chênh tỉ trọng giữa người | tối đa 20 / 15 = 1,33× (v001 từng 15-158 clip, 10×); dưới 15 không vào part, trên 20 trang duyệt chặn | `min / max_clips_per_speaker` |
+| Người duyệt chọn clip kém để đủ số | quy tắc duyệt: chỉ chọn clip tốt; còn clip tốt thì chọn tới 20; số clip không là tiêu chí chọn người | trang duyệt (thông báo "ĐẠT … chọn thêm tới 20") |
+
+**15-20 clip nên đến từ 2-3 video khác nhau** (khác buổi quay, ánh sáng, áo, góc máy). 20 clip cắt liền từ một video gần như là một mẫu lặp.
 
 ---
 
@@ -145,7 +159,7 @@ Mọi bước ghi vào **ledger SQLite** (`data/ledger/ledger.sqlite`): URL, vid
 
 | Lớp | Điều kiện | Lý do loại |
 |---|---|---|
-| Tiếng nói | Silero VAD (xác suất ≥ 0,5), nối đoạn cách nhau < 0,6 s; cửa sổ **4-7 s** trên lưới 25 fps, không chồng nhau; đoạn nói < 4 s bỏ | |
+| Tiếng nói | Silero VAD (xác suất ≥ 0,5), nối đoạn cách nhau < 0,6 s; cửa sổ **4-7 s** trên lưới 25 fps, không chồng nhau; đoạn nói dài hơn 7 s được chia **ở chỗ ngắt dài nhất** trong khoảng 4-7 s (§5.4, từ 19/10); đoạn nói < 4 s bỏ | |
 | Đúng 1 mặt | YuNet độ tin ≥ 0,85; 0 hoặc ≥ 2 mặt đều loại | `face_frame` |
 | Mặt đủ to | cạnh hộp mặt **≥ 48 px** ở khung cạnh dài 640 (≈ 96 px ở 720p) | `face_frame` |
 | Hình học mặt | hộp nằm trọn trong khung; hai khoé miệng ở nửa dưới mặt, cách nhau ≥ 12 % bề ngang mặt | `face_frame` |
@@ -184,12 +198,34 @@ Chủ ý từ v001: **không chọn từng clip theo điểm sync**, vì như v�
 | 18/10 | 40-60 | lên 20 clip / người |
 | **18/10 tối (hiện hành)** | **30-40 mỗi input**: 30 khi ≤ 5 phút tiếng nói, tăng tuyến tính tới 40 ở ≥ 20 phút | 9 video đầu batch 1 cho thấy clip qua bộ lọc đã sạch ●; URL nhập theo từng video nên chỉ tiêu tính cho từng video: người có 3-4 video sẽ có 160-240 ứng viên cho 20 clip. 30 vẫn dư 10 cho phần loại khi duyệt |
 
-- Chỉ tiêu là **mức tối đa** cố lấy, không bắt buộc. Thiếu thì giữ những gì cắt được. Chỗ bắt buộc là duyệt: đủ 20 clip mới vào part.
+- Chỉ tiêu là **mức tối đa** cố lấy, không bắt buộc. Thiếu thì giữ những gì cắt được. Chỗ bắt buộc là duyệt: đủ 15 clip mới vào part.
 - Thời lượng nguồn **20 phút là đủ**: nguồn tốt giữ 60-100 % cửa sổ kiểm ●, nên 40-60 clip chỉ cần ~6-9 phút tiếng nói; video 20 phút có ~14-16 phút tiếng nói. (Có lúc tính nhầm cần 30 phút, đã sửa.)
 - **Rải đều** (`spread_order`): trục thời gian chia N khúc (N = chỉ tiêu), mỗi khúc lấy cửa sổ gần tâm nhất. Khúc hỏng thì thử cửa sổ kế trong khúc; khúc hết cửa sổ thì bỏ; khi mọi khúc còn lại đã có clip thì lấy clip thứ 2, 3 từ khúc còn cửa sổ tới đủ chỉ tiêu, nên một khúc không có clip tốt **không làm hụt** chỉ tiêu. Trần số lần thử = 2,5 × chỉ tiêu + 5.
 - Rải đều **không làm chậm**: mỗi cửa sổ được ffmpeg nhảy thẳng tới (`-ss`) và giải mã riêng; thời gian chỉ phụ thuộc số cửa sổ phải kiểm. Khi duyệt, clip khác thời điểm nên dễ chọn hơn.
 
-### 5.4. Tốc độ, chạy tuần tự, khoá luật cắt
+### 5.4. Điểm cắt ở chỗ ngắt (từ 19/10)
+
+**Vấn đề** ●: luật cũ nối chỗ lặng < 0,6 s rồi chặt đoạn nói dài **cứng mỗi 7 s**. Trên batch 1 (84 video, 2.392 clip): 84 % clip dài đúng 7 s; chỉ **8 %** clip có cả 2 mép rơi vào chỗ ngắt, **61 %** có cả 2 mép bên trong đoạn nói (có thể cắt ngang từ). 38 % đoạn nói sau VAD dài hơn 7 s. Không ảnh hưởng phát hiện (fake cùng mép với real) nhưng làm track A (TTS đọc lại cả câu) gặp từ cụt, và real gần như không có khoảng lặng đầu clip.
+
+**Luật mới:** VAD vốn tính xác suất có tiếng cho từng khúc 32 ms. Lưu thêm các **chỗ ngắt** (khúc xác suất < 0,5 nằm trong đoạn nói, `pause_spans`). Khi một đoạn dài hơn 7 s, điểm cuối mỗi cửa sổ là **tâm chỗ ngắt dài nhất** trong khoảng [đầu + 4 s, đầu + 7 s] (phần còn lại phải đủ ≥ 4 s; không đủ chỗ cho 2 cửa sổ thì lấy 1, bỏ đuôi), làm tròn theo lưới 25 fps; không có chỗ ngắt thì cắt ở mức dài nhất cho phép như cũ. Cửa sổ kế bắt đầu từ điểm vừa cắt, không chồng nhau.
+
+**Thử trước khi áp** ● (6 video batch 1, 6 kênh, ~1,8 giờ tiếng nói; mép "sạch" = mọi khúc 32 ms quanh mép có xác suất < 0,5):
+
+| | Luật cũ | Luật mới (bản thử) | Luật mới (code thật) |
+|---|---|---|---|
+| Cửa sổ | 930 | 1.187 | 1.176 |
+| Cả 2 mép sạch | 74 (8 %) | 745 (63 %) | 723 (61 %) |
+| Cả 2 mép giữa tiếng | 533 (57 %) | 77 (6 %) | 86 (7 %) |
+| Độ dài | 87 % đúng 7 s | p10 / p50 / p90 = 4,2 / 5,4 / 6,6 s | 4,2 / 5,4 / 6,7 s |
+| Tổng thời lượng phủ | 6.305 s | 6.398 s | |
+
+- Phần còn lại chưa sạch là người **nói một mạch, không ngắt suốt 4-7 s**. Nới chỗ ngắt từ ≥ 96 ms xuống ≥ 64 ms không đổi tỉ lệ sạch (63 %).
+- Chi phí thời gian gần như bằng 0 (xác suất VAD đã tính sẵn). Clip ngắn hơn (trung vị 5,4 s) → bước sinh tốn ít GPU hơn một chút; vẫn đủ chỗ cho đoạn partial 0,3-3 s.
+- Giới hạn: chỗ ngắt chưa chắc là hết câu (có thể giữa hai cụm); VAD có thể tụt ở phụ âm vô thanh. Cắt **tròn câu** cần ASR có mốc từng từ + dấu câu (PhoWhisper / Whisper / WhisperX), nặng hơn nhiều trên CPU → không làm.
+- Tham khảo: code nhóm Capstone dùng Silero mặc định (ngắt ≥ 100 ms, đệm 30 ms), giữ nguyên đoạn 2-12 s làm một clip, đoạn dài hơn cắt cửa sổ 5 s bước 4 s (chồng 1 s).
+- Áp dụng → đổi luật cắt → user xoá toàn bộ dữ liệu batch 1 (đã duyệt 38 người) và tải, cắt lại từ đầu (19/10).
+
+### 5.5. Tốc độ, chạy tuần tự, khoá luật cắt
 
 | Số đo ● | Giá trị |
 |---|---|
@@ -291,21 +327,21 @@ Mục tiêu: **real và fake có cùng phân bố độ lệch**. Bản thân đ
 
 ### 7.2. Duyệt (05 review, người làm)
 
-- Mỗi speaker: kiểm cụm đúng một người (gộp **G** / "Khác người" / **R** chuyển clip), **gán giới M / F**, **chọn 20 clip** (**S**, **X** loại), **N** chốt, **E** loại người. Quyết định ghi ngay vào ledger; server chạy tới khi Ctrl+C.
+- Mỗi speaker: kiểm cụm đúng một người (gộp **G** / "Khác người" / **R** chuyển clip), **gán giới M / F**, **chọn 15-20 clip** (**S**, **X** loại; đạt từ 15, tối đa 20), **N** chốt, **E** loại người. Quyết định ghi ngay vào ledger; server chạy tới khi Ctrl+C.
 - **Giới tính đánh tay**: đoán từ mặt / giọng dễ sai, mà part cần đúng 20 + 20; người duyệt đằng nào cũng xem từng người.
 - Chỉ clip `keep` đi tiếp. `pending` (chưa xem) và `reject` (đã xem, hỏng) được các bước sau xử lý như nhau; chọn đủ 20 rồi N là xong.
 - Video `sync_unreliable`: không cần đánh gì; speaker chỉ có clip từ video đó thì E.
-- **Người chưa đủ 20 clip** (19/10): bấm N là để **chờ**, không đánh dấu xong. Batch sau `04_identify` khớp thêm clip vào người đó thì người đó hiện lại trong "chưa duyệt"; người đã duyệt xong mà còn thiếu clip cũng được mở lại như vậy (người đủ 20 thì giữ nguyên). Người không bao giờ dùng được thì E.
+- **Người chưa đủ 15 clip** (19/10): bấm N là để **chờ**, không đánh dấu xong. Batch sau `04_identify` khớp thêm clip vào người đó thì người đó hiện lại trong "chưa duyệt"; người đã duyệt xong mà còn thiếu clip cũng được mở lại như vậy (người đủ 20 thì giữ nguyên). Người không bao giờ dùng được thì E.
 - **Góc mặt**: chỉ lấy clip lệch ≤ ~30 %. Mặt nghiêng tới ~45° vẫn dùng được về kỹ thuật (đúng thực tế talkshow; generator, AV-HuBERT, SyncNet làm được); 45-60° rủi ro (VideoReTalking, MuseTalk dễ lỗi); > 60° dò mặt hụt, generator lỗi.
 - Rủi ro đã ghi ○: mặt càng nghiêng generator càng hay lỗi và job lỗi bị bỏ, nên real có thể nhiều mặt nghiêng hơn fake → lối tắt "nghiêng → real". Kiểm sau khi sinh: xem các job bị bỏ trong `records/`.
-- Nguồn nhiều người (podcast): cả 20 clip có thể cùng một tập, nên để ý chọn từ nhiều tập.
+- Nguồn nhiều người (podcast): cả 15-20 clip có thể cùng một tập, nên để ý chọn từ nhiều tập.
 
 ### 7.3. Tạo part (06 parts)
 
-- Part tạo khi có **đủ 20 nam + 20 nữ** đã duyệt xong, đủ 20 clip, theo thứ tự duyệt xong; đủ cho mấy part thì tạo bấy nhiêu. Chưa đủ thì không tạo gì, không báo lỗi; người đã duyệt chờ part sau.
-- Split **theo người**, cân giới: 12+12 / 3+3 / 5+5. Người xuất hiện chung một video đi cùng nhau vào một part và một split (nhóm liên thông); nhóm còn người chưa duyệt thì cả nhóm chờ.
+- Part tạo khi có **đủ 20 nam + 20 nữ** đã duyệt xong, có 15-20 clip được chọn, theo thứ tự duyệt xong; đủ cho mấy part thì tạo bấy nhiêu. Chưa đủ thì không tạo gì, không báo lỗi; người đã duyệt chờ part sau.
+- Split **theo người**, cân giới: 12+12 / 3+3 / 5+5; trong giới hạn đó cân tổng clip giữa các split. Người xuất hiện chung một video đi cùng nhau vào một part và một split (nhóm liên thông); nhóm còn người chưa duyệt thì cả nhóm chờ.
 - Part tạo xong bị **khoá** (`split-lock.json`).
-- Nên nhập URL **dư 25-30 %** (~25-26 người mỗi giới) và cân nam / nữ ngay từ danh sách URL, vì người rơi rụng (không đủ 20 clip, sync hỏng, mặt nghiêng, trùng). Xem thiếu giới nào bằng `10_status`.
+- Nên nhập URL **dư 25-30 %** (~25-26 người mỗi giới) và cân nam / nữ ngay từ danh sách URL, vì người rơi rụng (không đủ 15 clip, sync hỏng, mặt nghiêng, trùng). Xem thiếu giới nào bằng `10_status`.
 - Muốn thử bước sinh trước khi đủ part: làm part nhỏ trên workspace riêng, không gộp vào bộ chính.
 
 ## 8. Đầu ra part và lưu trữ
@@ -316,7 +352,7 @@ Mục tiêu: **real và fake có cùng phân bố độ lệch**. Bản thân đ
 
 | File | Nội dung |
 |---|---|
-| `clips/<clip_id>.mp4` | 800 clip real, 4-7 s, 25 fps, cạnh ngắn ≤ 720, H.264 + AAC 48 kHz; **tiếng đã dịch cho khớp môi** |
+| `clips/<clip_id>.mp4` | 600-800 clip real (15-20 / người), 4-7 s, 25 fps, cạnh ngắn ≤ 720, H.264 + AAC 48 kHz; **tiếng đã dịch cho khớp môi** |
 | `manifest.jsonl` | mỗi dòng một clip: `clip_id`, `speaker_id`, `gender`, `split`, `duration_s`, nguồn (`url`, `channel`, đoạn giây trong video gốc), `audio_lag_frames`, `av_sync_status`, `flags` |
 | `speakers.csv` | 40 người: giới, split, kênh, số video |
 | `split-lock.json` | khoá split theo người |
@@ -340,6 +376,7 @@ Ba lệnh xoá tách riêng và đều bắt buộc đã đánh dấu upload (us
 |---|---|
 | Batch thử (17/10; 4 nguồn, 5 video, 2,6 giờ) | tải 5/5 (403 tự thử lại; bot → cookie); cắt 296 clip; sync 3 `ok` (trễ 1-2 frame), 2 `unreliable`; identify gộp đúng 1 người qua 2 nguồn, tách podcast 2 người; duyệt 3 speaker đủ clip; dịch tiếng export đúng trên 8 clip. Đã xoá toàn bộ để chạy bản thật |
 | Batch 1 thật (18/10) | 83 URL video lẻ; 4 URL bị loại vì 24 fps; batch 1 = 79 video, 17,4 giờ, ước 5,22 GB, thực tế **4,9 GB** (≈ 0,28 GB / giờ); 9 video đầu: 345 clip, 7 `ok` / 2 `unreliable`. Chỉ tiêu hạ còn 30-40, user xoá hết và tải lại từ đầu |
+| Batch 1, lần chạy với chỉ tiêu 30-40 (18-19/10) | 84 video, 2.392 clip; cửa sổ kiểm 5.165 → giữ 46 % (loại vì mặt 1.810, chuyển cảnh 572, jump cut 391); sync 78 `ok` / 6 `unreliable`; độ lệch: 0 frame 3 video · 1: 20 · **2: 36** · 3: 13 · **4: 6** (160 ms, quá ngưỡng nhận ra 125 ms → phải sửa); identify 43 speaker mới / 41 khớp / 19 gợi ý gộp; duyệt 38 xong / 4 loại. Mép clip: chỉ 8 % cả 2 mép ở chỗ ngắt (§5.4) → áp luật cắt mới, xoá hết, chạy lại |
 
 Chưa chạy thật: `06_parts`, `07_export` cả part, `08_archive`, `09_clean` (có test với dữ liệu giả lập).
 
@@ -349,7 +386,7 @@ Tiêu chí cộng đồng dùng để đánh giá bộ dữ liệu: quy mô và 
 
 | Tiêu chí | AV-Deepfake1M++ ✔ | v003 | |
 |---|---|---|---|
-| Quy mô | 2,05 triệu video, 4.656 giờ, 7.109 người | ~7.800 file / part; 5 part = 200 người, ~39 nghìn file ○ | **kém xa**, giới hạn chính |
+| Quy mô | 2,05 triệu video, 4.656 giờ, 7.109 người | ~5.850-7.800 file / part; 5 part = 200 người, ~29-39 nghìn file ○ | **kém xa**, giới hạn chính |
 | Nguồn real | VoxCeleb2, LRS3, EngageNet | YouTube tiếng Việt, nhiều kênh | khác loại; **tiếng Việt** là điểm mới |
 | Chia theo người | chỉ ở test (train / validation chia ngẫu nhiên theo mẫu) | **cả 3 tập** | v003 chặt hơn |
 | Phương pháp chưa thấy | có | có (2 generator + 3 kiểu giọng) | ngang |
@@ -422,6 +459,11 @@ Phản biện quan trọng: **Deepfake-Eval-2024** (45 giờ video lưu hành n�
 | 18/10 | Xoá hết, chỉ giữ `urls.csv`, tải lại từ đầu (user) | đã xoá raw, ledger, pool |
 | 19/10 | Trang duyệt tràn màn hình | 20 ô "đã chọn" xếp 2 hàng × 10 |
 | 19/10 | Speaker chưa đủ 20 clip thì sao, thêm batch 2 thế nào | N để chờ (không đánh dấu xong); batch 2 khớp thêm clip thì người đó hiện lại để duyệt tiếp |
+| 19/10 | Cho số clip dao động 10-20 hoặc 15-20 (phỏng vấn đường phố khó đủ 20)? | giữ **20 cố định** (user). Batch 1: 40/43 người có ≥ 20 clip ứng viên ●; phỏng vấn đường phố ước chỉ 2-8 clip / người ○, nên 15-20 cũng không cứu được; nếu cần thì thử trên workspace riêng hoặc làm tập test phụ |
+| 19/10 | Hiện tại cắt câu thế nào, có tròn câu không? Code nhóm Capstone cắt thế nào? | không tròn câu: chặt cứng 7 s trong đoạn nói; Capstone giữ nguyên đoạn 2-12 s (tròn cụm hơn) |
+| 19/10 | Cắt semantic thì sao? | cần ASR + dấu câu → nặng; thay bằng dời điểm cắt về chỗ ngắt (VAD), thử 8 % → 63 % mép sạch |
+| 19/10 | Đổi sang 15-20 clip / người cho mọi part, "phải đảm bảo không ảnh hưởng" (user) | part 600-800 clip; train lấy mẫu cân theo người; AUC cân theo người; split cân tổng clip; trang duyệt đạt từ 15, tối đa 20 (§3.3) |
+| 19/10 | Áp luật cắt mới (user) | xoá hết dữ liệu, tải lại; bỏ khỏi `urls.csv` 10 link: 6 video sync `unreliable` + các video của 4 speaker bị loại; thêm 8 link mới (1 người / link) |
 
 ## 13. Nguồn
 

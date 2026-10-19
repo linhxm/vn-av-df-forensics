@@ -94,8 +94,9 @@ def build_report(cfg):
         "",
         "## AUC test (mean ± std theo seed)",
         "",
-        "| Model | ai | visual | audio | mismatch | ai (ref-norm) | định vị visual: ô cao nhất trong đoạn |",
-        "|---|---|---|---|---|---|---|",
+        "| Model | ai | ai (cân theo người) | visual | audio | mismatch | ai (ref-norm) "
+        "| định vị visual: ô cao nhất trong đoạn |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for name, items in sorted(by_model.items()):
 
@@ -114,7 +115,8 @@ def build_report(cfg):
             ]
         )
         lines.append(
-            f"| {name} | {col('ai')} | {col('visual')} | {col('audio')} | {col('mismatch')} | {ref} | {loc} |"
+            f"| {name} | {col('ai')} | {col('ai', 'auc_speaker_balanced')} | {col('visual')} "
+            f"| {col('audio')} | {col('mismatch')} | {ref} | {loc} |"
         )
     rows, _ = training_dataset(cfg)
     test_rows = [r for r in rows if r["split"] == "test"]

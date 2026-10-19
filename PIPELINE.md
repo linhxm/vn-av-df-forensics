@@ -1,7 +1,7 @@
 # VN-AV-DF v003 - hướng dẫn chạy pipeline
 
 ```
-data_pipeline (real, local) ─► part sạch vn-av-df-data-partN (800 clip, 20 nam + 20 nữ × 20 clip, split sẵn)
+data_pipeline (real, local) ─► part sạch vn-av-df-data-partN (600-800 clip, 20 nam + 20 nữ × 15-20 clip, split sẵn)
   └─► notebooks/generate.ipynb   phiên "voice" → các phiên "lipsync" → finalize      (generation/0x_*.py)
   └─► notebooks/prepare.ipynb    AV-HuBERT Large → crop miệng → XLS-R                (training/01_prepare.py)
   └─► notebooks/train.ipynb      train 6 baseline + 3 đề xuất → test một lần → report.md  (training/02-04)
@@ -122,7 +122,7 @@ Chạy ở phiên tương tác có GPU, mở link `gradio.live` in ra ở cell c
 
 ## Thời gian / dung lượng (ước lượng)
 
-- **Một part** (800 clip): 1.800 lần chạy generator và 800 job giọng; khoảng 7.800 file.
+- **Một part** (600-800 clip): 1.350-1.800 lần chạy generator và 600-800 job giọng; khoảng 5.850-7.800 file.
 - **GPU cho sinh fake:** khoảng 55-100 giờ cho mỗi part (gần 2-4 tuần quota Kaggle). Chia phiên theo generator để chạy song song trên nhiều notebook, ghép bằng `PREVIOUS_OUTPUT`.
 - **Trích feature và train:** vài giờ.
 

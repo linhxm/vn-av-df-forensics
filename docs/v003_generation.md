@@ -15,20 +15,20 @@ Quy ước mức tin: **●** đo trên dữ liệu của mình · **✔** đọ
 
 ## 0. Tóm tắt cho người chạy sinh fake
 
-Một part có **800 clip real** (40 người × 20 clip) và sinh ra khoảng **7.800 file**: 9 file cho mỗi clip train / validation, 12 file cho mỗi clip test.
+Một part có **600-800 clip real** (40 người × 15-20 clip) và sinh ra khoảng **5.850-7.800 file**: 9 file cho mỗi clip train / validation, 12 file cho mỗi clip test.
 
 |  | **train** | **validation** | **test** | **Cả part** |
 |---|---|---|---|---|
 | Người (nam + nữ) | 24 (12+12) | 6 (3+3) | 10 (5+5) | 40 (20+20) |
-| Clip real (20 clip / người) | 480 | 120 | 200 | 800 |
+| Clip real (15-20 clip / người) | 360-480 | 90-120 | 150-200 | 600-800 |
 | ① real | 1 | 1 | 1 | |
 | ② sham (full + partial) | 2 | 2 | 2 | |
 | ③ voice | 2 (A, B) | 2 (A, B) | 3 (A, B, C) | |
 | ④⑤⑥ lip-sync: generator mỗi clip × 2 (full + partial) | **2** × 2 = 4 | **2** × 2 = 4 | **3** × 2 = 6 | |
 | **File mỗi clip real** | **9** | **9** | **12** | |
 | ↳ có AI / không AI | 6 / 3 | 6 / 3 | 9 / 3 | |
-| **Tổng file** | **4.320** | **1.080** | **2.400** | **7.800** |
-| ↳ có AI / không AI | 2.880 / 1.440 | 720 / 360 | 1.800 / 600 | 5.400 / 2.400 (69 % / 31 %) |
+| **Tổng file** | **3.240-4.320** | **810-1.080** | **1.800-2.400** | **5.850-7.800** |
+| ↳ có AI / không AI | 2.160-2.880 / 1.080-1.440 | 540-720 / 270-360 | 1.350-1.800 / 450-600 | 4.050-5.400 / 1.800-2.400 (69 % / 31 %) |
 | Generator (rút từ) | Wav2Lip, MuseTalk 1.5, IP-LAP, VideoReTalking | như train | như train + **LatentSync 1.5, Diff2Lip** | |
 | Hệ giọng | VieNeu, F5-TTS VN, OmniVoice, Seed-VC | như train | như train + **VoxCPM2, viXTTS, F5 inpainting** | |
 
@@ -173,10 +173,12 @@ Số người và số clip mỗi người: v003_data §3. Ở đây: mỗi clip
 
 | | train | validation | test | Cả part |
 |---|---|---|---|---|
-| Lần chạy mỗi generator | 240 | 60 | 100 | |
-| Lần chạy lip-sync | 960 | 240 | 600 | **1.800** |
-| Job giọng | 480 | 120 | 200 | **800** |
-| GPU sinh ○ | | | | **~55-100 giờ** (gần 2-4 tuần quota Kaggle) |
+| Lần chạy mỗi generator | 180-240 | 45-60 | 75-100 | |
+| Lần chạy lip-sync | 720-960 | 180-240 | 450-600 | **1.350-1.800** |
+| Job giọng | 360-480 | 90-120 | 150-200 | **600-800** |
+| GPU sinh ○ | | | | **~40-100 giờ** (gần 2-4 tuần quota Kaggle) |
+
+Khoảng là vì mỗi người có 15-20 clip (từ 19/10; v003_data §3.3). Mỗi clip vẫn sinh đúng 9 / 12 file nên tỉ lệ có AI / không AI không đổi.
 
 - **69 % / 31 %** cùng vùng AV-Deepfake1M (75 % fake) và AV-Deepfake1M++ (69 %). Loss khi train đã cân trọng số lớp, nên không cần đổi tỉ lệ dữ liệu; chỗ cần sửa là ngưỡng (v003_model §8).
 - Full factorial (mọi generator × mọi ô × mọi giọng) là 59 / 124 mẫu mỗi clip, gấp ~7 lần, phần lớn do ô ⑥ = generator × giọng → bỏ từ 15/10.
@@ -282,6 +284,7 @@ Tab "tạo fake" của demo (v003_model §10) gọi đúng các hàm của pipel
 | 18/10 | Vì sao VideoReTalking tách dòng; test thì sao | 4 generator / 3 ô nên luôn có ô có 2 generator, ô đó đổi theo clip; test 6 generator: mỗi ô đúng 2, cặp đổi theo khối 3 clip |
 | 18/10 | Họ fake mỗi real bao nhiêu, có fake hết real? | AV-Deepfake1M đúng 3 / real, phương pháp rút cho từng fake |
 | 18/10 | 20 clip đều fake? Giảm còn ~6? | phương án **C**: một nửa generator, giọng giữ nguyên (§4) |
+| 19/10 | Mỗi người 15-20 clip | số file mỗi part thành khoảng (5.850-7.800); mỗi clip vẫn 9 / 12 file |
 | 18/10 | Full / partial có giúp định vị? Nhiều đoạn? | có; **giữ 1 đoạn** (user), 0,3-3 s |
 | 18/10 | Thêm phần lý do, tài liệu, "bạn sẽ nhận được gì" cho đồng đội | §0 và §4 file này |
 

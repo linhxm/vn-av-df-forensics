@@ -139,6 +139,9 @@ def config():
             # Dịch tiếng so với hình k frame ∈ [−1, +2] khi train (dương = tiếng trễ); xem
             # docs/v003_data.md §6.4 (BT.1359, sai số đo, điểm 0 generator).
             "audio_lag_aug": [-1, 2],
+            # Mỗi người 15-20 clip: lấy mẫu train theo 1 / số clip của người đó để mỗi người đóng
+            # góp như nhau (docs/v003_model.md §7).
+            "speaker_balance": True,
         },
         "bootstrap_replicates": 1000,
     }

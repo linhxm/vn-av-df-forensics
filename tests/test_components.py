@@ -245,3 +245,37 @@ def test_temporal_metrics_perfect_and_empty():
     flat = {"s0": {"frames": {"score": np.random.default_rng(0).random(125)}, "video": {}}}
     noisy = temporal_metrics(Model(), rows[:1], flat, "ai")
     assert 0 <= noisy["ap@0.5"] < 1
+
+
+def test_speaker_balance_weights_and_auc():
+    from vn_av_df.training.evaluate import speaker_balanced_auc
+    from vn_av_df.training.train import speaker_weights
+
+    def rows(speaker, clips):
+        return [
+            {
+                "split": "train",
+                "speaker_id": speaker,
+                "source_clip_id": f"{speaker}{i}",
+                "sample_id": f"{speaker}{i}{k}",
+            }
+            for i in range(clips)
+            for k in ("real", "fake")
+        ]
+
+    same = rows("a", 3) + rows("b", 3)
+    assert speaker_weights(same) is None  # cùng số clip: giữ shuffle thường
+    mixed = rows("a", 2) + rows("b", 4)
+    weights = speaker_weights(mixed)
+    # Tổng trọng số mỗi người bằng nhau dù số clip khác nhau.
+    assert sum(w for w, r in zip(weights, mixed) if r["speaker_id"] == "a") == pytest.approx(
+        sum(w for w, r in zip(weights, mixed) if r["speaker_id"] == "b")
+    )
+    labels = [int(r["sample_id"].endswith("fake")) for r in mixed]
+    # Người a tách hoàn hảo, người b ngẫu nhiên đảo: AUC cân người khác AUC gộp thường.
+    scores = [
+        (0.9 if y else 0.1) if r["speaker_id"] == "a" else (0.4 if y else 0.6)
+        for y, r in zip(labels, mixed)
+    ]
+    balanced = speaker_balanced_auc(mixed, labels, scores)
+    assert 0.0 <= balanced <= 1.0 and speaker_balanced_auc(mixed, [0] * len(mixed), scores) is None

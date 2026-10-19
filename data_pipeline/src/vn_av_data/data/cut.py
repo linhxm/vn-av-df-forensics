@@ -23,6 +23,7 @@ chạy lại sẽ xoá phần dở của video đó và cắt lại; video đã 
 import math
 import shutil
 import time
+from bisect import bisect_left
 from collections import Counter
 from itertools import pairwise
 from pathlib import Path
@@ -51,27 +52,48 @@ def media_origin(path):
     return origin, info
 
 
-def plan_clips(speech, scenes, duration, cfg):
-    """Cửa sổ min-max giây nằm trong đoạn có tiếng nói, không vắt qua chuyển cảnh."""
-    minimum, maximum, overlap = cfg["min_seconds"], cfg["max_seconds"], cfg["overlap_seconds"]
-    if not (0 < minimum <= maximum <= 60 and 0 <= overlap < minimum):
-        raise ValueError("Need 0 <= overlap < min <= max <= 60 seconds")
+def best_pause(mids, lo, hi):
+    """Điểm cắt trong [lo, hi]: tâm của chỗ ngắt dài nhất (bằng nhau thì lấy chỗ sau); không có
+    chỗ ngắt nào thì cắt ở hi. mids: [(tâm, độ dài), ...] đã sắp theo tâm."""
+    best = None
+    for mid, length in mids[bisect_left(mids, (lo - 1e-6,)) :]:
+        if mid > hi + 1e-6:
+            break
+        if best is None or length >= best[1]:
+            best = (mid, length)
+    if best is None:
+        return hi
+    return min(max(round(best[0] * 25) / 25, lo), hi)
+
+
+def plan_clips(speech, scenes, duration, cfg, pauses=()):
+    """Cửa sổ min-max giây nằm trong đoạn có tiếng nói, không vắt qua chuyển cảnh, không chồng.
+
+    Đoạn dài hơn max được chia ở chỗ ngắt dài nhất (pauses, từ VAD) trong khoảng cho phép, để mép
+    clip không cắt ngang từ (thử trên 6 video batch 1: cả 2 mép ở chỗ lặng 8 % → 63 %); không có
+    chỗ ngắt thì cắt ở mức dài nhất cho phép. Đầu / cuối đoạn nói vốn đã ở chỗ lặng."""
+    minimum, maximum = cfg["min_seconds"], cfg["max_seconds"]
+    if not 0 < minimum <= maximum <= 60:
+        raise ValueError("Need 0 < min <= max <= 60 seconds")
     boundaries = sorted({0.0, duration, *(s for s in scenes if 0 < s < duration)})
+    mids = sorted(((a + b) / 2, b - a) for a, b in pauses)
     result = []
     for start, end in speech:
         for left, right in pairwise(boundaries):
             a, b = max(start, left), min(end, right)
             a, b = math.ceil(a * 25 - 1e-6) / 25, math.floor(b * 25 + 1e-6) / 25
             while b - a >= minimum - 1e-6:
-                stop = min(b, a + maximum)
-                # Đuôi ngắn: kéo cửa sổ cuối về sau thay vì bỏ phần đuôi.
-                if 0 < b - stop < minimum - overlap:
-                    stop = b
-                    a = max(a, stop - maximum)
-                result.append((round(a, 6), round(stop, 6)))
-                if stop == b:
+                if b - a <= maximum + 1e-6:
+                    result.append((round(a, 6), round(b, 6)))
                     break
-                a = stop - overlap
+                # Phần còn lại phải đủ một cửa sổ nữa; không đủ chỗ cho 2 cửa sổ thì lấy 1, bỏ đuôi.
+                single = b - a < 2 * minimum - 1e-6
+                hi = a + maximum if single else min(a + maximum, b - minimum)
+                stop = best_pause(mids, a + minimum, hi)
+                result.append((round(a, 6), round(stop, 6)))
+                if single:
+                    break
+                a = stop
     return sorted(set(result))
 
 
@@ -389,11 +411,20 @@ class Cutter:
         self.ws, self.ledger, self.cfg, self.inspector = ws, ledger, cfg, inspector
 
     def detect_speech(self, path, origin, duration):
+        """{"speech": đoạn nói, "pauses": chỗ ngắt trong đoạn nói} (vad.detect_speech)."""
         from vn_av_data.data.vad import detect_speech
 
         return detect_speech(
             path, self.cfg["vad_model"], origin, duration, self.cfg["merge_silence_seconds"]
         )
+
+    def voice(self, path, origin, duration, cut_info):
+        """Kết quả VAD đã lưu trong cut_info, hoặc chạy VAD. Bộ dò giả trong test có thể trả
+        danh sách đoạn nói (không có chỗ ngắt)."""
+        if "speech" in cut_info:
+            return {"speech": cut_info["speech"], "pauses": cut_info.get("pauses", [])}
+        found = self.detect_speech(path, origin, duration)
+        return found if isinstance(found, dict) else {"speech": found, "pauses": []}
 
     def accept(self, video, path, origin, start, end, result):
         clip_id = "clip_" + fingerprint([video["video_id"], start, end])[:24]
@@ -436,13 +467,12 @@ class Cutter:
         if not duration or duration > cfg["max_source_hours"] * 3600:
             raise ValueError("Source duration missing or exceeds configured limit")
         cut_info = video.get("cut_info") or {}
-        speech = cut_info.get("speech")
-        if speech is None:
-            speech = self.detect_speech(path, origin, duration)
+        voice = self.voice(path, origin, duration, cut_info)
+        speech, pauses = voice["speech"], voice["pauses"]
         reasons, clips, inspected = Counter(), [], 0
         single = speakers == "1"
         if single:
-            windows = plan_clips(speech, [], duration, {**cfg, "overlap_seconds": 0.0})
+            windows = plan_clips(speech, [], duration, cfg, pauses)
             queues = spread_order(windows, quota, duration)
             budget = int(math.ceil(quota * cfg["single"]["attempts_factor"])) + 5
             filled = set()
@@ -469,7 +499,7 @@ class Cutter:
                         reasons[result["reason"]] += 1
         else:
             samples, scenes = scan_visual(path, cfg, origin, self.inspector.tracker)
-            for start, end in plan_clips(speech, scenes, duration, cfg):
+            for start, end in plan_clips(speech, scenes, duration, cfg, pauses):
                 inside = [s for s in samples if start <= s["time_s"] < end]
                 coverage = len(inside) / max(1, (end - start) * cfg["sample_fps"])
                 ratio = sum(s["valid"] for s in inside) / max(1, len(inside))
@@ -492,6 +522,7 @@ class Cutter:
         speech_s = sum(b - a for a, b in speech)
         return clips, {
             "speech": speech,
+            "pauses": pauses,
             "speech_s": round(speech_s, 1),
             "duration_s": duration,
             "quota": quota if single else None,
@@ -679,7 +710,7 @@ def single_quotas(cutter, ledger, group, rules):
         if "speech" not in info:
             path = cutter.ws.root / v["file"]
             origin, media = media_origin(path)
-            info = {**info, "speech": cutter.detect_speech(path, origin, media["duration_s"])}
+            info = {**info, **cutter.voice(path, origin, media["duration_s"], info)}
             ledger.update("videos", "video_id", v["video_id"], {"cut_info": info})
             v["cut_info"] = info
         speech[v["video_id"]] = sum(b - a for a, b in info["speech"])

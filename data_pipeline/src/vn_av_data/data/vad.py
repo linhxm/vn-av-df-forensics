@@ -43,12 +43,15 @@ def audio_blocks(path, origin_s):
             yield np.pad(pending, (0, 512 - len(pending)))
 
 
+FRAME_S = 0.032  # một khúc Silero: 512 mẫu ở 16 kHz
+
+
 def speech_regions(probabilities, duration, threshold=0.5, silence_s=0.3, pad_s=0.15):
     active = np.asarray(probabilities) >= threshold
     edges = np.diff(np.r_[False, active, False].astype(int))
     spans = []
     for start, end in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)):
-        a, b = start * 0.032, min(duration, end * 0.032)
+        a, b = start * FRAME_S, min(duration, end * FRAME_S)
         if spans and a - spans[-1][1] <= silence_s:
             spans[-1][1] = b
         else:
@@ -63,6 +66,19 @@ def speech_regions(probabilities, duration, threshold=0.5, silence_s=0.3, pad_s=
         else:
             padded.append([a, b])
     return padded
+
+
+def pause_spans(probabilities, regions, threshold=0.5):
+    """Khúc tiếng nhỏ (xác suất < threshold) nằm bên trong đoạn nói: chỗ ngắt giữa từ / cụm,
+    dùng để đặt điểm cắt cửa sổ (plan_clips). Trả [[bắt đầu, kết thúc], ...] theo giây."""
+    low = np.r_[False, np.asarray(probabilities) < threshold, False].astype(int)
+    edges = np.diff(low)
+    out = []
+    for a, b in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)):
+        start, end = a * FRAME_S, b * FRAME_S
+        if any(s < start and end < e for s, e in regions):
+            out.append([round(start, 3), round(end, 3)])
+    return out
 
 
 def detect_speech(path, model, origin_s, duration, silence_s=0.3):
@@ -80,4 +96,5 @@ def detect_speech(path, model, origin_s, duration, silence_s=0.3):
         )
         probabilities.append(float(output.ravel()[0]))
         context = samples[-64:]
-    return speech_regions(probabilities, duration, silence_s=silence_s)
+    regions = speech_regions(probabilities, duration, silence_s=silence_s)
+    return {"speech": regions, "pauses": pause_spans(probabilities, regions)}

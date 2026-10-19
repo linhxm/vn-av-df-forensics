@@ -90,7 +90,7 @@ Baseline tham chiếu (rẻ, chạy kèm):
 
 **Encoder AV-HuBERT:** mặc định **Large VoxCeleb2 + LRS3 fine-tune VSR** (`large_vox_433h`, đúng AVH-Align); Base giữ lại làm tuỳ chọn rẻ hơn. Lưu ý: fine-tune VSR chỉ dùng hình, nên đặc trưng **tiếng** của bản này có thể kém khớp hình hơn bản chỉ-pretrain (chưa kiểm).
 
-**Lưu ý khi so BL-1** ○: AVH-Align gốc học chỉ từ real trên khối dữ liệu cỡ VoxCeleb2; v003 có ~1,2 giờ real mỗi part (800 clip × ~5,5 s), riêng train ~0,7 giờ. BL-1 có thể yếu vì thiếu dữ liệu chứ không vì phương pháp; ghi rõ trong báo cáo. Đây là một lý do chọn 20 clip / người thay vì 10 (v003_data §3.3).
+**Lưu ý khi so BL-1** ○: AVH-Align gốc học chỉ từ real trên khối dữ liệu cỡ VoxCeleb2; v003 có ~0,9-1,2 giờ real mỗi part (600-800 clip × ~5,5 s), riêng train ~0,55-0,7 giờ. BL-1 có thể yếu vì thiếu dữ liệu chứ không vì phương pháp; ghi rõ trong báo cáo. Đây là một lý do chọn 20 clip / người thay vì 10 (v003_data §3.3).
 
 ## 5. Ba kiến trúc đề xuất
 
@@ -175,6 +175,7 @@ tham chiếu người: embedding trung bình của ≥ 3 clip real đã biết c
 | Nhãn | theo từng frame (0,04 s) cho mọi đầu ra; partial cho thấy ranh giới thật / giả trong cùng clip |
 | Cân lớp | `pos_weights` cho từng tác vụ = số mẫu nhãn 0 / số mẫu nhãn 1 (kẹp trong 0,2-5); tác vụ "AI?" ở train là 3 / 6 = 0,5 → phần loss tương đương 50 / 50; không đổi tỉ lệ dữ liệu |
 | Tối ưu | 30 epoch, patience 5, lr 3e-4 (AVH-Align 1e-5), weight decay 1e-4, batch 16 |
+| Cân theo người | mỗi người 15-20 clip → lấy mẫu train theo 1 / số clip của người đó (`speaker_balance`), mỗi người đóng góp như nhau; mọi người cùng số clip thì giữ shuffle thường |
 | Validation | AUC 4 tác vụ mỗi epoch (để chọn epoch và ghi log); một lượt quét validation thêm mỗi epoch |
 
 ### 7.1. Augment dịch tiếng −1…+2 frame
@@ -191,6 +192,7 @@ tham chiếu người: embedding trung bình của ≥ 3 clip real đã biết c
 
 - 4 tác vụ (AI / visual / audio / mismatch); **AUC là chỉ số chính** (không phụ thuộc tỉ lệ lớp). Kèm AP, EER, F1, FAR.
 - Phân rã theo ô, generator, giọng, full / partial, đã thấy / chưa thấy, theo người (AUC trong từng người).
+- **AUC cân theo người** (`auc_speaker_balanced`, cột riêng trong `report.md`): AUC gộp với trọng số 1 / số file của người đó, để người 20 clip không lấn người 15 clip.
 - **Ref-norm**: chuẩn hoá điểm theo 3 clip real tham chiếu của chính người đó; bỏ clip tham chiếu **và mọi file sinh từ chúng** khỏi phép đo.
 - **CI bootstrap theo người** (người là đơn vị độc lập; full và partial cùng một lần chạy không độc lập).
 - Test chạy **một lần**, khoá bằng `test-lock.json`; ngưỡng và checkpoint chọn trên validation trước khi mở test; mean ± std qua 3 seed.
@@ -204,7 +206,7 @@ tham chiếu người: embedding trung bình của ≥ 3 clip real đã biết c
   - **precision khi fake chiếm 50 % / 10 % / 1 %** ngoài thực tế (tính lại từ TPR / FPR, không cần sinh thêm);
   - FPR **riêng cho real và cho sham**;
   - demo dùng ngưỡng FPR 5 %.
-- Độ chính xác FPR phụ thuộc số real ở test ○: 200 real / part; mỗi clip báo nhầm = 0,5 % ở 1 part, nên FPR 1 % chỉ đáng tin khi gộp nhiều part.
+- Độ chính xác FPR phụ thuộc số real ở test ○: 150-200 real / part; mỗi clip báo nhầm = 0,5-0,67 % ở 1 part, nên FPR 1 % chỉ đáng tin khi gộp nhiều part.
 
 ### 8.3. Định vị đoạn giả
 
@@ -246,7 +248,7 @@ Mỗi run ghi config (cấu hình, seed, hash dữ liệu / test-lock); run id l
 1. BL-1 có ít real hơn nhiều so với paper gốc (§4).
 2. AV-HuBERT pretrain tiếng Anh; thanh điệu không thấy trên môi.
 3. Chưa có bản test nhiễu thực tế (v003_data §11), nên cổng "A2 ở CRF cao" phải dựa vào bản đó khi có.
-4. Ngưỡng FPR 1 % đo trên 200 real / part còn thô.
+4. Ngưỡng FPR 1 % đo trên 150-200 real / part còn thô.
 
 **Việc mở:**
 
@@ -270,6 +272,7 @@ Mỗi run ghi config (cấu hình, seed, hash dữ liệu / test-lock); run id l
 | 18/10 | Code đủ sinh / train / demo chưa? | demo đã bị xoá cùng v002 → làm lại (Kaggle, 2 tab) |
 | 18/10 | W&B nên ghi gì | đề xuất ghi mọi bước; sau đó user: **chỉ train** (có prepare), không media |
 | 18/10 | Tỉ lệ fake / real hợp lý? | không đổi tỉ lệ dữ liệu (loss đã cân); sửa **ngưỡng** sang FPR cố định và báo nhiều base-rate (§8.2) |
+| 19/10 | Mỗi người 15-20 clip: đảm bảo không lệch | lấy mẫu train cân theo người; AUC cân theo người (§7, §8.1) |
 | 18/10 | Full / partial có giúp model định vị? | có (nhãn theo frame); thêm AP@IoU + AR chuẩn LAV-DF / AV-1M (§8.3) |
 
 ## 14. Nguồn

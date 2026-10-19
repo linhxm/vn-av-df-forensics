@@ -10,7 +10,7 @@
 import io
 import random
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +46,18 @@ def pos_weights(rows):
     return out
 
 
+def speaker_weights(rows):
+    """Trọng số lấy mẫu khi train = 1 / số clip gốc của người đó, để mỗi người đóng góp như nhau
+    dù có 15-20 clip (docs/v003_model.md §7). None khi mọi người cùng số clip (giữ shuffle thường)."""
+    clips = defaultdict(set)
+    for r in rows:
+        clips[(r["split"], r.get("speaker_id"))].add(r.get("source_clip_id") or r["sample_id"])
+    sizes = {key: len(value) for key, value in clips.items()}
+    if len(set(sizes.values())) <= 1:
+        return None
+    return [1.0 / sizes[(r["split"], r.get("speaker_id"))] for r in rows]
+
+
 def save(path, state):
     stream = io.BytesIO()
     torch.save(state, stream)
@@ -65,13 +77,21 @@ def loaders(cfg, model, rows, seed, train):
         seed=seed,
         crop_frames=model.crop_frames if train else None,
     )
+    generator = torch.Generator().manual_seed(seed)
+    weights = speaker_weights(data.rows) if train and options.get("speaker_balance") else None
+    sampler = (
+        torch.utils.data.WeightedRandomSampler(weights, len(weights), generator=generator)
+        if weights
+        else None
+    )
     return data, torch.utils.data.DataLoader(
         data,
         batch_size=options["batch_size"],
-        shuffle=train,
+        shuffle=train and sampler is None,
+        sampler=sampler,
         collate_fn=collate,
         num_workers=options.get("workers", 0),
-        generator=torch.Generator().manual_seed(seed),
+        generator=generator,
     )
 
 

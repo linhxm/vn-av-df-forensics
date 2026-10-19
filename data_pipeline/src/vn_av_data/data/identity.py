@@ -76,7 +76,7 @@ def save_photo(ws, clip, speaker_id, k):
 class Registry:
     def __init__(self, ws, ledger, cfg, per_speaker=None):
         self.ws, self.ledger, self.cfg = ws, ledger, cfg
-        self.per_speaker = per_speaker  # số clip / người của part; None = luôn mở lại
+        self.per_speaker = per_speaker  # số clip tối thiểu / người của part; None = luôn mở lại
 
     def speakers(self):
         return self.ledger.rows(
@@ -173,7 +173,7 @@ class Registry:
 def identify_batch(ws, ledger, batch, cfg, voice_embedder=None):
     from vn_av_data.features.voice import VoiceEmbedder, clip_pcm
 
-    per_speaker = cfg["parts"]["clips_per_speaker"]
+    per_speaker = cfg["parts"]["min_clips_per_speaker"]
     cfg = dict(cfg["identify"])
     undone = ledger.scalar(
         "SELECT COUNT(*) FROM videos WHERE batch=? AND dl_status='done' AND cut_status!='done'",

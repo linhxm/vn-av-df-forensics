@@ -25,8 +25,7 @@ cut:
   sface_model: checkpoints/media/sface.onnx
   syncnet_model: checkpoints/media/syncnet_v2.model
   min_seconds: 4.0
-  max_seconds: 7.0
-  overlap_seconds: 0.0         # nguồn nhiều người: các cửa sổ không chồng nhau
+  max_seconds: 7.0             # đoạn nói dài hơn: cắt ở chỗ ngắt dài nhất trong 4-7 s (VAD), không cắt cứng
   merge_silence_seconds: 0.6
   sample_fps: 4.0              # quét mặt sơ bộ (nguồn nhiều người)
   scan_max_side: 640
@@ -73,7 +72,8 @@ identify:
 
 parts:
   speakers_per_gender: 20      # mỗi part: 20 nam + 20 nữ
-  clips_per_speaker: 20        # × 20 clip = 800 clip (docs/v003_data.md §3)
+  min_clips_per_speaker: 15    # mỗi người 15-20 clip được chọn → part 600-800 clip
+  max_clips_per_speaker: 20    # (docs/v003_data.md §3); train cân theo người, split cân tổng clip
   seed: 42
   split:                       # [nam, nữ] theo speaker (60 / 15 / 25 %)
     train: [12, 12]

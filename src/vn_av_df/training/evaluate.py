@@ -19,7 +19,7 @@ Báo cáo:
 Kết quả: `<run>/<model>_seed<seed>/metrics.json`, `predictions-test.npz`; khoá test-lock.json.
 """
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +46,16 @@ def target(row, task):
 def auc(labels, scores):
     labels = np.asarray(labels)
     return float(roc_auc_score(labels, scores)) if len(set(labels.tolist())) == 2 else None
+
+
+def speaker_balanced_auc(rows, labels, scores):
+    """AUC gộp nhưng mỗi người nặng như nhau (trọng số 1 / số file của người đó): người có 20 clip
+    không lấn người có 15 clip (docs/v003_model.md §8)."""
+    if len(set(labels)) < 2:
+        return None
+    n = Counter(r.get("speaker_id") for r in rows)
+    weights = [1.0 / n[r.get("speaker_id")] for r in rows]
+    return float(roc_auc_score(labels, scores, sample_weight=weights))
 
 
 def eer(labels, scores):
@@ -389,6 +399,7 @@ def evaluate_model(cfg, model_dir, rows, device, seen):
         values = [test_scores[r["sample_id"]] for r in test_rows]
         metrics["tasks"][task] = {
             "auc": auc(labels, values),
+            "auc_speaker_balanced": speaker_balanced_auc(test_rows, labels, values),
             "ap": float(average_precision_score(labels, values)) if any(labels) else None,
             "eer": eer(labels, values),
             "threshold": threshold,

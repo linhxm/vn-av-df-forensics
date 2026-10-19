@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 
 import cv2
 import numpy as np
@@ -138,7 +139,7 @@ def test_identify_reopens_speaker_short_of_clips(ws, ledger, cfg, clip_file):
     identify_batch(ws, ledger, 1, cfg)
     short = ledger.scalar("SELECT speaker_id FROM clips WHERE video_id='v1' LIMIT 1")
     full = ledger.scalar("SELECT speaker_id FROM clips WHERE video_id='v2' LIMIT 1")
-    cfg["parts"]["clips_per_speaker"] = 4
+    cfg["parts"]["min_clips_per_speaker"] = 4
     with ledger.tx() as conn:
         conn.execute("UPDATE clips SET decision='keep' WHERE video_id='v2'")
         conn.execute("UPDATE speakers SET review='done'")
@@ -177,7 +178,8 @@ def keep_clips(ws, ledger, clip_file, sid, video_id, count, input_id=1):
 def small_parts(cfg):
     cfg["parts"].update(
         speakers_per_gender=3,
-        clips_per_speaker=2,
+        min_clips_per_speaker=2,
+        max_clips_per_speaker=2,
         split={"train": [1, 1], "validation": [1, 1], "test": [1, 1]},
     )
     return cfg
@@ -216,6 +218,29 @@ def test_parts_balance_gender_split_and_keep_groups_together(ws, ledger, cfg, cl
     assert form_parts(ledger, cfg)["created"] == []  # phần dư không đủ part mới
 
 
+def test_parts_accept_clip_range_and_balance_clips_across_splits(ws, ledger, cfg, clip_file):
+    """Mỗi người 2-4 clip: dưới tối thiểu không vào part; tổng clip mỗi split cân theo số người."""
+    cfg = small_parts(cfg)
+    cfg["parts"].update(min_clips_per_speaker=2, max_clips_per_speaker=4)
+    add_input(ledger, "u", "n")
+    order = 0
+    for g in "MF":
+        for i, n in enumerate((4, 3, 2)):
+            order += 1
+            make_speaker(ledger, f"spk_{g}{i}", g, order)
+            keep_clips(ws, ledger, clip_file, f"spk_{g}{i}", f"v{g}{i}", n)
+    make_speaker(ledger, "spk_short", "M", 30)
+    keep_clips(ws, ledger, clip_file, "spk_short", "vS", 1)
+    result = form_parts(ledger, cfg)
+    assert len(result["created"]) == 1
+    part = ledger.row("SELECT * FROM parts WHERE part=1")
+    assert "spk_short" not in part["members"] and part["clips"] == 18
+    by_split = Counter(r["split"] for r in ledger.rows("SELECT split FROM clips WHERE part=1"))
+    assert by_split == {"train": 6, "validation": 6, "test": 6}
+    splits = result["created"][0]["splits"]
+    assert all(splits[s]["M"] == 1 and splits[s]["F"] == 1 for s in splits)
+
+
 def test_export_archive_and_review_api(ws, ledger, cfg, clip_file):
     cfg = small_parts(cfg)
     add_input(ledger, "u", "n")
@@ -236,7 +261,7 @@ def test_export_archive_and_review_api(ws, ledger, cfg, clip_file):
     assert summary["clips"] == 12 and set(summary["splits"]) == {"train", "validation", "test"}
     assert rows[0]["gender"] in ("M", "F") and (bundle / "speakers.csv").is_file()
     assert (ws.archive / report["zip"]).is_file()
-    # Review API: speaker trong part bị khoá; speaker mới chọn tối đa clips_per_speaker clip.
+    # Review API: speaker trong part bị khoá; speaker mới chọn tối đa max_clips_per_speaker clip.
     client = TestClient(create_app(ws, ledger, cfg))
     state = client.get("/api/state").json()
     assert {s["id"] for s in state["speakers"]} >= {"spk_new", "spk_M0"}

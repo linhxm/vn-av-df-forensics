@@ -162,9 +162,10 @@ def run(args, cfg, ws, ledger):
             raise ValueError("Part not exported yet; run 07_export.py first (it creates the zip)")
         return {"part": args.number, **record, "next": "Up zip + ledger/ lên Drive, rồi --uploaded"}
     if command == "status":
+        from vn_av_data.data.parts import clip_range
         from vn_av_data.data.status import collect_status, print_status
 
-        print_status(collect_status(ws, ledger, cfg["parts"]["clips_per_speaker"]))
+        print_status(collect_status(ws, ledger, clip_range(cfg["parts"])))
         return None
     if command == "calibrate":
         from vn_av_data.data.identity import calibrate

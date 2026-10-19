@@ -17,7 +17,7 @@ from vn_av_data.data.cut import (
     spread_order,
 )
 from vn_av_data.data.media import decode, probe
-from vn_av_data.data.vad import audio_blocks, speech_regions
+from vn_av_data.data.vad import audio_blocks, pause_spans, speech_regions
 
 
 @pytest.fixture
@@ -52,8 +52,28 @@ def test_vad_blocks_keep_timestamp_gaps(tmp_path):
     assert speech_regions([0] * 20 + [1] * 40 + [0] * 20, 2.56)[0][0] == pytest.approx(0.49)
 
 
+def test_pause_spans_and_windows_cut_at_pauses():
+    # 0-1 s lặng, 1-17 s nói (tiếng nhỏ 1 khúc ở ~6 s, 3 khúc ở ~11 s), sau đó lặng.
+    p = np.zeros(600)
+    p[31:531] = 0.9
+    p[187] = 0.2
+    p[343:346] = 0.1
+    regions = speech_regions(p, 19.2, silence_s=0.6)
+    pauses = pause_spans(p, regions)
+    assert [round(a, 2) for a, _ in pauses] == [5.98, 10.98]
+    cfg = {"min_seconds": 4, "max_seconds": 7}
+    windows = plan_clips(regions, [], 19.2, cfg, pauses)
+    # Cửa sổ đầu dừng ở chỗ ngắt ~6 s (chỗ duy nhất trong 4-7 s tính từ đầu đoạn), cửa sổ hai
+    # ở chỗ ngắt ~11 s, phần còn lại thành cửa sổ cuối tới hết đoạn; không chồng nhau.
+    assert windows[0][1] == 6.0 and 10.98 <= windows[1][1] <= 11.07
+    assert all(4 - 1e-6 <= b - a <= 7 + 1e-6 for a, b in windows)
+    assert all(windows[i][1] <= windows[i + 1][0] for i in range(len(windows) - 1))
+    # Không có chỗ ngắt: cắt ở mức dài nhất cho phép như trước.
+    assert plan_clips([[0, 20]], [], 20, cfg)[0] == (0.0, 7.0)
+
+
 def test_windows_quota_and_spread():
-    cfg = {"min_seconds": 4, "max_seconds": 7, "overlap_seconds": 0}
+    cfg = {"min_seconds": 4, "max_seconds": 7}
     windows = plan_clips([[0, 30]], [12], 30, cfg)
     assert all(4 - 1e-6 <= b - a <= 7 + 1e-6 for a, b in windows)
     assert not any(a < 12 < b for a, b in windows)
