@@ -127,6 +127,31 @@ def test_identify_matches_registry_by_channel_suggests_and_flags(ws, ledger, cfg
     assert ledger.scalar("SELECT COUNT(*) FROM videos WHERE id_status='done'") == 4
 
 
+def test_identify_reopens_speaker_short_of_clips(ws, ledger, cfg, clip_file):
+    """Speaker đã duyệt mà chưa đủ clip: batch sau có clip mới thì về lại 'pending'."""
+    cfg["identify"]["voice"] = False
+    a, b = unit(1), unit(2)
+    one = add_input(ledger, "u1", "1")
+    add_clips(ws, ledger, clip_file, "v1", one, [near(a, 0.9, i) for i in range(4)])
+    two = add_input(ledger, "u2", "1")
+    add_clips(ws, ledger, clip_file, "v2", two, [near(b, 0.9, 10 + i) for i in range(4)])
+    identify_batch(ws, ledger, 1, cfg)
+    short = ledger.scalar("SELECT speaker_id FROM clips WHERE video_id='v1' LIMIT 1")
+    full = ledger.scalar("SELECT speaker_id FROM clips WHERE video_id='v2' LIMIT 1")
+    cfg["parts"]["clips_per_speaker"] = 4
+    with ledger.tx() as conn:
+        conn.execute("UPDATE clips SET decision='keep' WHERE video_id='v2'")
+        conn.execute("UPDATE speakers SET review='done'")
+    three = add_input(ledger, "u3", "1")
+    add_clips(ws, ledger, clip_file, "v3", three, [near(a, 0.9, 20 + i) for i in range(4)], batch=2)
+    four = add_input(ledger, "u4", "1")
+    add_clips(ws, ledger, clip_file, "v4", four, [near(b, 0.9, 30 + i) for i in range(4)], batch=2)
+    report = identify_batch(ws, ledger, 2, cfg)
+    assert report["matched"] == 2
+    review = {r["speaker_id"]: r["review"] for r in ledger.rows("SELECT * FROM speakers")}
+    assert review[short] == "pending" and review[full] == "done"
+
+
 def make_speaker(ledger, sid, gender, order, review="done"):
     ledger.insert(
         "speakers",

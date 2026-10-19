@@ -1,6 +1,6 @@
 # Pipeline dữ liệu real v003
 
-Chạy ở **máy local**: từ danh sách URL YouTube ra **part** real (20 nam + 20 nữ × 20 clip = 800 clip, chia sẵn train / validation / test theo người). Part là đầu vào của bước sinh fake (`generation/`, `notebooks/generate.ipynb`). Căn cứ các con số: [docs/v003_model_research.md](../docs/v003_model_research.md) §9-§10.
+Chạy ở **máy local**: từ danh sách URL YouTube ra **part** real (20 nam + 20 nữ × 20 clip = 800 clip, chia sẵn train / validation / test theo người). Part là đầu vào của bước sinh fake (`generation/`, `notebooks/generate.ipynb`). Căn cứ các con số và luật: [docs/v003_data.md](../docs/v003_data.md) (số người / clip §3, luật chọn và cắt §4-§5, độ lệch tiếng-hình §6).
 
 Chỉ dùng video của chính mình hoặc đã được phép. Raw, clip và part là dữ liệu người thật: **không chia sẻ công khai**.
 
@@ -22,7 +22,7 @@ Cần Node.js trong PATH (yt-dlp dùng để tải YouTube).
 | 02 | `02_download.py [N]` | Tải batch (720p). Lỗi 403 tạm thời thì tự thử lại; YouTube đòi xác minh bot thì dừng, chạy lại với `--cookies-from-browser firefox` |
 | 03 | `03_cut.py [N]` | Cắt clip ứng viên 4-7 s. Nguồn 1 người: 30-40 clip rải đều (chỉ tiêu tối đa; khúc thời gian không có clip tốt thì bù bằng khúc khác). Nguồn nhiều người: cắt hết, kiểm 5 điểm cùng một mặt. Mỗi frame: đúng 1 mặt ≥ 48 px (khung 640), hụt ≤ 3 frame (≤ 2 liền nhau), không chuyển cảnh, không jump cut. **Đo độ lệch tiếng-hình bằng SyncNet** (≤ 20 clip / video); video không đo được → clip tự loại, cờ `sync_unreliable` |
 | 04 | `04_identify.py [N]` | Gán speaker bằng mặt (SFace) + giọng (WeSpeaker), khớp với người đã có (trong kênh, rồi toàn bộ), gợi ý gộp. `--calibrate` sau vài chục người để chỉnh ngưỡng |
-| 05 | `05_review.py` | Trang duyệt http://127.0.0.1:8001: gộp / tách người, gán giới (M / F), **chọn 20 clip** (S chọn, X loại, R đổi người, N xong, E loại người). Clip không chọn để nguyên là được. Tắt bằng Ctrl+C |
+| 05 | `05_review.py` | Trang duyệt http://127.0.0.1:8001: gộp / tách người, gán giới (M / F), **chọn 20 clip** (S chọn, X loại, R đổi người, N xong, E loại người). Clip không chọn để nguyên là được. Người chưa đủ 20 clip: N để chờ, batch sau có thêm clip thì hiện lại. Tắt bằng Ctrl+C |
 | 06 | `06_parts.py` | Gom người đã duyệt đủ 20 clip thành part 20 nam + 20 nữ; split theo người 12 / 3 / 5 mỗi giới; người chung video đi cùng nhau. Part tạo xong bị khoá |
 | 07 | `07_export.py N` | Xuất part ra `exports/vn-av-df-data/vn-av-df-data-partN/` + zip. **Dịch tiếng theo độ lệch đo ở bước 03** (về 0); manifest có `audio_lag_frames`, `av_sync_status` |
 | 08 | `08_archive.py raw N` / `part N` `[--uploaded]` | Đóng zip raw; đánh dấu zip raw / part đã lên Drive |

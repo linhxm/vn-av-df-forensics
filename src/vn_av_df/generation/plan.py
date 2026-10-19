@@ -7,7 +7,7 @@ Gán generator và ô ④⑤⑥ (`assign_generators`, xét cả split theo thứ
 - ô của generator j ở vòng r = (r + j) mod 3 → mỗi generator chia đều 3 ô (số vòng chia hết cho 3);
 - trong một clip các generator luôn ở ô khác nhau; cặp / bộ generator chung clip rút ngẫu nhiên
   theo seed mỗi vòng (không cố định).
-Căn cứ chọn 2/4 (train, validation) và 3/6 (test): docs/v003_model_research.md §10.
+Căn cứ chọn 2/4 (train, validation) và 3/6 (test): docs/v003_generation.md §4.
 Phương pháp giọng của clip thứ i: methods[(i + offset_speaker) mod n] (1 hệ giọng mỗi clip).
 Donor (cho ② sham và ⑤): clip khác của CÙNG người, CÙNG split, dài ≥ clip gốc, không chồng thời
 gian nguồn. Không có donor thì ⑤ đổi thành ④ và bỏ ②. Tham chiếu giọng cho TTS: clip khác của

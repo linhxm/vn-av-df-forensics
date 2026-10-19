@@ -9,7 +9,8 @@ PAGE = r"""<!doctype html><html lang="vi"><meta charset="utf-8">
 body{background:var(--bg);color:var(--text);font:14px/1.4 system-ui,sans-serif;overflow:hidden;
  display:grid;grid-template-rows:46px minmax(0,1fr) 124px}
 header{display:flex;align-items:center;gap:14px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--panel)}
-header b{font-size:15px}.muted{color:var(--muted)}.sp{flex:1}
+header b{font-size:15px;white-space:nowrap}.muted{color:var(--muted)}.sp{flex:1}
+#prog{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}header button{white-space:nowrap}
 button{border:0;border-radius:6px;padding:6px 11px;color:#fff;background:#34495e;cursor:pointer;font-size:13px}
 button:hover{filter:brightness(1.15)}button.on{background:var(--accent)}button.keep{background:var(--keep)}
 button.reject{background:var(--reject)}button.warn{background:var(--warn);color:#111}
@@ -35,11 +36,11 @@ section{min-height:0;display:flex;flex-direction:column;gap:8px}
 .tile .f{position:absolute;right:3px;top:2px;font-size:12px}
 .tile .k{position:absolute;right:3px;bottom:2px;background:var(--keep);border-radius:50%;width:18px;height:18px;text-align:center;font-size:12px}
 #pager{display:flex;align-items:center;gap:8px;color:var(--muted)}
-footer{border-top:1px solid var(--line);background:var(--panel);display:flex;align-items:center;gap:12px;padding:8px 12px}
-#slots{display:flex;gap:6px}
-.slot{width:96px;height:96px;border-radius:6px;border:1px dashed var(--line);background-size:500% 100%;background-position:50% 0;cursor:pointer;position:relative}
-.slot.full{border:2px solid var(--keep)}.slot .x{position:absolute;right:2px;top:0;font-size:12px;opacity:.8}
-#banner{font-size:15px}#banner.ok{color:var(--keep);font-weight:700}
+footer{border-top:1px solid var(--line);background:var(--panel);display:flex;align-items:center;gap:12px;padding:6px 12px;overflow:hidden}
+#slots{display:grid;grid-template-columns:repeat(10,52px);grid-auto-rows:52px;gap:4px;flex:none}
+.slot{border-radius:5px;border:1px dashed var(--line);background-size:500% 100%;background-position:50% 0;cursor:pointer;position:relative}
+.slot.full{border:2px solid var(--keep)}.slot .x{position:absolute;right:2px;top:0;font-size:11px;opacity:.8}
+#banner{font-size:15px;flex:1;min-width:0}#banner.ok{color:var(--keep);font-weight:700}
 #toast{position:fixed;left:50%;top:54px;transform:translateX(-50%);background:#000d;padding:8px 14px;border-radius:6px;display:none;z-index:9}
 #modal{position:fixed;inset:0;background:#0009;display:none;align-items:center;justify-content:center;z-index:8}
 #modal>div{background:var(--panel);border-radius:10px;padding:14px;min-width:420px}
@@ -107,7 +108,7 @@ function renderSlots(){const keep=clips.filter(c=>c.decision==='keep');$('count'
  [...$('slots').children].forEach(s=>{if(s.dataset.id)s.onclick=()=>{cur=clips.findIndex(c=>c.clip_id===s.dataset.id);setDecision('pending')}});
  const left=clips.filter(c=>c.decision==='pending').length;
  $('banner').className=keep.length>=PER?'ok':'';
- $('banner').textContent=keep.length>=PER?`ĐỦ ${PER} clip - bấm N để sang speaker tiếp (bỏ qua ${left} clip còn lại)${D.gender?'':' · nhớ gán giới (M/F)'}`:(clips.length<PER?`Speaker chỉ có ${clips.length} clip (< ${PER})`:'')}
+ $('banner').textContent=keep.length>=PER?`ĐỦ ${PER} clip - bấm N để sang speaker tiếp (bỏ qua ${left} clip còn lại)${D.gender?'':' · nhớ gán giới (M/F)'}`:(clips.length<PER?`Speaker chỉ có ${clips.length} clip (< ${PER}) - bấm N để chờ batch sau, hoặc E nếu không dùng được`:'')}
 function play(){const c=clips[cur],v=$('video');if(!c){v.removeAttribute('src');$('strip').removeAttribute('src');$('cinfo').textContent='Không có clip';return}
  if(c.vi!==tab){tab=c.vi;renderTabs()}renderGrid.follow=true;
  v.src='/media/clip/'+c.clip_id;if($('auto').checked)v.play().catch(()=>{});$('strip').src='/media/strip/'+c.clip_id;
@@ -119,9 +120,10 @@ function toggle(d){const c=clips[cur];if(!c)return;const next=c.decision===d?'pe
 async function gender(g){if(D.part)return toast('Speaker đã khoá');await api('/api/speaker/'+D.id,{gender:D.gender===g?'':g});D.gender=D.gender===g?'':g;renderLeft();renderSlots();loadState()}
 async function nextSpeaker(step=1,finish=true){
  if(finish&&D&&!D.part&&D.review==='pending'){const k=clips.filter(c=>c.decision==='keep').length;
-  if(k<PER&&!confirm(`Speaker này mới chọn ${k}/${PER} clip. Vẫn đánh dấu duyệt xong và sang speaker tiếp?`))return;
-  if(k>=PER&&!D.gender&&!confirm('Chưa gán giới (M/F). Vẫn sang speaker tiếp?'))return;
-  await api('/api/speaker/'+D.id,{review:'done'})}
+  // Chưa đủ clip: để chờ (không đánh dấu xong); batch sau có thêm clip thì speaker hiện lại.
+  if(k<PER)toast(`${D.id} để chờ (${k}/${PER} clip), batch sau có thêm clip sẽ duyệt tiếp`);
+  else{if(!D.gender&&!confirm('Chưa gán giới (M/F). Vẫn sang speaker tiếp?'))return;
+   await api('/api/speaker/'+D.id,{review:'done'})}}
  await loadState();const list=visible(),ids=S.speakers.map(s=>s.id),here=D?ids.indexOf(D.id):-1;
  const order=step>0?S.speakers.slice(here+1):S.speakers.slice(0,Math.max(0,here)).reverse();
  const target=order.find(s=>list.includes(s));if(!target)return toast(step>0?'Hết speaker theo bộ lọc':'Không còn speaker trước');openSpeaker(target.id)}

@@ -35,7 +35,7 @@ Notebook trong `notebooks/` được **sinh từ `tools/make_notebooks.py`**: mu
 
 - Mỗi clip chạy **một nửa số generator** (2 / 4 ở train và validation, 3 / 6 ở test), mỗi generator một lần, cho ra full + partial. Gán theo vòng: mỗi generator chạy số lần bằng nhau và chia đều ④/⑤/⑥; trong một clip các generator ở ô khác nhau.
 - Hệ giọng xoay vòng theo clip (1 hệ mỗi clip).
-- Chi tiết và số liệu: [docs/fake_plan.md](docs/fake_plan.md); căn cứ: [docs/v003_model_research.md](docs/v003_model_research.md) §10.
+- Chi tiết, số liệu và căn cứ: [docs/v003_generation.md](docs/v003_generation.md) (§0 là bản tóm tắt cho người chạy sinh).
 
 | | Mỗi clip real |
 |---|---|
@@ -67,7 +67,7 @@ Mỗi job ghi `records/<key>.json`. Hết giờ (`TIME_BUDGET_HOURS`) hoặc l�
 
 ## Model
 
-Chi tiết ở [docs/v003_model_research.md](docs/v003_model_research.md).
+Chi tiết ở [docs/v003_model.md](docs/v003_model.md).
 
 | Tên | Loại | Ý chính |
 |---|---|---|

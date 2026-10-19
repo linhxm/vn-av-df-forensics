@@ -1,7 +1,7 @@
 """Báo cáo v003 từ `<run>/evaluation.json`: bảng mean ± std theo seed, so sánh có cặp.
 
 So sánh có cặp: ΔAUC (A − B) trên cùng sample test, khoảng tin cậy 95% bằng bootstrap theo speaker
-(người là đơn vị độc lập). Các cặp mặc định là các cổng ở v003_model_research.md §6.
+(người là đơn vị độc lập). Các cặp mặc định là các cổng ở docs/v003_model.md §6.
 """
 
 from collections import defaultdict

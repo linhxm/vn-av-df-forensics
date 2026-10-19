@@ -74,8 +74,9 @@ def save_photo(ws, clip, speaker_id, k):
 
 
 class Registry:
-    def __init__(self, ws, ledger, cfg):
+    def __init__(self, ws, ledger, cfg, per_speaker=None):
         self.ws, self.ledger, self.cfg = ws, ledger, cfg
+        self.per_speaker = per_speaker  # số clip / người của part; None = luôn mở lại
 
     def speakers(self):
         return self.ledger.rows(
@@ -142,6 +143,12 @@ class Registry:
             "channel_ids": sorted(set(s["channel_ids"] or []) | channels),
             "inputs": sorted(set(s["inputs"] or []) | {input_id}),
         }
+        if s["review"] == "done" and s["part"] is None:
+            kept = conn.execute(
+                "SELECT COUNT(*) FROM clips WHERE speaker_id=? AND decision='keep'", (speaker_id,)
+            ).fetchone()[0]
+            if self.per_speaker is None or kept < self.per_speaker:
+                values["review"] = "pending"  # chưa đủ clip mà có clip mới: hiện lại để duyệt
         if voices:
             base = s["voice_sum"] if s["voice_n"] else 0
             values["voice_sum"] = base + np.stack(voices).sum(0)
@@ -166,6 +173,7 @@ class Registry:
 def identify_batch(ws, ledger, batch, cfg, voice_embedder=None):
     from vn_av_data.features.voice import VoiceEmbedder, clip_pcm
 
+    per_speaker = cfg["parts"]["clips_per_speaker"]
     cfg = dict(cfg["identify"])
     undone = ledger.scalar(
         "SELECT COUNT(*) FROM videos WHERE batch=? AND dl_status='done' AND cut_status!='done'",
@@ -175,7 +183,7 @@ def identify_batch(ws, ledger, batch, cfg, voice_embedder=None):
         raise ValueError(f"Batch {batch}: {undone} videos not cut yet; run cut first")
     if voice_embedder is None and cfg["voice"]:
         voice_embedder = VoiceEmbedder(cfg["voice_model"])
-    registry = Registry(ws, ledger, cfg)
+    registry = Registry(ws, ledger, cfg, per_speaker)
     videos = ledger.rows(
         "SELECT v.video_id, v.input_id, v.channel_id, i.speakers FROM videos v "
         "JOIN inputs i USING(input_id) WHERE v.batch=? AND v.cut_status='done' "

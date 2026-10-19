@@ -25,7 +25,7 @@ TRAIN_GENERATORS = ["wav2lip_gan", "musetalk_1_5", "iplap", "videoretalking"]
 TEST_ONLY_GENERATORS = ["latentsync_1_5", "diff2lip"]
 TRAIN_VOICES = ["vieneu", "f5_vi", "omnivoice", "seedvc"]
 TEST_ONLY_VOICES = ["voxcpm2", "vixtts"]
-# 6 baseline + 3 đề xuất; ablation thêm khi cần. Xem docs/v003_model_research.md.
+# 6 baseline + 3 đề xuất; ablation thêm khi cần. Xem docs/v003_model.md.
 MODELS = [
     "speechforensics",
     "avh_align",
@@ -98,7 +98,7 @@ def config():
             "inpaint": {"test": "f5_inpaint"},  # track C (sửa trực tiếp) chỉ ở test
             # Mỗi clip chỉ chạy một nửa số generator (rút cân bằng, xoay ô); giọng giữ nguyên.
             # 20 clip / người × một nửa generator: cùng GPU với 10 clip × mọi generator nhưng gấp
-            # đôi số clip real làm nền (v003_model_research.md §10).
+            # đôi số clip real làm nền (docs/v003_generation.md §4).
             "generators_per_clip": {"train": 2, "validation": 2, "test": 3},
             "partial_range_s": [0.3, 3.0],  # gồm cả đoạn sửa 1 từ (LAV-DF: trung bình 0,65 s)
             "edge_margin_s": 0.5,
@@ -137,7 +137,7 @@ def config():
             "eval_batch_size": 8,
             "workers": 2,
             # Dịch tiếng so với hình k frame ∈ [−1, +2] khi train (dương = tiếng trễ); xem
-            # docs/v003_model_research.md §9 (BT.1359, sai số đo, điểm 0 generator).
+            # docs/v003_data.md §6.4 (BT.1359, sai số đo, điểm 0 generator).
             "audio_lag_aug": [-1, 2],
         },
         "bootstrap_replicates": 1000,

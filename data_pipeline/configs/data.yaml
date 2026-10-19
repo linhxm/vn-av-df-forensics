@@ -73,7 +73,7 @@ identify:
 
 parts:
   speakers_per_gender: 20      # mỗi part: 20 nam + 20 nữ
-  clips_per_speaker: 20        # × 20 clip = 800 clip (v003_model_research.md §10)
+  clips_per_speaker: 20        # × 20 clip = 800 clip (docs/v003_data.md §3)
   seed: 42
   split:                       # [nam, nữ] theo speaker (60 / 15 / 25 %)
     train: [12, 12]

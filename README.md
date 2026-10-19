@@ -15,7 +15,7 @@ v003 is rebuilt from scratch. The earlier study (v001-v002, closed 14 October 20
 - **Generators:** Wav2Lip, MuseTalk 1.5, IP-LAP, VideoReTalking for train/validation/test; LatentSync 1.5 and Diff2Lip appear **only at test time**.
 - **Voices:** VieNeu-TTS, F5-TTS (Vietnamese), OmniVoice, Seed-VC for train/validation/test; VoxCPM2, viXTTS and F5 inpainting appear **only at test time**.
 - **Labels:** visual / audio / audio-visual mismatch intervals; `fake_intervals` is their union.
-- **Per real clip:** each clip goes through half of the generators (2 of 4 in train/validation, 3 of 6 in test, balanced); 9 files in train/validation (6 with AI), 12 in test (9 with AI). About 7,800 files per part, 69% with AI. Rationale: [docs/v003_model_research.md](docs/v003_model_research.md) §10.
+- **Per real clip:** each clip goes through half of the generators (2 of 4 in train/validation, 3 of 6 in test, balanced); 9 files in train/validation (6 with AI), 12 in test (9 with AI). About 7,800 files per part, 69% with AI. Rationale: [docs/v003_generation.md](docs/v003_generation.md) §4.
 
 ## Detectors
 
@@ -39,7 +39,7 @@ Evaluation covers four tasks (ai / visual / audio / mismatch), per-cell, per-gen
 | `training/` | Steps 00-04: encoder setup, feature extraction, train, evaluate, report |
 | `notebooks/` | `generate`, `prepare`, `train`, `demo` (Kaggle; W&B logging in `prepare` and `train`) |
 | `src/vn_av_df/` | `generation/` (cells, plan, voice, generator adapters), `training/` (data, models, train, evaluate, report), `features/`, `demo/` (make a fake from a real video, analyze a video; Gradio), `tracking.py` (W&B) |
-| `docs/` | `fake_plan.md` (what is generated, counts), `v003_model_research.md` (design rationale and sources, Vietnamese) |
+| `docs/` | Vietnamese design notes with rationale and sources: `v003_data.md` (real data pipeline, people and clip counts, audio-visual offset), `v003_generation.md` (six cells, generators and voices, counts per part), `v003_model.md` (methods, baselines, proposed models, evaluation) |
 | `environments/` | Isolated worker environments for generators, TTS and AV-HuBERT |
 | `tests/` | Synthetic end-to-end and component tests |
 

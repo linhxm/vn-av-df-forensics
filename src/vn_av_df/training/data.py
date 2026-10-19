@@ -7,7 +7,7 @@ hình k frame, k ngẫu nhiên đều trong cfg["training"]["audio_lag_aug"] (m�
 tiếng trễ), như nhau cho real và fake, nhãn giữ nguyên; frame mất tiếng ở mép bị mask. Real đã
 được sửa độ lệch về 0 ở data pipeline nhưng còn sai số ±1 frame và mỗi generator có "điểm 0" riêng;
 khoảng −1…+2 nằm trong vùng người xem không nhận ra lệch (ITU-R BT.1359: tiếng sớm ~45 ms, trễ
-~125 ms). Căn cứ: docs/v003_model_research.md §9.
+~125 ms). Căn cứ: docs/v003_data.md §6.4.
 Tham chiếu người (enrollment): R clip real của cùng speaker trong cùng split. Khi train lấy ngẫu
 nhiên (bỏ clip gốc của chính sample); khi đánh giá cố định R clip real đầu tiên theo sample_id
 và các clip đó không được tính điểm ở chế độ "ref".

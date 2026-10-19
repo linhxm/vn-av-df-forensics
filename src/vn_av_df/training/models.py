@@ -15,7 +15,7 @@ Baseline (đúng kiến trúc trong paper; khác biệt ghi trong docstring):
   thống kê + tỉ lệ vùng. Khác paper: 20 điểm môi dlib thay vì 64 điểm MediaPipe.
 - av_lipsync_plus (≈ B-AVH): AV-HuBERT a‖v → TCN giãn 1/2/4, có giám sát nhãn AI.
 - xlsr_aasist: XLS-R → AASIST-lite (self-attention theo thời gian thay cho HS-GAL đầy đủ).
-Đề xuất (docs/v003_model_research.md §5): avcv (A1), mtn (A2), trihead (A3).
+Đề xuất (docs/v003_model.md §5): avcv (A1), mtn (A2), trihead (A3).
 """
 
 import math
