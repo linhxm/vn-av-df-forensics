@@ -9,14 +9,13 @@ from vn_av_data.data.cut import (
     Inspector,
     cut_batch,
     cut_media,
+    cut_signature,
     identity_frames,
     media_origin,
     plan_clips,
-    single_target,
-    split_quota,
-    spread_order,
 )
 from vn_av_data.data.media import decode, probe
+from vn_av_data.data.quota import single_target, split_quota, spread_order
 from vn_av_data.data.vad import audio_blocks, pause_spans, speech_regions
 
 
@@ -252,6 +251,9 @@ def test_cut_batch_single_source_spreads_and_resumes(ws, ledger, cut_cfg, monkey
     assert info["sync"]["audio_lag_frames"] == 2 and info["sync"]["status"] == "few"  # 2 clip
     assert all(c["decision"] == "pending" and "sync_few" in c["flags"] for c in single)
     assert all(c["decision"] == "reject" and "sync_unreliable" in c["flags"] for c in multi)
+    assert info["mode"] == "single" and info["quota"] == 2
+    multi_info = ledger.row("SELECT cut_info FROM videos WHERE video_id='ccccccccccc'")["cut_info"]
+    assert multi_info["mode"] == "multi" and multi_info["quota"] is None
     # Đổi luật cắt sau khi đã có clip: bị chặn.
     cut_cfg["cut"]["max_seconds"] = 8.0
     with pytest.raises(ValueError, match="changed"):
@@ -275,3 +277,26 @@ def test_export_shifts_audio_and_keeps_video(tmp_path, lag):
     (before, frames), (after, frames_after) = onset(source), onset(target)
     assert frames_after == frames
     assert after == pytest.approx(before - lag * 0.04, abs=0.01)
+
+
+def test_pair_source_spreads_up_to_cap_and_count_rules_skip_signature(ws, ledger, cut_cfg):
+    pair = add_input(ledger, "https://www.youtube.com/watch?v=ddddddddddd", "2", "video")
+    add_raw_video(ws, ledger, "ddddddddddd", pair, 1, seconds=60, channel="ch3")
+    cut_cfg["cut"]["pair"]["max_clips"] = 3
+    inspector = Inspector(cut_cfg["cut"], FakeTracker(), FakeEmbedder(unit(1)))
+    cut_batch(
+        ws, ledger, 1, cut_cfg, inspector=inspector, speech_detector=full_speech, meter=FakeMeter()
+    )
+    clips = ledger.rows("SELECT * FROM clips WHERE input_id=? ORDER BY start_s", (pair,))
+    # 60 s nói liền → ~9 cửa sổ; tối đa 3 clip, mỗi clip một phần ba video (rải đều, không dồn đầu).
+    assert len(clips) == 3
+    assert [int(c["start_s"] // 20) for c in clips] == [0, 1, 2]
+    info = ledger.row("SELECT cut_info FROM videos WHERE video_id='ddddddddddd'")["cut_info"]
+    assert info["mode"] == "pair" and info["quota"] == 3 and info["inspected"] == 3
+    # Luật số lượng (single / pair) không nằm trong cut signature; luật làm clip thì có.
+    before = cut_signature(cut_cfg["cut"])
+    cut_cfg["cut"]["pair"]["max_clips"] = 200
+    cut_cfg["cut"]["single"]["max_clips"] = 45
+    assert cut_signature(cut_cfg["cut"]) == before
+    cut_cfg["cut"]["min_face_size"] = 64
+    assert cut_signature(cut_cfg["cut"]) != before

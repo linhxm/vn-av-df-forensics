@@ -1,8 +1,10 @@
 """Bước 03 cut: cắt clip ứng viên 4-7 s từ raw của một batch vào pool chung.
 
 Nguồn một người (`speakers=1`): VAD cả video, rồi chỉ kiểm/cắt vài cửa sổ rải đều theo thời gian
-đến khi đủ 40-60 clip cho người đó (tuỳ lượng tiếng nói) → rẻ, không cần quét hết video.
-Nguồn nhiều người (`speakers=n`): quét mặt 4 fps + chuyển cảnh toàn video, cắt mọi cửa sổ đạt.
+đến khi đủ 30-40 clip cho người đó (tuỳ lượng tiếng nói) → rẻ, không cần quét hết video.
+Nguồn hai người (`speakers=2`): kiểm như nguồn nhiều người, nhưng chỉ lấy tối đa 150 clip / video
+rải đều theo thời gian (`cut.pair`). Nguồn nhiều người (`speakers=n`): quét mặt 4 fps + chuyển
+cảnh toàn video, cắt mọi cửa sổ đạt. Luật số lượng: quota.py (ngoài cut signature).
 
 Mỗi cửa sổ phải qua (đọc mọi frame trên lưới 25 Hz của cửa sổ):
 1. đúng một mặt hợp lệ, liền mạch ở mọi frame; 2. không chuyển cảnh; 3. không có jump cut chắc
@@ -33,9 +35,12 @@ import numpy as np
 from vn_av_data.common.runtime import fingerprint, run, sha
 from vn_av_data.data import jumpcut
 from vn_av_data.data.media import CLIP_FPS, MAX_SHORT_SIDE, ffmpeg, probe
+from vn_av_data.data.quota import single_target, split_quota, take_spread
 from vn_av_data.ledger import now
 
 STRIP_SIDE = 96
+MODES = {"1": "single", "2": "pair"}  # speakers → luật số lượng; còn lại (n): cắt hết
+COUNT_RULES = ("single", "pair")  # mục config chỉ là luật số lượng (ngoài cut signature)
 
 
 def media_origin(path):
@@ -370,42 +375,6 @@ def write_strip(aligned, target):
     partial.replace(target)
 
 
-def single_target(speech_s, rules):
-    """30 clip khi ≤ low phút tiếng nói, tăng tuyến tính tới 50 clip ở full phút."""
-    minutes = speech_s / 60
-    lo, hi = rules["low_speech_minutes"], rules["full_speech_minutes"]
-    share = min(1.0, max(0.0, (minutes - lo) / max(1e-6, hi - lo)))
-    return int(round(rules["min_clips"] + share * (rules["max_clips"] - rules["min_clips"])))
-
-
-def split_quota(total, weights):
-    """Chia `total` theo trọng số, phần dư theo phần thập phân lớn nhất."""
-    weights = np.asarray(weights, float)
-    if total <= 0 or weights.sum() <= 0:
-        return [0] * len(weights)
-    raw = total * weights / weights.sum()
-    base = np.floor(raw).astype(int)
-    for i in np.argsort(-(raw - base))[: total - base.sum()]:
-        base[i] += 1
-    return base.tolist()
-
-
-def spread_order(windows, quota, duration):
-    """Thứ tự thử cửa sổ để clip rải đều: chia trục thời gian thành `quota` khúc, mỗi vòng lấy
-    cửa sổ gần tâm khúc nhất còn lại của từng khúc chưa có clip."""
-    if not windows or quota <= 0:
-        return []
-    width = duration / quota
-    queues = [[] for _ in range(quota)]
-    for w in windows:
-        mid = (w[0] + w[1]) / 2
-        queues[min(quota - 1, int(mid // width))].append(w)
-    for k, q in enumerate(queues):
-        center = (k + 0.5) * width
-        q.sort(key=lambda w: abs((w[0] + w[1]) / 2 - center))
-    return queues
-
-
 class Cutter:
     def __init__(self, ws, ledger, cfg, inspector):
         self.ws, self.ledger, self.cfg, self.inspector = ws, ledger, cfg, inspector
@@ -469,36 +438,24 @@ class Cutter:
         cut_info = video.get("cut_info") or {}
         voice = self.voice(path, origin, duration, cut_info)
         speech, pauses = voice["speech"], voice["pauses"]
-        reasons, clips, inspected = Counter(), [], 0
-        single = speakers == "1"
-        if single:
+        reasons, clips = Counter(), []
+        mode = MODES.get(speakers, "multi")
+        gate = mode != "single"  # có người khác trong video: 5 điểm phải cùng một mặt
+
+        def try_window(start, end):
+            seed = int(fingerprint([video["video_id"], start])[:12], 16)
+            result = self.inspector.inspect(path, origin, start, end, seed, gate)
+            if result["ok"]:
+                clips.append(self.accept(video, path, origin, start, end, result))
+            else:
+                reasons[result["reason"]] += 1
+            return result["ok"]
+
+        if mode == "single":
             windows = plan_clips(speech, [], duration, cfg, pauses)
-            queues = spread_order(windows, quota, duration)
-            budget = int(math.ceil(quota * cfg["single"]["attempts_factor"])) + 5
-            filled = set()
-            while len(clips) < quota and inspected < budget and any(queues):
-                # Mỗi vòng: khúc chưa có clip trước; hết khúc trống thì lấy khúc còn cửa sổ.
-                live = [k for k, q in enumerate(queues) if q]
-                for k in [k for k in live if k not in filled] or live:
-                    if len(clips) >= quota or inspected >= budget:
-                        break
-                    start, end = queues[k].pop(0)
-                    inspected += 1
-                    result = self.inspector.inspect(
-                        path,
-                        origin,
-                        start,
-                        end,
-                        int(fingerprint([video["video_id"], start])[:12], 16),
-                        False,
-                    )
-                    if result["ok"]:
-                        clips.append(self.accept(video, path, origin, start, end, result))
-                        filled.add(k)
-                    else:
-                        reasons[result["reason"]] += 1
         else:
             samples, scenes = scan_visual(path, cfg, origin, self.inspector.tracker)
+            windows = []
             for start, end in plan_clips(speech, scenes, duration, cfg, pauses):
                 inside = [s for s in samples if start <= s["time_s"] < end]
                 coverage = len(inside) / max(1, (end - start) * cfg["sample_fps"])
@@ -506,26 +463,25 @@ class Cutter:
                 if coverage < 0.8 or ratio < cfg["min_face_ratio"]:
                     reasons["face_scan"] += 1
                     continue
-                inspected += 1
-                result = self.inspector.inspect(
-                    path,
-                    origin,
-                    start,
-                    end,
-                    int(fingerprint([video["video_id"], start])[:12], 16),
-                    True,
-                )
-                if result["ok"]:
-                    clips.append(self.accept(video, path, origin, start, end, result))
-                else:
-                    reasons[result["reason"]] += 1
+                windows.append((start, end))
+        if mode == "multi":
+            for start, end in windows:
+                try_window(start, end)
+            inspected = len(windows)
+        else:
+            rules = cfg[mode]
+            if mode == "pair":
+                quota = rules["max_clips"]
+            budget = int(math.ceil(quota * rules["attempts_factor"])) + 5
+            inspected = take_spread(windows, quota, duration, budget, try_window)
         speech_s = sum(b - a for a, b in speech)
         return clips, {
             "speech": speech,
             "pauses": pauses,
             "speech_s": round(speech_s, 1),
             "duration_s": duration,
-            "quota": quota if single else None,
+            "mode": mode,
+            "quota": quota if mode != "multi" else None,
             "inspected": inspected,
             "accepted": len(clips),
             "rejected": dict(reasons),
@@ -533,10 +489,16 @@ class Cutter:
 
 
 def cut_signature(cfg):
+    """Dấu vân tay của cách làm ra một clip (config + code + mô hình). Luật số lượng (`single`,
+    `pair`, quota.py) không nằm trong đây: đổi chỉ tiêu không làm khác chất lượng clip đã cắt."""
     here = Path(__file__).resolve()
     return fingerprint(
         {
-            "config": {k: v for k, v in cfg.items() if k not in ("face_model", "vad_model")},
+            "config": {
+                k: v
+                for k, v in cfg.items()
+                if k not in ("face_model", "vad_model", *COUNT_RULES)
+            },
             "code": [
                 sha(here),
                 sha(here.with_name("jumpcut.py")),
@@ -702,7 +664,7 @@ def cut_batch(ws, ledger, batch, cfg, inspector=None, speech_detector=None, mete
 
 
 def single_quotas(cutter, ledger, group, rules):
-    """Chỉ tiêu clip cho từng video của một người: VAD mọi video (lưu lại) → tổng 40-60 clip
+    """Chỉ tiêu clip cho từng video của một người: VAD mọi video (lưu lại) → tổng 30-40 clip
     chia theo lượng tiếng nói; video đã cắt giữ nguyên số clip đã có."""
     speech = {}
     for v in group:

@@ -201,8 +201,12 @@ class Ledger:
         self.insert("events", {"at": now(), "step": step, "message": message}, conn=conn)
 
     # ---- sao lưu ----
-    def backup(self, label="manual", keep=30):
-        """Bản sao nhất quán (sqlite backup API) + xuất CSV; giữ `keep` bản gần nhất."""
+    def backup(self, label="manual", keep=None):
+        """Bản sao nhất quán (sqlite backup API) + xuất CSV.
+
+        Mặc định giữ mọi bản (không tự xoá lịch sử; muốn dọn thì người dùng tự xoá tay).
+        `keep` = n: chỉ giữ n bản gần nhất.
+        """
         folder = self.path.parent / "backups"
         folder.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -213,8 +217,9 @@ class Ledger:
                 self.conn.backup(copy)
             finally:
                 copy.close()
-        for old in sorted(folder.glob("ledger_*.sqlite"))[:-keep]:
-            old.unlink(missing_ok=True)
+        if keep:
+            for old in sorted(folder.glob("ledger_*.sqlite"))[:-keep]:
+                old.unlink(missing_ok=True)
         self.export_csv()
         return target
 

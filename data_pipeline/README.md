@@ -21,9 +21,9 @@ Cần Node.js trong PATH (yt-dlp dùng để tải YouTube).
 
 | Bước | Lệnh | Làm gì |
 |---|---|---|
-| 01 | `01_plan.py [--cookies-from-browser firefox]` | Đọc dòng mới trong `data/inputs/urls.csv` (url, speakers = 1 / n, note), chọn video, loại video dọc / < 25 fps / < 720p / lồng tiếng / trùng. Chia **batch ≤ 20 giờ và ≤ 16 GB**. Gặp xác minh bot thì dừng ngay; chạy lại với `--cookies-from-browser firefox` |
+| 01 | `01_plan.py [--cookies-from-browser firefox]` | Đọc dòng mới trong `data/inputs/urls.csv` (url, speakers = 1 / 2 / n, note), chọn video, loại video dọc / < 25 fps / < 720p / lồng tiếng / trùng. Chia **batch ≤ 20 giờ và ≤ 16 GB**. Gặp xác minh bot thì dừng ngay; chạy lại với `--cookies-from-browser firefox` |
 | 02 | `02_download.py [N]` | Tải batch (720p). YouTube đòi xác minh bot thì chạy lại với `--cookies-from-browser firefox` |
-| 03 | `03_cut.py [N]` | Cắt clip ứng viên 4-7 s, mép clip ở chỗ ngắt hơi (VAD). Nguồn 1 người: 30-40 clip rải đều. Mỗi frame đúng 1 mặt, không chuyển cảnh, không jump cut. Đo độ lệch tiếng-hình (SyncNet) |
+| 03 | `03_cut.py [N]` | Cắt clip ứng viên 4-7 s, mép clip ở chỗ ngắt hơi (VAD). Nguồn `1`: 30-40 clip rải đều; `2`: tối đa 150 clip / video rải đều; `n`: cắt hết. Mỗi frame đúng 1 mặt, không chuyển cảnh, không jump cut. Đo độ lệch tiếng-hình (SyncNet) |
 | 04 | `04_identify.py [N]` | Gán clip vào speaker bằng mặt + giọng, nhận lại người đã có, gợi ý gộp. `--calibrate`: gợi ý ngưỡng sau vài chục người |
 | 05 | `05_review.py` | Trang duyệt http://127.0.0.1:8001: gộp / tách người, gán giới, **chọn 15-20 clip / người**. Dưới 15 clip: N để chờ batch sau |
 | 06 | `06_parts.py` | Gom người đã duyệt xong thành part 20 nam + 20 nữ, split 12 / 3 / 5 mỗi giới. Part tạo xong bị khoá; người dư chờ part sau |
@@ -65,7 +65,7 @@ python steps/09_clean.py pool                 # sau cùng: clip thừa của ng�
 | Đường dẫn | Nội dung | Giữ / xoá |
 |---|---|---|
 | `inputs/urls.csv` | danh sách URL | giữ |
-| `ledger/ledger.sqlite` | **sổ cái**: URL, video, lý do loại, batch, clip, độ lệch, speaker, quyết định duyệt, part, nơi lưu trên Drive. Kèm `backups/` (30 bản gần nhất) và `csv/` (xem bằng Excel) | **giữ, up Drive mỗi lần archive** |
+| `ledger/ledger.sqlite` | **sổ cái**: URL, video, lý do loại, batch, clip, độ lệch, speaker, quyết định duyệt, part, nơi lưu trên Drive. Kèm `backups/` (mọi bản, không tự xoá) và `csv/` (xem bằng Excel) | **giữ, up Drive mỗi lần archive** |
 | `raw/batch_XXX/` | video gốc + `videos.csv` | xoá sau khi lên Drive (`09_clean raw`) |
 | `pool/clips/`, `pool/faces/` | clip ứng viên, ảnh dải mặt | clip xoá theo part / pool; ảnh mặt giữ |
 | `registry/` | ảnh mặt đại diện mỗi người | giữ |

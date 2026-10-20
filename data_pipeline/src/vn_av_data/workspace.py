@@ -1,6 +1,6 @@
 """Thư mục làm việc của pipeline real v003 (mặc định `data_pipeline/data/`).
 
-    inputs/urls.csv                  danh sách URL bạn đưa (url, speakers = 1 | n, note)
+    inputs/urls.csv                  danh sách URL bạn đưa (url, speakers = 1 | 2 | n, note)
     ledger/ledger.sqlite             sổ cái; backups/ và csv/ đi kèm
     raw/batch_001/videos/*.mp4       video gốc của từng batch (lên Drive xong thì xoá được)
     raw/batch_001/videos.csv         danh sách link của batch để xem / tải tay

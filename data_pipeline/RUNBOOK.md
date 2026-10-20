@@ -13,11 +13,11 @@ cd D:\COMP\RESEARCH\Deepfake_VN\vn-av-df-forensics\data_pipeline
 
 | Từ | Nghĩa |
 |---|---|
-| **input** | Một dòng trong `data/inputs/urls.csv`: một URL (video, kênh, playlist) + `speakers` = `1` (một người nói) hoặc `n` (nhiều người: talkshow, phỏng vấn) |
+| **input** | Một dòng trong `data/inputs/urls.csv`: một URL (video, kênh, playlist) + `speakers` = `1` (một người nói), `2` (hai người: phỏng vấn 1-1, podcast) hoặc `n` (nhiều người: talkshow). Dòng đã plan thì không đổi `speakers` được |
 | **raw** | Video gốc tải từ YouTube, nằm trong `data/raw/batch_XXX/` |
 | **batch** | Một nhóm video raw tải cùng lúc, ≤ 20 giờ và ≤ 16 GB (vừa ổ đĩa). Bước 01 tự chia. Mọi việc tải / cắt / dọn đều làm theo batch |
 | **workspace** | Thư mục `data/` chứa mọi thứ của pipeline: ledger, raw, pool, registry, archive |
-| **ledger** | Sổ cái `data/ledger/ledger.sqlite`: ghi mọi URL, video, lý do loại, clip, speaker, quyết định duyệt, part, nơi lưu. Mỗi lệnh tự sao lưu (`backups/`, 30 bản) và xuất CSV (`csv/`, mở bằng Excel). Mất ledger là mất toàn bộ quyết định, nên **luôn up ledger lên Drive kèm zip** |
+| **ledger** | Sổ cái `data/ledger/ledger.sqlite`: ghi mọi URL, video, lý do loại, clip, speaker, quyết định duyệt, part, nơi lưu. Mỗi lệnh tự sao lưu (`backups/`, giữ mọi bản, không tự xoá) và xuất CSV (`csv/`, mở bằng Excel). Mất ledger là mất toàn bộ quyết định, nên **luôn up ledger lên Drive kèm zip** |
 | **clip ứng viên** | Đoạn 4-7 s cắt từ raw (25 fps, ≤ 720p), đã qua kiểm mặt, chưa ai duyệt |
 | **pool** | `data/pool/`: kho clip ứng viên (`clips/`) và ảnh dải mặt (`faces/`) của mọi batch |
 | **VAD** | Voice Activity Detection (Silero VAD): đoán từng khúc 32 ms có tiếng nói không. Dùng để cắt clip ở chỗ người nói ngắt hơi, không cắt ngang từ |
@@ -38,7 +38,7 @@ cd D:\COMP\RESEARCH\Deepfake_VN\vn-av-df-forensics\data_pipeline
 | **archive** | Bước 08: zip raw batch hoặc part vào `data/archive/` để up Drive. Raw và part zip cùng một kiểu lệnh |
 | **`--uploaded`** | Bạn báo cho ledger "zip này đã lên Drive". Trước khi báo, lệnh xoá (09) từ chối chạy |
 | **location** | Nơi lưu ghi trong ledger: `local` (chỉ ở máy) → `packed` (đã có zip) → `drive:<tên zip>` (đã lên Drive) → `deleted` (đã xoá ở máy, ledger vẫn nhớ) |
-| **cut signature** | Dấu vân tay của luật cắt + code + mô hình. Đổi luật sau khi đã có clip thì bước 03 chặn, để mọi clip cắt cùng một luật. Thử luật mới trên workspace khác: `$env:VNAV_DATA="data_trial"` |
+| **cut signature** | Dấu vân tay của cách làm ra một clip (độ dài, mặt, chuyển cảnh, jump cut, VAD, SyncNet: config + code + mô hình). Đổi những luật này sau khi đã có clip thì bước 03 chặn, để mọi clip cắt cùng một luật. Luật số lượng (`single`, `pair`, `quota.py`) đổi được, không bị chặn. Thử luật mới trên workspace khác: `$env:VNAV_DATA="data_trial"` |
 
 ## 2. Bức tranh
 
@@ -76,7 +76,7 @@ python steps/01_plan.py --cookies-from-browser firefox   # khi YouTube chặn
 ```
 
 - Đọc **dòng mới hoặc dòng lỗi** trong `urls.csv`; dòng đã xử lý không đọc lại. Thêm URL thì chỉ cần chạy lại.
-- Nguồn 1 người: chọn video trải theo ngày đăng tới khi đủ ≥ 20 phút (3-10 video). Nguồn nhiều người: 15 video mới nhất.
+- Nguồn 1 người: chọn video trải theo ngày đăng tới khi đủ ≥ 20 phút (3-10 video). Nguồn `2` / `n`: 15 video mới nhất (link video lẻ: chính video đó).
 - Loại: video dọc, < 25 fps, < 720p, lồng tiếng, trùng.
 - Chia video đã chọn vào batch.
 - YouTube đòi xác minh bot ("Sign in to confirm you're not a bot"): **dừng ngay**, không hỏi tiếp các dòng sau (hỏi tiếp chỉ làm bị chặn lâu hơn). Dòng bị chặn ghi `error`, dòng chưa hỏi vẫn `pending`; kết quả có mục `stopped`. Chạy lại với `--cookies-from-browser firefox` hoặc chờ vài giờ.
@@ -112,7 +112,7 @@ python steps/03_cut.py 2
 ```
 
 - VAD tìm đoạn nói; đoạn dài hơn 7 s được chia ở chỗ ngắt dài nhất trong khoảng 4-7 s.
-- Nguồn 1 người: 30-40 clip / input, rải đều cả video. Nguồn nhiều người: cắt hết.
+- Nguồn `1`: 30-40 clip / input, rải đều cả video. Nguồn `2`: tối đa 150 clip / video, rải đều (từ batch 3). Nguồn `n`: cắt hết. Kết quả mỗi video ghi `mode` (single / pair / multi) và `quota` trong `cut_info`.
 - Mỗi frame phải có đúng 1 mặt ≥ 48 px, không chuyển cảnh, không jump cut.
 - SyncNet đo độ lệch tiếng-hình mỗi video.
 - Ctrl+C rồi chạy lại: video đang dở cắt lại từ đầu, video xong giữ nguyên.

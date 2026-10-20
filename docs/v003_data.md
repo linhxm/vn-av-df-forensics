@@ -27,6 +27,7 @@ Quy ước mức tin:
 | Clip | 4-7 s, 25 fps, ≤ 720p, đúng 1 mặt người đang nói, tiếng Việt gốc | §5 |
 | Nguồn | YouTube; nguồn 1 người ≥ 20 phút, 3-10 video; chỉ video ngang, ≥ 720p, ≥ 25 fps | §4 |
 | Chỉ tiêu cắt nguồn 1 người | 30-40 clip ứng viên **mỗi input** (tối đa), rải đều theo thời gian | §5.3 |
+| Chỉ tiêu cắt nguồn 2 người | tối đa **150 clip / video**, rải đều (từ batch 3, 20/10); nguồn nhiều người (`n`) cắt hết | §5.3 |
 | Độ lệch tiếng-hình | đo bằng SyncNet theo video trong bước cắt; dịch tiếng về 0 khi export; video không đo được tự loại | §6 |
 | Duyệt | người chọn 15-20 clip / người (còn clip tốt thì chọn đủ 20), gán giới, góc mặt lệch ≤ ~30 % | §7 |
 | Quy mô mục tiêu | ≥ 5 part = 200 người ○ | §3 |
@@ -135,15 +136,15 @@ mỗi batch:  01 plan → 02 download → 03 cut (+ SyncNet) → 04 identify →
 bất cứ lúc: 10 status
 ```
 
-Mọi bước ghi vào **ledger SQLite** (`data/ledger/ledger.sqlite`): URL, video, lý do loại, batch, clip, độ lệch, speaker, quyết định duyệt, part, nơi lưu trên Drive. Sau mỗi lệnh có ghi (kể cả khi Ctrl+C), ledger tự sao lưu (giữ 30 bản) và xuất CSV. Mất ledger là mất thông tin quản lý, nên ledger được upload Drive mỗi lần archive. Không có gì chạy ngầm: giới hạn batch áp khi chạy `01_plan`, part chỉ tạo khi chạy `06_parts`.
+Mọi bước ghi vào **ledger SQLite** (`data/ledger/ledger.sqlite`): URL, video, lý do loại, batch, clip, độ lệch, speaker, quyết định duyệt, part, nơi lưu trên Drive. Sau mỗi lệnh có ghi (kể cả khi Ctrl+C), ledger tự sao lưu (giữ mọi bản, không tự xoá; từ 20/10, trước đó giữ 30 bản) và xuất CSV. Mất ledger là mất thông tin quản lý, nên ledger được upload Drive mỗi lần archive. Không có gì chạy ngầm: giới hạn batch áp khi chạy `01_plan`, part chỉ tạo khi chạy `06_parts`.
 
 ## 4. Chọn và tải video (01 plan, 02 download)
 
 | Luật | Giá trị | Lý do |
 |---|---|---|
-| Đầu vào | `urls.csv`: `url, speakers (1 / n), note` | `note` là ghi chú tự do, code không dùng |
+| Đầu vào | `urls.csv`: `url, speakers (1 / 2 / n), note` | `note` là ghi chú tự do, code không dùng. `2` có từ 20/10 (§5.3) |
 | Nguồn 1 người | trải theo ngày đăng, thêm video tới khi **≥ 20 phút**, **3-10 video**; ưu tiên video ≤ 90 phút | ≥ 3 buổi quay cho đa dạng và clip tham chiếu; tối đa 10 chặn trường hợp toàn video rất ngắn. Trước đây đếm số video (tối đa 3): video dài phí raw, video ngắn thiếu clip |
-| Nguồn nhiều người | 15 video mới nhất | |
+| Nguồn 2 người / nhiều người | 15 video mới nhất (link video lẻ: chính video đó) | `2` và `n` chọn video như nhau, chỉ khác chỉ tiêu cắt |
 | Chỉ tab `/videos`, chỉ video **ngang** | video dọc bị loại ở plan (metadata) và sau khi tải (file) | user chốt 17/10. Video dọc dùng được về kỹ thuật, nhưng hay có phụ đề to đè miệng, cắt cảnh 1-3 s, filter làm đẹp |
 | Chất lượng | ≥ 720p (cạnh ngắn), **≥ 25 fps**, tiếng Việt gốc (không lồng tiếng AI), không trùng | **24 fps bị loại**: chuẩn hoá lên 25 fps phải lặp 1 frame mỗi giây, môi "khựng" đều đặn, nhiễu tín hiệu khớp tiếng-môi (luật từ v001) |
 | Tải | bản 720p, chỉ HTTPS | |
@@ -203,6 +204,26 @@ Chủ ý từ v001: **không chọn từng clip theo điểm sync**, vì như v�
 - **Rải đều** (`spread_order`): trục thời gian chia N khúc (N = chỉ tiêu), mỗi khúc lấy cửa sổ gần tâm nhất. Khúc hỏng thì thử cửa sổ kế trong khúc; khúc hết cửa sổ thì bỏ; khi mọi khúc còn lại đã có clip thì lấy clip thứ 2, 3 từ khúc còn cửa sổ tới đủ chỉ tiêu, nên một khúc không có clip tốt **không làm hụt** chỉ tiêu. Trần số lần thử = 2,5 × chỉ tiêu + 5.
 - Rải đều **không làm chậm**: mỗi cửa sổ được ffmpeg nhảy thẳng tới (`-ss`) và giải mã riêng; thời gian chỉ phụ thuộc số cửa sổ phải kiểm. Khi duyệt, clip khác thời điểm nên dễ chọn hơn.
 
+**Nguồn hai người (`speakers = 2`, từ batch 3, 20/10).** Nguồn nhiều người (`n`) cắt mọi cửa sổ đạt. Đo trên 7 video `n` đầu của batch 2 ●:
+
+| Video | Dài | Clip / cửa sổ kiểm | Thời gian cắt |
+|---|---|---|---|
+| iPoiiEbFgkA | 81 phút | 362 / 370 | 32,5 phút |
+| G08SG5Nm0lk | 64 phút | 432 / 479 | 34,6 phút |
+| yhgv2MgmW24 | 56 phút | 321 / 333 | 28,9 phút |
+| wlOPw-JLG7c | 57 phút | 299 / 321 | 27,4 phút |
+| 9yi-VzvL50o | 58 phút | 343 / 360 | 29,7 phút |
+| mc8thxl2fqI | 33 phút | 146 / 151 | 14,3 phút |
+| K-fj9hdl5YE | 26 phút | 61 / 138 | 10,6 phút |
+
+Trung bình ~280 clip / video (~5 s mỗi cửa sổ kiểm), trong khi 2 người chỉ cần ~2 × 20 clip được chọn. Luật mới:
+- `2` = phỏng vấn 1-1, podcast 2 người. Kiểm giống `n` (quét mặt 4 fps + chuyển cảnh, 5 điểm cùng một mặt), nhưng chỉ lấy **tối đa 150 clip / video**, rải đều bằng `spread_order` (`cut.pair.max_clips`, trần thử 2,5 × 150 + 5). Video ngắn không đủ 150 thì ra như cắt hết.
+- 150 ≈ 75 clip / người, dư ~4 lần so với 15-20 clip được chọn (nguồn 1 người dư ~2 lần với 30-40). Dư hơn vì clip 2 người dễ bị loại khi duyệt (cắt sang người kia, nói chồng). Rủi ro: camera chia không đều (khách lên hình nhiều hơn MC); MC thường lặp lại qua nhiều tập cùng kênh nên identify cộng dồn clip.
+- `n` giữ cắt hết (talkshow đông người, không biết trước số người).
+- Không đổi dữ liệu cuối: mỗi người vẫn 15-20 clip được chọn, train vẫn cân theo người; chỉ đổi số ứng viên khi duyệt.
+- Áp từ batch 3: batch 1-2 giữ nguyên (nguồn nhiều người của batch 2 cắt hết). User đánh dấu 28 link batch 3-4 là `2` (giữ 4 link `n`); ledger đổi nhãn đúng 28 input đó, chưa cắt, có ghi sự kiện. Ước thời gian cắt batch 3-4 giảm từ ~16 giờ còn ~8-9 giờ ○.
+- Mỗi video ghi luật đã dùng vào `cut_info` (`mode` = single / pair / multi, `quota`).
+
 ### 5.4. Điểm cắt ở chỗ ngắt (từ 19/10)
 
 **Vấn đề** ●: luật cũ nối chỗ lặng < 0,6 s rồi chặt đoạn nói dài **cứng mỗi 7 s**. Trên batch 1 (84 video, 2.392 clip): 84 % clip dài đúng 7 s; chỉ **8 %** clip có cả 2 mép rơi vào chỗ ngắt, **61 %** có cả 2 mép bên trong đoạn nói (có thể cắt ngang từ). 38 % đoạn nói sau VAD dài hơn 7 s. Không ảnh hưởng phát hiện (fake cùng mép với real) nhưng làm track A (TTS đọc lại cả câu) gặp từ cụt, và real gần như không có khoảng lặng đầu clip.
@@ -239,6 +260,7 @@ Chủ ý từ v001: **không chọn từng clip theo điểm sync**, vì như v�
 - **Giữ cắt tuần tự** (user chốt 17/10). Ước tính với chỉ tiêu 30-40: batch 20 giờ video mất ~4,5-5,5 giờ cắt ○.
 - **Dừng giữa chừng:** một ledger duy nhất; mỗi video ghi một lần khi xong; video dở không ghi gì và file dở bị xoá; chạy lại thì làm tiếp từ video dở, VAD đã có không dò lại.
 - **Luật cắt bị khoá:** chữ ký (config cắt + mã nguồn `cut.py`, `jumpcut.py`, `vad.py`, `face.py`, `syncnet.py` + model) ghi vào ledger. Đổi luật sau khi đã có clip thì lệnh từ chối chạy, để mọi clip theo cùng một luật. Thử luật mới dùng workspace riêng (`VNAV_DATA=data_trial`). Sửa code không đổi luật thì đóng dấu lại chữ ký.
+- **Từ 20/10 chữ ký chỉ khoá cách làm ra một clip.** Luật số lượng (config `single`, `pair` và `quota.py`) nằm ngoài chữ ký: đổi chỉ tiêu không làm khác chất lượng clip đã cắt, nên không chặn batch cũ. Đóng dấu lại một lần khi tách (ledger ghi sự kiện `pair`: `b90ec5a90295 → 6ae7ba9ede0a`; luật làm clip không đổi).
 
 ## 6. Độ lệch tiếng-hình sẵn có của real
 
@@ -378,7 +400,10 @@ Ba lệnh xoá tách riêng và đều bắt buộc đã đánh dấu upload (us
 | Batch 1 thật (18/10) | 83 URL video lẻ; 4 URL bị loại vì 24 fps; batch 1 = 79 video, 17,4 giờ, ước 5,22 GB, thực tế **4,9 GB** (≈ 0,28 GB / giờ); 9 video đầu: 345 clip, 7 `ok` / 2 `unreliable`. Chỉ tiêu hạ còn 30-40, user xoá hết và tải lại từ đầu |
 | Batch 1, lần chạy với chỉ tiêu 30-40 (18-19/10) | 84 video, 2.392 clip; cửa sổ kiểm 5.165 → giữ 46 % (loại vì mặt 1.810, chuyển cảnh 572, jump cut 391); sync 78 `ok` / 6 `unreliable`; độ lệch: 0 frame 3 video · 1: 20 · **2: 36** · 3: 13 · **4: 6** (160 ms, quá ngưỡng nhận ra 125 ms → phải sửa); identify 43 speaker mới / 41 khớp / 19 gợi ý gộp; duyệt 38 xong / 4 loại. Mép clip: chỉ 8 % cả 2 mép ở chỗ ngắt (§5.4) → áp luật cắt mới, xoá hết, chạy lại |
 
-Chưa chạy thật: `06_parts`, `07_export` cả part, `08_archive`, `09_clean` (có test với dữ liệu giả lập).
+| Batch 1 với luật cắt mới → part 1 (19-20/10) | 80 video, 18,5 giờ; duyệt 41 người xong (20 nam, 21 nữ) / 1 loại; **part 1 = 40 người, 800 clip** (train 480 / validation 120 / test 200), dư 1 nữ chờ part 2; 75 video nguồn, 796 clip `ok` + 4 clip `unreliable` (user chọn lại, export không dịch tiếng; `agree` theo clip: trung vị 1,0, p10 0,95). Zip raw 5,4 GB, zip part 0,84 GB, cả hai lên Drive rồi xoá ở máy. Raw batch 1 lỡ xoá trước khi up, tải lại (hash raw trên Drive là của lần tải thứ hai) |
+| Batch 2 (20/10) | 32 video (18 nguồn 1 người, 14 nguồn nhiều người), 5.040 clip ứng viên; identify 31 người mới / 15 khớp / 17 gợi ý gộp. Nguồn nhiều người ~280 clip / video 60 phút (§5.3) |
+
+`06_parts` → `09_clean` chạy thật lần đầu với part 1 (20/10).
 
 ## 10. So với chuẩn hiện nay (AV-Deepfake1M++)
 
@@ -464,6 +489,13 @@ Phản biện quan trọng: **Deepfake-Eval-2024** (45 giờ video lưu hành n�
 | 19/10 | Cắt semantic thì sao? | cần ASR + dấu câu → nặng; thay bằng dời điểm cắt về chỗ ngắt (VAD), thử 8 % → 63 % mép sạch |
 | 19/10 | Đổi sang 15-20 clip / người cho mọi part, "phải đảm bảo không ảnh hưởng" (user) | part 600-800 clip; train lấy mẫu cân theo người; AUC cân theo người; split cân tổng clip; trang duyệt đạt từ 15, tối đa 20 (§3.3) |
 | 19/10 | Áp luật cắt mới (user) | xoá hết dữ liệu, tải lại; bỏ khỏi `urls.csv` 10 link: 6 video sync `unreliable` + các video của 4 speaker bị loại; thêm 8 link mới (1 người / link) |
+| 20/10 | Duyệt xong mà dư speaker thì sao? | chạy `06_parts`; người dư (đã duyệt xong) chờ part sau, không phải duyệt lại |
+| 20/10 | 07 tự zip part còn raw zip ở 08: đồng bộ (user) | 07 chỉ xuất thư mục; zip cả raw lẫn part ở `08_archive` (zip → up Drive → `--uploaded` → `09_clean`) |
+| 20/10 | Lỡ chạy `09_clean raw 1` trước khi up | ledger về bản sau export, tải lại raw, zip lại; `08_archive raw` từ chối khi thiếu file raw |
+| 20/10 | Plan bị chặn bot | plan dừng ngay khi gặp bot check (như download); cookie Edge lỗi DPAPI (yt-dlp không giải mã cookie Chromium mới) |
+| 20/10 | Clip `unreliable` được chọn lại có tính là lệch 0? | không: export **không dịch** (độ lệch gốc giữ nguyên); `few` vẫn dịch. User tự cân nhắc khi duyệt, không sửa code |
+| 20/10 | Backup ledger tự xoá? | trước giữ 30 bản; từ 20/10 giữ mọi bản, chỉ xoá tay |
+| 20/10 | Thêm loại `2` cắt tối đa 150 clip, từ batch 3 (user) | §5.3; chữ ký luật cắt tách luật số lượng (§5.5) |
 
 ## 13. Nguồn
 

@@ -2,7 +2,9 @@
 
 Mỗi dòng urls.csv là một nguồn (video / playlist / kênh) kèm `speakers`:
 - `1`: nguồn một người. Lấy video trải theo ngày đăng đến khi tổng ≥ `single.target_minutes`
-  (mặc định 20 phút), ít nhất 3 và nhiều nhất 10 video; bước cắt chỉ lấy 40-60 clip rải đều.
+  (mặc định 20 phút), ít nhất 3 và nhiều nhất 10 video; bước cắt chỉ lấy 30-40 clip rải đều.
+- `2`: nguồn hai người (phỏng vấn 1-1, podcast). Chọn video như `n`; bước cắt lấy tối đa 150
+  clip / video rải đều.
 - `n`: nguồn nhiều người. Kênh: `multi.max_videos` video mới nhất (mặc định 15); playlist: hỏi
   tối đa `playlist_scan_max` video rồi lấy 15 video mới nhất theo ngày đăng. Bước cắt cắt hết.
 
@@ -28,9 +30,10 @@ BOT_HINT = (
 
 TEMPLATE = (
     "url,speakers,note\n"
-    "# Mỗi dòng một URL video / playlist / kênh. speakers: 1 = một người, n = nhiều người.\n"
+    "# Mỗi dòng một URL video / playlist / kênh. speakers: 1 = một người, 2 = hai người,\n"
+    "# n = nhiều người.\n"
 )
-MULTI = {"n", "nhieu", "nhiều", "many", "multi", "2", "2+"}
+MULTI = {"n", "nhieu", "nhiều", "many", "multi", "2+"}
 
 
 def read_inputs(path):
@@ -46,12 +49,12 @@ def read_inputs(path):
         if not url:
             continue
         value = (row.get("speakers") or "").strip().lower()
-        if value == "1":
-            speakers = "1"
+        if value in ("1", "2"):
+            speakers = value
         elif value in MULTI:
             speakers = "n"
         else:
-            raise ValueError(f"urls.csv row {number}: speakers must be 1 or n ({value!r})")
+            raise ValueError(f"urls.csv row {number}: speakers must be 1, 2 or n ({value!r})")
         rows.append({"url": url, "speakers": speakers, "note": (row.get("note") or "").strip()})
     if not rows:
         raise ValueError(f"No URL in {path}")

@@ -42,6 +42,10 @@ cut:
     low_speech_minutes: 5
     full_speech_minutes: 20
     attempts_factor: 2.5       # tối đa ~2,5 cửa sổ kiểm cho mỗi clip cần lấy
+  pair:                        # nguồn hai người (speakers = 2): kiểm như nhiều người, không cắt hết
+    max_clips: 150             # tối đa 150 clip / video rải đều (~75 / người; nhiều người cắt hết
+                               # ra ~280 clip / video 60 phút, batch 2 - docs/v003_data.md §5)
+    attempts_factor: 2.5
   sync:                        # độ lệch tiếng-hình của cả video (SyncNet), xem features/syncnet.py
     clips_per_video: 20        # đo tối đa 20 clip rải đều mỗi video
     min_clips: 3               # ít hơn mà đỉnh rõ: vẫn sửa, gắn cờ sync_few để xem kỹ

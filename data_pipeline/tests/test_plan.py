@@ -65,11 +65,12 @@ def test_read_inputs_creates_template_and_parses_speakers(tmp_path):
     with pytest.raises(FileNotFoundError):
         read_inputs(path)
     path.write_text(
-        "url,speakers,note\n# ghi chú\nhttps://youtu.be/abcdefghijk,1,\nhttps://youtu.be/bbcdefghijk,N,x\n",
+        "url,speakers,note\n# ghi chú\nhttps://youtu.be/abcdefghijk,1,\nhttps://youtu.be/bbcdefghijk,N,x\n"
+        "https://youtu.be/cbcdefghijk,2,\n",
         encoding="utf-8",
     )
     rows = read_inputs(path)
-    assert [r["speakers"] for r in rows] == ["1", "n"]
+    assert [r["speakers"] for r in rows] == ["1", "n", "2"]
     path.write_text("url,speakers\nhttps://youtu.be/abcdefghijk,3\n", encoding="utf-8")
     with pytest.raises(ValueError):
         read_inputs(path)
