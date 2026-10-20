@@ -22,6 +22,8 @@ UNAVAILABLE = re.compile(
     r"private|unavailable|removed|terminated|members|age|copyright|not available|deleted",
     re.IGNORECASE,
 )
+# YouTube nghi IP là bot: mọi lần hỏi sau cũng lỗi, hỏi tiếp chỉ làm bị chặn lâu hơn → dừng.
+BOT_CHECK = re.compile(r"confirm you.re not a bot")
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 
 

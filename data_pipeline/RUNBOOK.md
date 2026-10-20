@@ -79,6 +79,7 @@ python steps/01_plan.py --cookies-from-browser firefox   # khi YouTube chặn
 - Nguồn 1 người: chọn video trải theo ngày đăng tới khi đủ ≥ 20 phút (3-10 video). Nguồn nhiều người: 15 video mới nhất.
 - Loại: video dọc, < 25 fps, < 720p, lồng tiếng, trùng.
 - Chia video đã chọn vào batch.
+- YouTube đòi xác minh bot ("Sign in to confirm you're not a bot"): **dừng ngay**, không hỏi tiếp các dòng sau (hỏi tiếp chỉ làm bị chặn lâu hơn). Dòng bị chặn ghi `error`, dòng chưa hỏi vẫn `pending`; kết quả có mục `stopped`. Chạy lại với `--cookies-from-browser firefox` hoặc chờ vài giờ.
 
 In ra:
 

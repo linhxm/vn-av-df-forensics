@@ -202,6 +202,27 @@ def test_plan_freezes_started_batch_and_retries_errors(ws, ledger, cfg):
         plan_module.register_inputs(ledger, read_inputs(ws.inputs))
 
 
+def test_plan_stops_at_bot_check_and_leaves_rest_pending(ws, ledger, cfg):
+    setup_inputs(ws, "https://youtu.be/aaaaaaaaaaa,1\nhttps://youtu.be/bbbbbbbbbbb,1\n")
+    calls = []
+
+    def blocked(url):
+        calls.append(url)
+        raise RuntimeError("ERROR: [youtube] aaaaaaaaaaa: Sign in to confirm you’re not a bot.")
+
+    summary = plan_sources(ws, ledger, cfg, metadata_loader=blocked, flat_loader=None)
+    assert len(calls) == 1  # không hỏi tiếp nguồn thứ hai
+    assert summary["stopped"]["inputs_not_asked"] == 1 and summary["inputs_processed"] == 1
+    status = {r["input_id"]: r["status"] for r in ledger.rows("SELECT * FROM inputs")}
+    assert status == {1: "error", 2: "pending"}
+    assert ledger.scalar("SELECT status FROM videos WHERE video_id='aaaaaaaaaaa'") == "error"
+    # Hết bị chặn: chạy lại thì hỏi cả hai.
+    summary = plan_sources(
+        ws, ledger, cfg, metadata_loader=lambda u: info(u[-11:]), flat_loader=None
+    )
+    assert "stopped" not in summary and summary["inputs_processed"] == 2
+
+
 def test_download_retries_transient_403_then_gives_up(ws, ledger, cfg, tmp_path):
     from conftest import make_video
 

@@ -35,6 +35,16 @@ def pack_raw(ws, ledger, batch):
             f"(e.g. {unfinished[:3]}); finish steps 02-04 first"
         )
     folder = ws.raw(batch)
+    missing = [
+        v["video_id"]
+        for v in videos
+        if v["dl_status"] == "done" and not (ws.root / v["file"]).is_file()
+    ]
+    if missing:
+        raise ValueError(
+            f"Batch {batch}: {len(missing)} raw files missing on disk (e.g. {missing[:3]}); "
+            "restore them before packing"
+        )
     lines = [
         f"{v['sha256']}  videos/{v['video_id']}.mp4" for v in videos if v["dl_status"] == "done"
     ]

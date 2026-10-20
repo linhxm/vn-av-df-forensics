@@ -9,6 +9,7 @@ import time
 
 from vn_av_data.common.runtime import sha
 from vn_av_data.data.media import MAX_SHORT_SIDE, MIN_FPS, ffmpeg, probe, quality_issue
+from vn_av_data.data.youtube import BOT_CHECK
 
 # Luật chọn định dạng dùng chung cho plan (xem trước, không tải) và download (tải thật).
 # Chỉ luồng HTTPS: luồng HLS tải tiếp có thể mất header mp4.
@@ -57,7 +58,6 @@ TRANSIENT = re.compile(
     r"HTTP Error (403|429|5\d\d)|timed out|Connection (reset|aborted)|IncompleteRead"
 )
 RETRY_WAITS = (5, 20, 60)
-BOT_CHECK = re.compile(r"confirm you.re not a bot")
 BOT_HINT = (
     "\nYouTube yêu cầu xác minh không phải bot → dừng batch. Chạy lại với phiên đăng nhập:\n"
     "    python 02_download.py --cookies-from-browser firefox\n"

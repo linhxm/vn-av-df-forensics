@@ -18,6 +18,14 @@ from vn_av_data.common.runtime import atomic_bytes
 from vn_av_data.data import youtube
 from vn_av_data.ledger import now
 
+BOT_HINT = (
+    "\nYouTube yêu cầu xác minh không phải bot → dừng plan (nguồn chưa hỏi để lại lần sau).\n"
+    "Chạy lại với phiên đăng nhập:\n"
+    "    python 01_plan.py --cookies-from-browser firefox\n"
+    "(Firefox đã đăng nhập YouTube; Chrome/Edge trên Windows thường không đọc được cookie.)\n"
+    "Hoặc chờ vài giờ rồi chạy lại."
+)
+
 TEMPLATE = (
     "url,speakers,note\n"
     "# Mỗi dòng một URL video / playlist / kênh. speakers: 1 = một người, n = nhiều người.\n"
@@ -144,6 +152,8 @@ def plan_input(ledger, item, cfg, metadata_loader, flat_loader, require_vietname
             values["title"] = entry.get("title", "")
             errors += not gone
             ledger.insert("videos", values, replace=True)
+            if youtube.BOT_CHECK.search(message):
+                raise  # plan_sources dừng cả lượt
             continue
         reason = youtube.check(meta, require_vietnamese)
         values.update(
@@ -301,7 +311,7 @@ def plan_sources(
         network = youtube_options(cookies_from_browser, force_ipv4)
         metadata_loader = metadata_loader or (lambda url: youtube.youtube_metadata(url, network))
         flat_loader = flat_loader or (lambda url, limit: youtube.flat_entries(url, network, limit))
-    results = []
+    results, stopped = [], False
     for number, item in enumerate(todo, 1):
         print(f"[{number}/{len(todo)}] {item['url']} (speakers={item['speakers']})", flush=True)
         try:
@@ -315,6 +325,10 @@ def plan_sources(
                 "inputs", "input_id", item["input_id"], {"status": "error", "reason": str(exc)}
             )
             results.append({"input_id": item["input_id"], "status": "error", "reason": str(exc)})
+            if youtube.BOT_CHECK.search(str(exc)):
+                stopped = True
+                print(BOT_HINT, flush=True)
+                break
     touched = batch_videos(ledger, ws, cfg)
     batches = ledger.rows(
         "SELECT batch, COUNT(*) AS videos, ROUND(SUM(duration_s)/3600.0, 2) AS hours, "
@@ -323,13 +337,22 @@ def plan_sources(
     )
     summary = {
         "inputs_added": added,
-        "inputs_processed": len(todo),
+        "inputs_processed": len(results),
         "errors": [r for r in results if r["status"] == "error"],
         "empty": [r["input_id"] for r in results if r["status"] == "empty"],
         "batches_changed": touched,
         "batches": batches,
     }
-    ledger.log("plan", f"{len(todo)} inputs, batches changed {touched}")
+    if stopped:
+        summary["stopped"] = {
+            "reason": "YouTube bot check",
+            "inputs_not_asked": len(todo) - len(results),
+        }
+    ledger.log(
+        "plan",
+        f"{len(results)}/{len(todo)} inputs{', stopped at bot check' if stopped else ''}, "
+        f"batches changed {touched}",
+    )
     if summary["errors"]:
         summary["note"] = "Some inputs failed (network?); run plan again to retry them"
     return summary

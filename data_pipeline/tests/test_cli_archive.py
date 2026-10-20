@@ -13,6 +13,11 @@ def test_raw_archive_requires_finished_batch_then_tracks_location(ws, ledger):
     with pytest.raises(ValueError, match="not downloaded/cut/identified"):
         archive.pack_raw(ws, ledger, 1)
     ledger.update("videos", "video_id", "aaaaaaaaaaa", {"cut_status": "done", "id_status": "done"})
+    raw_file = ws.root / ledger.scalar("SELECT file FROM videos WHERE video_id='aaaaaaaaaaa'")
+    raw_file.rename(raw_file.with_suffix(".bak"))
+    with pytest.raises(ValueError, match="missing on disk"):
+        archive.pack_raw(ws, ledger, 1)
+    raw_file.with_suffix(".bak").rename(raw_file)
     packed = archive.pack_raw(ws, ledger, 1)
     assert (ws.archive / packed["zip"]).is_file()
     assert (ws.raw(1) / "SHA256SUMS.txt").read_text().split()[1] == "videos/aaaaaaaaaaa.mp4"
