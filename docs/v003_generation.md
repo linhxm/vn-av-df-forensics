@@ -1,4 +1,4 @@
-> Bản sao từ nhật ký nghiên cứu (`RESEARCH_WORKLOG/v003_generation.md`, ngoài repo) ngày 19/10/2026. Sửa ở nhật ký rồi chép lại vào đây.
+> Bản sao từ nhật ký nghiên cứu (`RESEARCH_WORKLOG/v003_generation.md`, ngoài repo) ngày 20/10/2026. Sửa ở nhật ký rồi chép lại vào đây.
 
 # v003 · Sinh fake: sáu ô, generator, giọng, số lượng
 

@@ -1,4 +1,4 @@
-"""Gom speaker đã duyệt đủ thành part (20 nam + 20 nữ × 20 clip), chia split trong part."""
+"""Gom speaker đã duyệt đủ thành part (20 nam + 20 nữ × 15-20 clip), chia split trong part."""
 
 import sys
 

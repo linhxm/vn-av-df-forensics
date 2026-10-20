@@ -1,5 +1,7 @@
 # Pipeline dữ liệu real v003
 
+Hướng dẫn chạy từng lệnh + từ điển thuật ngữ: [RUNBOOK.md](RUNBOOK.md).
+
 Chạy ở **máy local**: từ danh sách URL YouTube ra **part** real (20 nam + 20 nữ × 15-20 clip = 600-800 clip, chia sẵn train / validation / test theo người). Part là đầu vào của bước sinh fake (`generation/`, `notebooks/generate.ipynb`). Căn cứ các con số và luật: [docs/v003_data.md](../docs/v003_data.md) (số người / clip §3, luật chọn và cắt §4-§5, độ lệch tiếng-hình §6).
 
 Chỉ dùng video của chính mình hoặc đã được phép. Raw, clip và part là dữ liệu người thật: **không chia sẻ công khai**.
@@ -24,8 +26,8 @@ Cần Node.js trong PATH (yt-dlp dùng để tải YouTube).
 | 04 | `04_identify.py [N]` | Gán speaker bằng mặt (SFace) + giọng (WeSpeaker), khớp với người đã có (trong kênh, rồi toàn bộ), gợi ý gộp. `--calibrate` sau vài chục người để chỉnh ngưỡng |
 | 05 | `05_review.py` | Trang duyệt http://127.0.0.1:8001: gộp / tách người, gán giới (M / F), **chọn 15-20 clip** (đạt từ 15, còn clip tốt thì chọn đủ 20; S chọn, X loại, R đổi người, N xong, E loại người). Clip không chọn để nguyên là được. Người chưa đủ 20 clip: N để chờ, batch sau có thêm clip thì hiện lại. Tắt bằng Ctrl+C |
 | 06 | `06_parts.py` | Gom người đã duyệt có 15-20 clip thành part 20 nam + 20 nữ; split theo người 12 / 3 / 5 mỗi giới, cân tổng clip giữa các split; người chung video đi cùng nhau. Part tạo xong bị khoá |
-| 07 | `07_export.py N` | Xuất part ra `exports/vn-av-df-data/vn-av-df-data-partN/` + zip. **Dịch tiếng theo độ lệch đo ở bước 03** (về 0); manifest có `audio_lag_frames`, `av_sync_status` |
-| 08 | `08_archive.py raw N` / `part N` `[--uploaded]` | Đóng zip raw; đánh dấu zip raw / part đã lên Drive |
+| 07 | `07_export.py N` | Xuất part ra thư mục `exports/vn-av-df-data/vn-av-df-data-partN/` (chưa zip). **Dịch tiếng theo độ lệch đo ở bước 03** (về 0); manifest có `audio_lag_frames`, `av_sync_status` |
+| 08 | `08_archive.py raw N` / `part N` `[--uploaded]` | Không cờ: zip raw batch / part vào `data/archive/`. `--uploaded`: đánh dấu zip đã lên Drive |
 | 09 | `09_clean.py raw N` / `part N` / `pool` | Xoá bản ở máy, chỉ khi đã `--uploaded`. `pool` xoá clip không chọn của người đã duyệt xong / bị loại |
 | 10 | `10_status.py` | Toàn cảnh: batch, clip, người, part, dung lượng |
 
@@ -35,7 +37,7 @@ Cần Node.js trong PATH (yt-dlp dùng để tải YouTube).
 
 ```
 mỗi batch:  01 plan → 02 download → 03 cut → 04 identify → 05 review → 08 archive raw N (up Drive, --uploaded) → 09 clean raw N
-đủ người:   06 parts → 07 export N → up zip lên Kaggle (private) + Drive → 08 archive part N --uploaded → 09 clean part N
+đủ người:   06 parts → 07 export N (up thư mục lên Kaggle, private) → 08 archive part N (up Drive, --uploaded) → 09 clean part N
 ```
 
 ## Thư mục `data/` (một thư mục cho mọi batch và part)

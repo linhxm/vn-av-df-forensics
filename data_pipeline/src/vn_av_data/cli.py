@@ -157,10 +157,7 @@ def run(args, cfg, ws, ledger):
             return archive.mark_uploaded(ws, ledger, args.kind, args.number)
         if args.kind == "raw":
             return archive.pack_raw(ws, ledger, args.number)
-        record = ledger.row("SELECT zip, location FROM parts WHERE part=?", (args.number,))
-        if record is None or not record["zip"]:
-            raise ValueError("Part not exported yet; run 07_export.py first (it creates the zip)")
-        return {"part": args.number, **record, "next": "Up zip + ledger/ lên Drive, rồi --uploaded"}
+        return archive.pack_part(ws, ledger, args.number)
     if command == "status":
         from vn_av_data.data.parts import clip_range
         from vn_av_data.data.status import collect_status, print_status

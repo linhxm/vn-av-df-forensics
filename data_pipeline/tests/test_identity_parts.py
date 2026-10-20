@@ -260,7 +260,12 @@ def test_export_archive_and_review_api(ws, ledger, cfg, clip_file):
     rows, summary = validate_bundle(bundle)
     assert summary["clips"] == 12 and set(summary["splits"]) == {"train", "validation", "test"}
     assert rows[0]["gender"] in ("M", "F") and (bundle / "speakers.csv").is_file()
-    assert (ws.archive / report["zip"]).is_file()
+    assert "zip" not in report  # 07 chỉ xuất thư mục; zip ở 08 như raw
+    with pytest.raises(ValueError, match="not packed"):
+        archive.mark_uploaded(ws, ledger, "part", 1)
+    packed = archive.pack_part(ws, ledger, 1)
+    assert (ws.archive / packed["zip"]).is_file()
+    assert archive.pack_part(ws, ledger, 1)["zip_sha256"] == packed["zip_sha256"]  # không zip lại
     # Review API: speaker trong part bị khoá; speaker mới chọn tối đa max_clips_per_speaker clip.
     client = TestClient(create_app(ws, ledger, cfg))
     state = client.get("/api/state").json()
@@ -295,5 +300,5 @@ def test_export_archive_and_review_api(ws, ledger, cfg, clip_file):
     freed = archive.delete_local(ws, ledger, "part", 1)
     assert freed["freed_gb"] >= 0 and not bundle.exists()
     locations = {r["location"] for r in ledger.rows("SELECT location FROM clips WHERE part=1")}
-    assert locations == {"drive:" + report["zip"]}
+    assert locations == {"drive:" + packed["zip"]}
     assert client.get(f"/media/clip/{rows[0]['clip_id']}").status_code == 410

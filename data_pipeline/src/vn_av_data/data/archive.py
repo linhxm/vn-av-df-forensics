@@ -1,7 +1,8 @@
 """Bước 08 archive (đóng gói, đánh dấu đã lên Drive) và bước 09 clean (xoá bản ở máy).
 
-Trình tự cho mỗi batch raw (part tương tự, zip do 07_export tạo):
-1. `08_archive.py raw 3`             → ZIP + SHA256SUMS vào `data/archive/`, ledger: packed.
+Trình tự giống nhau cho batch raw và part (thay `raw 3` bằng `part 1`):
+1. `08_archive.py raw 3`             → ZIP vào `data/archive/`, ledger: packed.
+   Raw: cần tải + cắt + identify xong, kèm SHA256SUMS. Part: cần 07_export xong.
 2. bạn up file ZIP (và thư mục `ledger/`) lên Drive.
 3. `08_archive.py raw 3 --uploaded`  → ledger: drive:<tên zip>.
 4. `09_clean.py raw 3`               → xoá raw + zip ở máy (chỉ khi đã là drive:).
@@ -46,6 +47,30 @@ def pack_raw(ws, ledger, batch):
         "batch": batch,
         **packed,
         "next": f"Up {ws.archive / packed['zip']} + thư mục ledger/ lên Drive, rồi chạy với --uploaded",
+    }
+
+
+def pack_part(ws, ledger, part):
+    record = ledger.row("SELECT * FROM parts WHERE part=?", (part,))
+    if record is None:
+        raise ValueError(f"Part {part} does not exist; run 06_parts first")
+    if (record["location"] or "").startswith("drive:"):
+        raise ValueError(f"Part {part} is already on Drive ({record['location']})")
+    folder = ws.part_dir(part)
+    if not record["export_dir"] or not folder.is_dir():
+        raise ValueError(f"Part {part} not exported yet; run 07_export.py {part} first")
+    if not (record["zip"] and (ws.archive / record["zip"]).is_file()):
+        print(f"ZIP part {part} ...", flush=True)
+        packed = zip_folder(folder, ws.archive / f"{ws.part_name(part)}.zip")
+        ledger.update("parts", "part", part, {**packed, "location": "packed"})
+        ledger.log("archive", f"part {part} packed {packed['zip']}")
+        record = ledger.row("SELECT * FROM parts WHERE part=?", (part,))
+    return {
+        "part": part,
+        "zip": record["zip"],
+        "zip_sha256": record["zip_sha256"],
+        "zip_mb": record["zip_mb"],
+        "next": f"Up {ws.archive / record['zip']} + thư mục ledger/ lên Drive, rồi chạy với --uploaded",
     }
 
 

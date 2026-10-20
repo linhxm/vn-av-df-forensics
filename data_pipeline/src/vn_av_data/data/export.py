@@ -202,13 +202,25 @@ def export_part(ws, ledger, part):
         shutil.rmtree(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     os.rename(stage, output)
-    print(f"  ZIP {name}.zip ...", flush=True)
-    packed = zip_folder(output, ws.archive / f"{name}.zip")
+    # Zip cũ (nếu export lại) không còn khớp thư mục mới: bỏ, 08_archive part N zip lại.
+    if record["zip"]:
+        (ws.archive / record["zip"]).unlink(missing_ok=True)
     ledger.update(
         "parts",
         "part",
         part,
-        {"export_dir": output.as_posix(), **packed, "location": "packed"},
+        {
+            "export_dir": output.as_posix(),
+            "zip": None,
+            "zip_sha256": None,
+            "zip_mb": None,
+            "location": "local",
+        },
     )
-    ledger.log("export", f"part {part}: {len(rows)} clips, zip {packed['zip']}")
-    return {"part": part, "output": str(output), **report, **packed}
+    ledger.log("export", f"part {part}: {len(rows)} clips")
+    return {
+        "part": part,
+        "output": str(output),
+        **report,
+        "next": f"Up thư mục part lên Kaggle (private); 08_archive.py part {part} để zip lên Drive",
+    }

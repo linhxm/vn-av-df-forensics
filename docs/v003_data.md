@@ -1,4 +1,4 @@
-> Bản sao từ nhật ký nghiên cứu (`RESEARCH_WORKLOG/v003_data.md`, ngoài repo) ngày 19/10/2026. Sửa ở nhật ký rồi chép lại vào đây.
+> Bản sao từ nhật ký nghiên cứu (`RESEARCH_WORKLOG/v003_data.md`, ngoài repo) ngày 20/10/2026. Sửa ở nhật ký rồi chép lại vào đây.
 
 # v003 · Dữ liệu real: từ URL YouTube tới part
 
@@ -348,7 +348,7 @@ Mục tiêu: **real và fake có cùng phân bố độ lệch**. Bản thân đ
 
 ### 8.1. Part export (07 export) - thứ đồng đội nhận
 
-`exports/vn-av-df-data/vn-av-df-data-partN/` + zip `vn-av-df-data-partN.zip`, upload Kaggle dataset **private** và Drive:
+Thư mục `exports/vn-av-df-data/vn-av-df-data-partN/` (07 không zip), upload thư mục lên Kaggle dataset **private**; zip `vn-av-df-data-partN.zip` cho Drive do `08_archive part N` tạo:
 
 | File | Nội dung |
 |---|---|
@@ -362,7 +362,7 @@ Mục tiêu: **real và fake có cùng phân bố độ lệch**. Bản thân đ
 
 | Lệnh | Việc | Điều kiện |
 |---|---|---|
-| `08_archive raw N` | zip raw batch N (+ `SHA256SUMS.txt`) | |
+| `08_archive raw N` / `part N` | zip raw batch N (+ `SHA256SUMS.txt`) / zip thư mục part N. Raw và part cùng một kiểu (từ 20/10; trước đó 07 tự zip part) | raw: tải + cắt + identify xong; part: 07 export xong |
 | `08_archive raw N --uploaded` / `part N --uploaded` | ghi ledger: đã lên Drive | user tự upload zip + thư mục `ledger/` |
 | `09_clean raw N` | xoá video raw + zip (clip trong pool giữ lại để duyệt) | đã `--uploaded` |
 | `09_clean part N` | xoá export + zip + mọi clip pool của 40 người trong part | đã `--uploaded` |

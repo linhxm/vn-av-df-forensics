@@ -1,4 +1,4 @@
-"""Duyệt theo speaker ở http://127.0.0.1:8001 : chọn 20 clip + gán giới cho từng speaker."""
+"""Duyệt theo speaker ở http://127.0.0.1:8001 : chọn 15-20 clip + gán giới cho từng speaker."""
 
 import sys
 

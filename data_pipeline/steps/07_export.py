@@ -1,4 +1,7 @@
-"""Export một part ra exports/<dataset>/<dataset>-partN + ZIP trong data/archive: `07_export.py 1`."""
+"""Export một part ra exports/<dataset>/<dataset>-partN (thư mục, chưa zip): `07_export.py 1`.
+
+Zip để lên Drive: `08_archive.py part 1` (giống raw).
+"""
 
 import sys
 
