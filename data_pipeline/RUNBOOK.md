@@ -187,7 +187,7 @@ python steps/06_parts.py
 - Lấy người **done**, đã có giới, có 15-20 clip keep, theo thứ tự duyệt xong.
 - Đủ 20 nam + 20 nữ → tạo part mới, khoá lại. Còn đủ thì tạo tiếp part sau.
 - Chia split 12 / 3 / 5 mỗi giới, cân tổng clip giữa các split.
-- Người xuất hiện chung một video đi cùng nhau (cùng part, cùng split).
+- Người xuất hiện chung một video đi cùng nhau (cùng part, cùng split). Người còn pending trong nhóm không giữ nhóm lại (từ 22/10). Nhóm lớn có thể làm split lệch nhẹ khỏi 12 / 3 / 5 (nhóm phải vào nguyên một split).
 
 In ra:
 
@@ -195,7 +195,7 @@ In ra:
 |---|---|
 | `created` | Part vừa tạo: số người, số người và clip mỗi split |
 | `ready_left_over` | **Dư speaker**: người sẵn sàng nhưng giới đó đã đủ, chờ part sau |
-| `ready_but_waiting_for_group` | Người sẵn sàng nhưng còn người chung video chưa duyệt xong |
+| `pending_left_out_of_groups` | Số người chưa duyệt xong bị bỏ ra ngoài nhóm chung video (không còn giữ nhóm chờ, từ 22/10); nếu sau này họ duyệt xong, nhóm của họ rơi vào `blocked_groups` |
 | `blocked_groups` | Nhóm dính với người đã ở part cũ: cần xử lý tay (hiếm) |
 
 ### 07 — Export part

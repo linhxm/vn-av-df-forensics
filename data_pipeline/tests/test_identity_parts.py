@@ -302,3 +302,33 @@ def test_export_archive_and_review_api(ws, ledger, cfg, clip_file):
     locations = {r["location"] for r in ledger.rows("SELECT location FROM clips WHERE part=1")}
     assert locations == {"drive:" + packed["zip"]}
     assert client.get(f"/media/clip/{rows[0]['clip_id']}").status_code == 410
+
+
+def test_pending_member_does_not_hold_group_and_late_member_is_blocked(ws, ledger, cfg, clip_file):
+    """Người pending chung video không giữ nhóm; duyệt xong sau đó thì vào blocked, không tự xếp."""
+    cfg = small_parts(cfg)
+    add_input(ledger, "u", "n")
+    order = 0
+    for g in "MF":
+        for i in range(3):
+            order += 1
+            make_speaker(ledger, f"spk_{g}{i}", g, order)
+            keep_clips(ws, ledger, clip_file, f"spk_{g}{i}", f"v{g}{i}", 2)
+    # spk_M0, spk_F0 và spk_P (pending, như MC / khách chưa duyệt) chung video vP.
+    make_speaker(ledger, "spk_P", "", 40, review="pending")
+    for sid in ("spk_M0", "spk_F0", "spk_P"):
+        cid = add_clips(ws, ledger, clip_file, "vP", 1, [unit(7)])[0]
+        ledger.update("clips", "clip_id", cid, {"speaker_id": sid})
+    result = form_parts(ledger, cfg)
+    assert len(result["created"]) == 1 and result["pending_left_out_of_groups"] == 1
+    splits = {
+        r["speaker_id"]: r["split"]
+        for r in ledger.rows("SELECT DISTINCT speaker_id, split FROM clips WHERE part=1")
+    }
+    assert "spk_P" not in splits and splits["spk_M0"] == splits["spk_F0"]
+    # spk_P duyệt xong sau: nhóm đã có người trong part 1 → blocked, không vào part nào.
+    ledger.update("speakers", "speaker_id", "spk_P", {"review": "done", "gender": "M"})
+    keep_clips(ws, ledger, clip_file, "spk_P", "vP2", 2)
+    later = form_parts(ledger, cfg)
+    assert later["created"] == [] and any("spk_P" in g for g in later["blocked_groups"])
+    assert ledger.scalar("SELECT part FROM speakers WHERE speaker_id='spk_P'") is None

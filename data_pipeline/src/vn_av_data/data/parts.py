@@ -3,8 +3,10 @@
 
 Điều kiện một speaker vào part: duyệt xong, đã gán giới, số clip được chọn trong
 [min_clips_per_speaker, max_clips_per_speaker].
-Speaker xuất hiện chung một video (talkshow, phỏng vấn) thành một nhóm: cả nhóm vào cùng part và
-cùng split (không rò cảnh quay giữa train và test). Nhóm còn speaker chưa duyệt thì chờ.
+Speaker xuất hiện chung một video (talkshow, phỏng vấn) thành một nhóm: những người đã duyệt xong
+trong nhóm vào cùng part và cùng split (không rò cảnh quay giữa train và test). Người chưa duyệt
+xong (pending) không giữ nhóm lại; nếu sau này họ duyệt xong, nhóm của họ đã có người trong part cũ
+nên rơi vào `blocked_groups` (không tự xếp, xử lý tay) thay vì vào split khác.
 Lấy speaker theo thứ tự duyệt xong; part tạo ra là đóng băng, phần dư nằm lại chờ part sau.
 Split chia theo speaker trong part, cân giới: mặc định train 12+12, validation 3+3, test 5+5; trong
 giới hạn đó, tổng số clip của mỗi split được cân theo tỉ lệ số người (người ít / nhiều clip trải đều).
@@ -120,20 +122,22 @@ def form_parts(ledger, cfg):
             and lo <= keep.get(s["speaker_id"], 0) <= hi
         )
 
-    waiting, blocked, candidates = 0, [], []
+    left_out, blocked, candidates = 0, [], []
     for group in speaker_groups(ledger):
         members = [speakers[s] for s in group if s in speakers]
         members = [m for m in members if not m["merged_into"] and m["review"] != "excluded"]
-        if not members or all(m["part"] is not None for m in members):
+        fresh = [m for m in members if ready(m)]
+        if not fresh:
             continue
         if any(m["part"] is not None for m in members):
-            blocked.append(group)  # nối với speaker đã nằm trong part cũ: cần xử lý tay
+            # Người mới dính nhóm đã nằm trong part cũ: không tự xếp (tránh cảnh quay rơi vào
+            # split khác với nhóm), để người dùng xử lý tay.
+            blocked.append(group)
             continue
-        if not all(ready(m) for m in members):
-            waiting += sum(ready(m) for m in members)
-            continue
-        first = min(m["reviewed_at"] or "" for m in members)
-        candidates.append((first, [m["speaker_id"] for m in members]))
+        # Người chưa duyệt xong trong nhóm không giữ nhóm lại; họ đến sau sẽ vào blocked ở trên.
+        left_out += sum(m["part"] is None and not ready(m) for m in members)
+        first = min(m["reviewed_at"] or "" for m in fresh)
+        candidates.append((first, [m["speaker_id"] for m in fresh]))
     candidates.sort()
     genders = {s: speakers[s]["gender"] for _, g in candidates for s in g}
     created = []
@@ -182,6 +186,6 @@ def form_parts(ledger, cfg):
     return {
         "created": created,
         "ready_left_over": left,
-        "ready_but_waiting_for_group": waiting,
+        "pending_left_out_of_groups": left_out,
         "blocked_groups": blocked,
     }

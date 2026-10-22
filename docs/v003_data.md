@@ -1,18 +1,23 @@
-> Bản sao từ nhật ký nghiên cứu (`RESEARCH_WORKLOG/v003_data.md`, ngoài repo) ngày 20/10/2026. Sửa ở nhật ký rồi chép lại vào đây.
+> Bản sao từ nhật ký nghiên cứu (`RESEARCH_WORKLOG/v003_data.md`, ngoài repo) ngày 22/10/2026. Sửa ở nhật ký rồi chép lại vào đây.
 
 # v003 · Dữ liệu real: từ URL YouTube tới part
 
-Cập nhật 19/10/2026. File 1/3 của v003:
+Cập nhật 22/10/2026. File 1/3 của v003:
 - **v003_data.md** (file này): vì sao cần bộ dữ liệu, số người và số clip, pipeline dữ liệu real, độ lệch tiếng-hình, so với chuẩn hiện nay.
 - [v003_generation.md](v003_generation.md): sáu ô, generator và giọng, số fake mỗi clip, cách gán, chặn lối tắt, chạy sinh trên Kaggle.
 - [v003_model.md](v003_model.md): khảo sát phương pháp, baseline, kiến trúc đề xuất, huấn luyện, đánh giá, W&B, demo.
 
 Khảo sát bộ dữ liệu ban đầu (14/10, mức S / M / L): `RESEARCH_WORKLOG/dataset_survey.md` (ngoài repo). Code: `vn-av-df-forensics/data_pipeline/` (hướng dẫn chạy ở `data_pipeline/README.md`).
 
+**File này là nguồn đầy đủ cho báo cáo phần dữ liệu real**, tính tới lúc tạo ra một clip real hoàn chỉnh: mọi con số, luật, lý do, bằng chứng, thí nghiệm đã làm (S00-S04) và gợi ý thí nghiệm nằm ở đúng mục tương ứng. §14 chỉ cách điền vào template báo cáo capstone (AIP491). Mọi số ● dưới đây chụp từ ledger ngày 22/10/2026 trừ khi ghi khác; dữ liệu (ledger, pool, raw, part) được giữ nguyên làm bằng chứng.
+
 Quy ước mức tin:
-- **●** đo trên dữ liệu của mình (batch thử 17/10, batch 1 thật 18/10, part1 v001 / v002);
+- **●** đo trên dữ liệu của mình (batch thử 17/10, batch 1-6 thật 18-22/10, part1 v001 / v002);
 - **✔** đọc từ paper gốc hoặc trang chính thức;
+- **◐** chỉ đọc tóm tắt / metadata / một phần bài: đủ để trích thông tin xuất bản và ý chính, không trích số chi tiết;
 - **○** suy luận hoặc ước lượng (ghi cách tính).
+
+Riêng tư: báo cáo không nêu tên người, tên kênh, tiêu đề, mã video, mã speaker; các bảng trong file này dùng nhãn chung (video A, B…).
 
 "Chưa tìm thấy" nghĩa là chưa tìm thấy tính đến ngày ghi, không khẳng định là chưa ai làm.
 
@@ -31,6 +36,8 @@ Quy ước mức tin:
 | Độ lệch tiếng-hình | đo bằng SyncNet theo video trong bước cắt; dịch tiếng về 0 khi export; video không đo được tự loại | §6 |
 | Duyệt | người chọn 15-20 clip / người (còn clip tốt thì chọn đủ 20), gán giới, góc mặt lệch ≤ ~30 % | §7 |
 | Quy mô mục tiêu | ≥ 5 part = 200 người ○ | §3 |
+| **Hiện có (22/10)** | **3 part = 120 người (60 nam, 60 nữ) × 20 clip = 2.400 clip real**, từ 259 video / 115,6 giờ / 92 kênh (đã tải và cắt 251 video) | §9 |
+| Clip real hoàn chỉnh | định nghĩa 10 thuộc tính, bước nào bảo đảm | §8.1 |
 
 **Một câu:** nút thắt là **số người khác nhau**, không phải số clip; mọi luật chọn, cắt, duyệt đều nhằm có nhiều người, mỗi người đủ clip từ nhiều buổi quay, và real không mang đặc điểm cấu trúc nào (độ lệch tiếng-hình, nén) khác với fake sẽ sinh từ chính nó.
 
@@ -208,13 +215,13 @@ Chủ ý từ v001: **không chọn từng clip theo điểm sync**, vì như v�
 
 | Video | Dài | Clip / cửa sổ kiểm | Thời gian cắt |
 |---|---|---|---|
-| iPoiiEbFgkA | 81 phút | 362 / 370 | 32,5 phút |
-| G08SG5Nm0lk | 64 phút | 432 / 479 | 34,6 phút |
-| yhgv2MgmW24 | 56 phút | 321 / 333 | 28,9 phút |
-| wlOPw-JLG7c | 57 phút | 299 / 321 | 27,4 phút |
-| 9yi-VzvL50o | 58 phút | 343 / 360 | 29,7 phút |
-| mc8thxl2fqI | 33 phút | 146 / 151 | 14,3 phút |
-| K-fj9hdl5YE | 26 phút | 61 / 138 | 10,6 phút |
+| Video 1 | 81 phút | 362 / 370 | 32,5 phút |
+| Video 2 | 64 phút | 432 / 479 | 34,6 phút |
+| Video 3 | 56 phút | 321 / 333 | 28,9 phút |
+| Video 4 | 57 phút | 299 / 321 | 27,4 phút |
+| Video 5 | 58 phút | 343 / 360 | 29,7 phút |
+| Video 6 | 33 phút | 146 / 151 | 14,3 phút |
+| Video 7 | 26 phút | 61 / 138 | 10,6 phút |
 
 Trung bình ~280 clip / video (~5 s mỗi cửa sổ kiểm), trong khi 2 người chỉ cần ~2 × 20 clip được chọn. Luật mới:
 - `2` = phỏng vấn 1-1, podcast 2 người. Kiểm giống `n` (quét mặt 4 fps + chuyển cảnh, 5 điểm cùng một mặt), nhưng chỉ lấy **tối đa 150 clip / video**, rải đều bằng `spread_order` (`cut.pair.max_clips`, trần thử 2,5 × 150 + 5). Video ngắn không đủ 150 thì ra như cắt hết.
@@ -223,6 +230,18 @@ Trung bình ~280 clip / video (~5 s mỗi cửa sổ kiểm), trong khi 2 ngư�
 - Không đổi dữ liệu cuối: mỗi người vẫn 15-20 clip được chọn, train vẫn cân theo người; chỉ đổi số ứng viên khi duyệt.
 - Áp từ batch 3: batch 1-2 giữ nguyên (nguồn nhiều người của batch 2 cắt hết). User đánh dấu 28 link batch 3-4 là `2` (giữ 4 link `n`); ledger đổi nhãn đúng 28 input đó, chưa cắt, có ghi sự kiện. Ước thời gian cắt batch 3-4 giảm từ ~16 giờ còn ~8-9 giờ ○.
 - Mỗi video ghi luật đã dùng vào `cut_info` (`mode` = single / pair / multi, `quota`).
+
+**Kiểm chứng giới hạn 150 (S02, 22/10)** ●. Mô phỏng trên 18 video nguồn nhiều người đã cắt hết (6.112 clip; clip / video p10 / p50 / p90 = 61 / 361 / 475): lấy các clip đã giữ làm cửa sổ, chọn N clip bằng đúng thuật toán rải đều của pipeline, rồi đếm ứng viên còn lại của từng cặp (người, video) theo speaker đã gán ở bước identify. Gần đúng ở chỗ luật thật rải trên cửa sổ trước khi kiểm (tỉ lệ giữ của nguồn nhiều người ~94 %), ở đây rải trên clip đã giữ.
+
+| Giới hạn | Clip còn lại | Cặp (người duyệt xong, video) còn ≥ 20 ứng viên | Ứng viên / cặp p10 / p50 / p90 |
+|---|---|---|---|
+| không (cắt hết) | 6.112 (100 %) | - | - |
+| 100 | 1.684 (27,6 %) | 32 / 36 | 18 / 37 / 80 |
+| **150** | **2.480 (40,6 %)** | **34 / 36** | 32 / 56 / 114 |
+| 200 | 3.230 (52,8 %) | 35 / 36 | 46 / 69 / 154 |
+
+- 150 giữ ~41 % số clip mà 34/36 cặp vẫn đủ 20 ứng viên; hai cặp hụt vẫn có thể đủ nhờ video khác của cùng người.
+- Kết quả thật của luật `2` (29 video): clip / video p10 / p50 / p90 = 85 / 150 / 150, 25 video chạm 150, ~22 phút cắt / video (trung vị); 52 cặp (người duyệt xong, video) có ứng viên 27 / 70 / 121.
 
 ### 5.4. Điểm cắt ở chỗ ngắt (từ 19/10)
 
@@ -245,6 +264,25 @@ Trung bình ~280 clip / video (~5 s mỗi cửa sổ kiểm), trong khi 2 ngư�
 - Giới hạn: chỗ ngắt chưa chắc là hết câu (có thể giữa hai cụm); VAD có thể tụt ở phụ âm vô thanh. Cắt **tròn câu** cần ASR có mốc từng từ + dấu câu (PhoWhisper / Whisper / WhisperX), nặng hơn nhiều trên CPU → không làm.
 - Tham khảo: code nhóm Capstone dùng Silero mặc định (ngắt ≥ 100 ms, đệm 30 ms), giữ nguyên đoạn 2-12 s làm một clip, đoạn dài hơn cắt cửa sổ 5 s bước 4 s (chồng 1 s).
 - Áp dụng → đổi luật cắt → user xoá toàn bộ dữ liệu batch 1 (đã duyệt 38 người) và tải, cắt lại từ đầu (19/10).
+
+**Đo lại trên toàn bộ dữ liệu (S01, 22/10)** ●. Với mỗi video đã cắt (251), lấy lại đúng đoạn nói và chỗ ngắt VAD đã lưu trong `cut_info`, chạy hàm chia cửa sổ hai lần: không truyền chỗ ngắt (= luật cũ, cắt ở mức dài nhất 7 s) và có chỗ ngắt (= luật mới); bỏ qua ranh giới chuyển cảnh cho cả hai (như nhau). Hai thước đo mép:
+- **A. Sạch theo VAD** (mọi video): mép trùng đầu / cuối đoạn nói (±0,04 s; đầu / cuối đoạn đã đệm 0,15 s lặng) hoặc nằm trong một chỗ ngắt. Gần với điều luật mới tối ưu nên chỉ **mô tả**, không là bằng chứng độc lập.
+- **B. Lặng theo năng lượng** (độc lập với VAD): năng lượng RMS của khúc 32 ms chứa mép và hai khúc kề (±1 khúc, cùng lưới 16 kHz) đều thấp hơn **trung vị năng lượng các khúc có tiếng của chính video đó** ít nhất 20 dB (hoặc 15 dB). Chạy trên 30 video raw còn ở máy chọn ngẫu nhiên (seed 0), 10 video mỗi loại nguồn `1` / `2` / `n`.
+
+| | Chặt cứng 7 s (cũ) | Cắt ở chỗ ngắt (mới) |
+|---|---|---|
+| Cửa sổ | 55.957 | 64.145 |
+| Giờ tiếng nói được phủ | 98,1 | 97,1 |
+| Dài đúng 7 s | 65,7 % | 4,8 % |
+| Độ dài p10 / p50 / p90 (s) | 4,04 / 7,0 / 7,0 | 4,2 / 5,4 / 6,8 |
+| A. Cả 2 mép sạch theo VAD (mô tả) | 15,0 % | 87,1 % |
+| A. Không mép nào sạch | 43,5 % | 0,5 % |
+| **B. Cả 2 mép lặng, −20 dB (30 video)** | **10,2 %** | **41,4 %** |
+| B. Cả 2 mép lặng, −15 dB (30 video) | 12,2 % | 50,3 % |
+
+- Bằng chứng độc lập (B): tỉ lệ clip có cả 2 mép lặng tăng ~4 lần, tổng tiếng nói phủ gần như không đổi.
+- Số thử 19/10 (8 % → 61 %) dùng định nghĩa chặt hơn (mọi khúc quanh mép xác suất VAD < 0,5) trên 6 video: không so trực tiếp được với bảng trên.
+- **Gợi ý thí nghiệm** (chưa làm): (1) **S05 - mép rơi giữa từ**: ASR có mốc thời gian từng từ (PhoWhisper / WhisperX) trên ~20 video raw, đo % mép nằm bên trong một từ cho hai luật; là bằng chứng độc lập thứ hai, nên chạy trên GPU (Kaggle). (2) Mở rộng B lên ~90 video (≈ 30 phút CPU). Cả hai cần video raw, nên làm **trước khi** `09_clean raw` (raw đã zip lên Drive thì vẫn lấy lại được).
 
 ### 5.5. Tốc độ, chạy tuần tự, khoá luật cắt
 
@@ -289,11 +327,11 @@ Mục tiêu: **real và fake có cùng phân bố độ lệch**. Bản thân đ
 
 | Video | Loại | Độ lệch cả video | Clip đồng ý ±1 frame | Độ nhọn đỉnh |
 |---|---|---|---|---|
-| JHnOdxWspmQ (podcast) | nhiều người | tiếng trễ 2 frame | 40/40 | 5,9 |
-| 1hbZoEjumKE | 1 người | trễ 1 | 12/12 | 5,9 |
-| IqeoeByYM4c | 1 người | trễ 1 | 14/14 | 5,2 |
-| 50QybEYOOD4 | 1 người (lời dẫn đè cảnh) | - | 8/22 | 1,6 |
-| ptzxTlDaw-A | 1 người (vlog, ghép cảnh) | - | 2/7 | 1,9 |
+| Video A (podcast) | nhiều người | tiếng trễ 2 frame | 40/40 | 5,9 |
+| Video B | 1 người | trễ 1 | 12/12 | 5,9 |
+| Video C | 1 người | trễ 1 | 14/14 | 5,2 |
+| Video D | 1 người (lời dẫn đè cảnh) | - | 8/22 | 1,6 |
+| Video E | 1 người (vlog, ghép cảnh) | - | 2/7 | 1,9 |
 
 - **Batch 1 thật, 9 video đầu** ●: 7 video `ok`, tiếng trễ 1-3 frame; 2/9 `unreliable` (98 clip tự loại).
 - Kết luận: video quay mặt người nói lệch **ổn định** 1-2 frame (tiếng trễ 40-80 ms, dưới ngưỡng mắt thường). Video lời dẫn đè hình cho độ lệch lung tung → bộ đo đồng thời **phát hiện mặt trên hình không phải người nói** ở mức video (lỗ hổng v001 "chưa kiểm mặt trong clip đúng người nói").
@@ -337,6 +375,31 @@ Mục tiêu: **real và fake có cùng phân bố độ lệch**. Bản thân đ
 6. **Không nghiên cứu lệch thời gian thuần** (cùng tiếng, dịch đi, "sham_shift") trong v003 (user chốt 17/10). ② sham vẫn là thay tiếng bằng đoạn nói khác. (Phương án đã nêu nếu muốn làm: |lệch| ≤ 2 frame là vùng khớp; 3-4 frame bỏ; ≥ 5 frame (≥ 200 ms, vượt ngưỡng chấp nhận BT.1359) gán nhãn lệch.)
 7. **Demo**: đo độ lệch toàn video, dịch về 0 rồi mới chấm "AI?"; lệch vượt vùng chấp nhận thì báo riêng "lệch thời gian ≈ X ms".
 
+### 6.5. Số đo trên toàn bộ dữ liệu (S03, 22/10)
+
+Đọc `cut_info.sync` của mọi video đã cắt (đo lúc cắt, tối đa 20 clip / video) ●:
+
+| Độ lệch (frame 25 fps, dương = tiếng trễ) | −4 | 0 | 1 | 2 | 3 | 4 | 7 |
+|---|---|---|---|---|---|---|---|
+| Số video (`ok` + `few`, 246) | 1 | 5 | 50 | 86 | 73 | 30 | 1 |
+
+- Trạng thái: `ok` 245 · `few` 1 · `unreliable` 4 trên 250 video đo được (1 video không còn clip nào để đo).
+- Tiếng trễ ở **97,6 %** video; ms p10 / p50 / p90 = 40 / **80** / 160; **13,0 %** video lệch > 125 ms (ngưỡng bắt đầu nhận ra khi tiếng trễ theo BT.1359, qua nguồn thứ cấp ◐). Hai video ngoại lệ (−4 và +7 frame) vẫn được sửa vì đo tin cậy.
+- `conf` p10 / p50 / p90 = 4,76 / 6,16 / 7,00 (ngưỡng 3,0); `agree` = 0,90 / 1,00 / 1,00 (ngưỡng 0,8).
+- **Clip so với cả video** (4.715 lần đo trên từng clip): trùng đúng độ lệch video 76,2 %, chênh 1 frame 21,5 %, 2-3 frame 1,1 %, > 3 frame 1,2 % → ủng hộ sửa bằng một hằng số cho cả video.
+- **Độ nhạy ngưỡng** (số video `unreliable`):
+
+| `min_conf` \ `min_agree` | 0,7 | 0,8 | 0,9 |
+|---|---|---|---|
+| 2,5 | 1 | 4 | 17 |
+| 3,0 (hiện hành) | 1 | **4** | 17 |
+| 3,5 | 1 | 4 | 17 |
+| 4,0 | 4 | 6 | 18 |
+
+  `conf` nằm trong vùng ổn định (2,5-3,5 cho cùng kết quả); `agree` là thông số nhạy (0,9 → 17 video). Bốn video `unreliable` hiện hành: (conf, agree, số clip đo) = (4,56; 0,75; 20), (3,84; 0,73; 11), (4,12; 0,75; 4), (2,83; 0,50; 20) - ba video đầu chỉ thiếu ít so với 0,8.
+- 4 clip `unreliable` được chọn lại nằm trong part 1 (cùng một người, video có 15/20 clip đo trễ 2-3 frame, 5 clip ±15 frame ở mép khoảng tìm) → export không dịch tiếng, nhiều khả năng còn trễ ~3 frame; user quyết định giữ (20/10).
+- **Gợi ý thí nghiệm** (chưa làm): **S06 - kiểm chéo "điểm 0"**: đo lại độ lệch bằng một mô hình đồng bộ khác (ví dụ AV-HuBERT) trên cùng clip, so với SyncNet; nếu lệch hệ thống ~1 frame thì ghi thành giới hạn.
+
 ## 7. Gán người, duyệt, tạo part
 
 ### 7.1. Gán speaker (04 identify, máy làm, trước khi duyệt)
@@ -357,18 +420,60 @@ Mục tiêu: **real và fake có cùng phân bố độ lệch**. Bản thân đ
 - **Góc mặt**: chỉ lấy clip lệch ≤ ~30 %. Mặt nghiêng tới ~45° vẫn dùng được về kỹ thuật (đúng thực tế talkshow; generator, AV-HuBERT, SyncNet làm được); 45-60° rủi ro (VideoReTalking, MuseTalk dễ lỗi); > 60° dò mặt hụt, generator lỗi.
 - Rủi ro đã ghi ○: mặt càng nghiêng generator càng hay lỗi và job lỗi bị bỏ, nên real có thể nhiều mặt nghiêng hơn fake → lối tắt "nghiêng → real". Kiểm sau khi sinh: xem các job bị bỏ trong `records/`.
 - Nguồn nhiều người (podcast): cả 15-20 clip có thể cùng một tập, nên để ý chọn từ nhiều tập.
+- "Done" chưa phải khoá: người đã duyệt xong vẫn sửa được (chọn thêm tới 20) cho tới khi `06_parts` đưa vào part. Muốn đưa về chờ: gọi API trang duyệt `POST /api/speaker/<id>` với `{"review": "pending"}`.
+- Nút "Khác người" chỉ bỏ **gợi ý gộp**; người đó vẫn là speaker riêng, vẫn có clip, vẫn pending nếu chưa duyệt.
+
+**Cờ cảnh báo so với quyết định duyệt (S04, 22/10)** ●, trên 13.809 clip của 120 người đã duyệt xong (keep 2.400 · reject 708 · chưa xem 10.701):
+
+| Cờ | Clip | Được chọn | Tỉ lệ chọn |
+|---|---|---|---|
+| tất cả | 13.809 | 2.400 | 17,4 % |
+| không cờ | 10.424 | 1.812 | 17,4 % |
+| `jump_suspect` | 3.046 | 567 | 18,6 % |
+| `face_gap` | 341 | 24 | 7,0 % |
+| `face_outlier` | 44 | 0 | 0 % |
+| `voice_outlier` | 41 | 2 | 4,9 % |
+| `sync_unreliable` | 33 | 4 | 12,1 % |
+
+- Tỉ lệ thô: người duyệt dừng khi đủ 20 nên clip không chọn gồm cả clip chưa xem.
+- Cờ về mặt / giọng khớp với việc người duyệt bỏ clip; `jump_suspect` có tỉ lệ chọn ngang clip không cờ và xuất hiện ở ~24 % clip được chọn (571 / 2.429) → ở mức hiện tại gần như không mang thông tin cho người duyệt (bộ dò quá nhạy, hoặc người duyệt không thấy jump cut nhỏ).
+- Người duyệt không gộp / chuyển clip lần nào (0 merge, 0 move) dù có 92 gợi ý gộp; 3.574 thao tác duyệt ghi trong ledger tới 21/10 (chọn 2.515 · loại 722 · bỏ chọn 64 · cập nhật người 273).
+- **Gợi ý thí nghiệm** (chưa làm): **S07** - gắn nhãn tay ~200 clip (100 có, 100 không `jump_suspect`) để đo precision / recall bộ dò jump cut (~2 giờ xem). **S08** - người thứ hai duyệt lại ~10 người, tính Cohen's kappa cho quyết định chọn clip và giới tính (đo độ tin cậy khâu duyệt một người).
 
 ### 7.3. Tạo part (06 parts)
 
 - Part tạo khi có **đủ 20 nam + 20 nữ** đã duyệt xong, có 15-20 clip được chọn, theo thứ tự duyệt xong; đủ cho mấy part thì tạo bấy nhiêu. Chưa đủ thì không tạo gì, không báo lỗi; người đã duyệt chờ part sau.
-- Split **theo người**, cân giới: 12+12 / 3+3 / 5+5; trong giới hạn đó cân tổng clip giữa các split. Người xuất hiện chung một video đi cùng nhau vào một part và một split (nhóm liên thông); nhóm còn người chưa duyệt thì cả nhóm chờ.
+- Split **theo người**, cân giới: 12+12 / 3+3 / 5+5; trong giới hạn đó cân tổng clip giữa các split. Người xuất hiện chung một video đi cùng nhau vào một part và một split (nhóm liên thông). Từ 22/10, người chưa duyệt xong (pending) không giữ nhóm lại: người đã duyệt xong trong nhóm vẫn vào part; nếu người pending sau này duyệt xong, nhóm của họ đã có người trong part cũ nên vào `blocked_groups` (không tự xếp, xử lý tay), tránh cảnh quay rơi vào split khác. Nhóm lớn (quanh một MC xuất hiện ở nhiều tập) phải vào nguyên một split nên có thể làm split lệch nhẹ khỏi 12 / 3 / 5 (part 3 dự kiến: validation 2 nam, test 6 nam).
 - Part tạo xong bị **khoá** (`split-lock.json`).
+- Nhóm liên thông có thể rất lớn: một MC xuất hiện ở 13 video nối mọi khách mời của chương trình thành một nhóm (part 3: 3 nhóm 15 người = 10 nam + 5 nữ, 10 người = 6 nam + 4 nữ, 5 người = 1 nam + 4 nữ). Nhóm phải vào nguyên một split, nên part 3 lệch nhẹ: validation 2 nam + 3 nữ (100 clip), test 6 nam + 5 nữ (220 clip). Nếu nhóm vượt 12 người một giới thì không vừa split nào → khi đó cân nhắc loại MC để tách nhóm.
+- Trang duyệt đếm "sẵn cho part" theo người, **không** tính luật nhóm, nên có thể báo 20/20 trong khi `06_parts` chưa tạo được part.
 - Nên nhập URL **dư 25-30 %** (~25-26 người mỗi giới) và cân nam / nữ ngay từ danh sách URL, vì người rơi rụng (không đủ 15 clip, sync hỏng, mặt nghiêng, trùng). Xem thiếu giới nào bằng `10_status`.
 - Muốn thử bước sinh trước khi đủ part: làm part nhỏ trên workspace riêng, không gộp vào bộ chính.
 
 ## 8. Đầu ra part và lưu trữ
 
-### 8.1. Part export (07 export) - thứ đồng đội nhận
+### 8.1. Một clip real hoàn chỉnh
+
+Đầu ra cuối cùng của pipeline là một clip real **hoàn chỉnh**: đã qua mọi bước dưới đây, dùng ngay được, không cần xử lý thêm.
+
+| Thuộc tính | Giá trị / điều kiện | Bước bảo đảm |
+|---|---|---|
+| Nguồn | video YouTube ngang, ≥ 720p, ≥ 25 fps, tiếng Việt gốc, không trùng | 01 plan, 02 download |
+| Độ dài | 4-7 s, nằm trong một đoạn nói, mép ở chỗ ngắt khi có | 03 cut (VAD) |
+| Hình | đúng một mặt người đang nói ở mọi frame (hụt ≤ 3, ≤ 2 liền nhau), mặt ≥ 48 px ở khung 640, không chuyển cảnh, không jump cut chắc chắn; nguồn `2` / `n`: 5 điểm cùng một người | 03 cut |
+| Định dạng | MP4, 25 fps CFR, cạnh ngắn ≤ 720, H.264 CRF 18, AAC 48 kHz | 03 cut, 07 export |
+| Đồng bộ | tiếng đã dịch về 0 theo độ lệch SyncNet của video (trừ clip `unreliable` được chọn lại, ghi rõ `av_sync_status`) | 03 cut (đo), 07 export (sửa) |
+| Người | thuộc một speaker; người duyệt xác nhận đúng người, gán giới | 04 identify, 05 review |
+| Chất lượng | được chọn (keep): góc mặt lệch ≤ ~30 %, không che miệng, không chữ đè miệng, không nhạc nền to | 05 review |
+| Split | đúng một split theo người, khoá cùng part | 06 parts |
+| Mô tả | một dòng `manifest.jsonl`: `clip_id`, người, giới, split, độ dài, nguồn (URL, kênh, đoạn giây trong video gốc), `audio_lag_frames`, `av_sync_status`, cờ, hash | 07 export |
+| Truy vết | mọi thông tin trên + lý do loại các clip khác nằm trong ledger | ledger |
+
+- Export **chép** clip từ pool sang thư mục part (độ lệch 0: chép nguyên file; khác 0: tạo file mới, chép luồng hình, encode lại tiếng); pool giữ bản gốc chưa sửa, đổi cách đo về sau chỉ cần export lại.
+- Clip đã xoá ở máy vẫn còn đủ thông tin trong ledger (`clips`: `clip_id` tính cố định từ video + mốc giây, `start_s`, `end_s`, hash, người, quyết định, cờ, nơi lưu; `videos`: URL, hash raw, zip raw trên Drive, `cut_info`) → tái hiện được bằng cách cắt lại từ raw cùng mốc và cùng thông số (trùng nội dung và mốc, chưa chắc trùng hash từng byte nếu ffmpeg khác phiên bản). Pipeline chưa có lệnh cắt lại theo ledger.
+
+
+### 8.2. Part export (07 export) - thứ đồng đội nhận
 
 Thư mục `exports/vn-av-df-data/vn-av-df-data-partN/` (07 không zip), upload thư mục lên Kaggle dataset **private**; zip `vn-av-df-data-partN.zip` cho Drive do `08_archive part N` tạo:
 
@@ -380,7 +485,7 @@ Thư mục `exports/vn-av-df-data/vn-av-df-data-partN/` (07 không zip), upload 
 | `split-lock.json` | khoá split theo người |
 | `dataset_info.json`, `quality_report.json` | thống kê part, hash manifest, kết quả kiểm định dạng |
 
-### 8.2. Lưu trữ và dọn máy
+### 8.3. Lưu trữ và dọn máy
 
 | Lệnh | Việc | Điều kiện |
 |---|---|---|
@@ -394,14 +499,88 @@ Ba lệnh xoá tách riêng và đều bắt buộc đã đánh dấu upload (us
 
 ## 9. Số đo thực tế
 
+### 9.1. Lịch sử các lần chạy
+
 | Lần chạy | Kết quả ● |
 |---|---|
 | Batch thử (17/10; 4 nguồn, 5 video, 2,6 giờ) | tải 5/5 (403 tự thử lại; bot → cookie); cắt 296 clip; sync 3 `ok` (trễ 1-2 frame), 2 `unreliable`; identify gộp đúng 1 người qua 2 nguồn, tách podcast 2 người; duyệt 3 speaker đủ clip; dịch tiếng export đúng trên 8 clip. Đã xoá toàn bộ để chạy bản thật |
 | Batch 1 thật (18/10) | 83 URL video lẻ; 4 URL bị loại vì 24 fps; batch 1 = 79 video, 17,4 giờ, ước 5,22 GB, thực tế **4,9 GB** (≈ 0,28 GB / giờ); 9 video đầu: 345 clip, 7 `ok` / 2 `unreliable`. Chỉ tiêu hạ còn 30-40, user xoá hết và tải lại từ đầu |
 | Batch 1, lần chạy với chỉ tiêu 30-40 (18-19/10) | 84 video, 2.392 clip; cửa sổ kiểm 5.165 → giữ 46 % (loại vì mặt 1.810, chuyển cảnh 572, jump cut 391); sync 78 `ok` / 6 `unreliable`; độ lệch: 0 frame 3 video · 1: 20 · **2: 36** · 3: 13 · **4: 6** (160 ms, quá ngưỡng nhận ra 125 ms → phải sửa); identify 43 speaker mới / 41 khớp / 19 gợi ý gộp; duyệt 38 xong / 4 loại. Mép clip: chỉ 8 % cả 2 mép ở chỗ ngắt (§5.4) → áp luật cắt mới, xoá hết, chạy lại |
-
 | Batch 1 với luật cắt mới → part 1 (19-20/10) | 80 video, 18,5 giờ; duyệt 41 người xong (20 nam, 21 nữ) / 1 loại; **part 1 = 40 người, 800 clip** (train 480 / validation 120 / test 200), dư 1 nữ chờ part 2; 75 video nguồn, 796 clip `ok` + 4 clip `unreliable` (user chọn lại, export không dịch tiếng; `agree` theo clip: trung vị 1,0, p10 0,95). Zip raw 5,4 GB, zip part 0,84 GB, cả hai lên Drive rồi xoá ở máy. Raw batch 1 lỡ xoá trước khi up, tải lại (hash raw trên Drive là của lần tải thứ hai) |
 | Batch 2 (20/10) | 32 video (18 nguồn 1 người, 14 nguồn nhiều người), 5.040 clip ứng viên; identify 31 người mới / 15 khớp / 17 gợi ý gộp. Nguồn nhiều người ~280 clip / video 60 phút (§5.3) |
+| Batch 3-6 (20-22/10) | batch 3: 36 video · batch 4: 17 · batch 5: 22 · batch 6: 64; identify 32 / 21 / 11 / 19 người mới; luật `2` áp từ batch 3 |
+| Part 2, part 3 (22/10) | mỗi part 40 người, 800 clip; part 3 lệch split nhẹ do nhóm lớn (§7.3) |
+
+### 9.2. Toàn bộ dữ liệu (S00, ledger 22/10/2026)
+
+**Phễu dữ liệu**
+
+| Giai đoạn | Số |
+|---|---|
+| Input (`urls.csv`, đều là link video lẻ) | 288: `1` 239 · `2` 29 · `n` 20; input không còn video nào đạt: 29 |
+| Video bị loại khi plan | 29: 24 fps 25 · track tiếng ngôn ngữ khác 2 · < 720p 2; trùng 0 |
+| Video được chọn | **259 video, 115,6 giờ, 92 kênh**; `1` 212 video / 69,1 giờ · `2` 29 / 28,4 · `n` 18 / 18,1 |
+| Độ dài video p10 / p50 / p90 | 6,3 / 16,4 / 67,4 phút |
+| Năm đăng | 2026: 187 (72 %) · 2025: 40 · 2024: 13 · 2023: 10 · 2022: 3 · 2021: 4 · 2020: 2 |
+| Định dạng gốc (720p) | AV1 ≥ 84 % · H.264 ≥ 14 %; fps gốc 30 / 29,97 ~66 % · 25 ~20 % · 50 / 60 ~13 % (đều chuẩn hoá về 25 fps CFR, nguồn > 25 fps bị bỏ bớt frame) |
+| Đã tải và cắt (batch 1-6) | 251 video, 28,3 GB raw (≈ 0,25 GB / giờ); batch 7 (8 video, 2,1 giờ) chưa tải |
+| Clip ứng viên | **16.371**, độ dài p10 / p50 / p90 = 4,16 / 5,36 / 6,72 s |
+| Người tạo tự động | 156; khớp người đã có 144 lượt; gợi ý gộp 92 |
+| Người (22/10) | duyệt xong 121 (120 trong part + 1 nữ dư) · loại 10 · chờ 25 |
+| Clip được chọn | 2.400 trong part (đúng 20 / người ở cả 120 người) |
+
+**Batch raw** (≤ 20 giờ và ≤ 16 GB)
+
+| Batch | Video | Giờ | GB | Lưu trữ (22/10) |
+|---|---|---|---|---|
+| 1 | 80 | 18,5 | 5,4 | zip trên Drive, đã xoá ở máy |
+| 2 | 32 | 19,0 | 4,7 | còn ở máy |
+| 3 | 36 | 19,6 | 4,5 | còn ở máy |
+| 4 | 17 | 17,7 | 3,8 | còn ở máy |
+| 5 | 22 | 19,7 | 4,3 | còn ở máy |
+| 6 | 64 | 18,9 | 5,6 | còn ở máy |
+| 7 | 8 | 2,1 | - | chưa tải |
+
+**Cắt theo luật số lượng**
+
+| Luật | Video | Phút video | Cửa sổ kiểm | Clip giữ | Tỉ lệ giữ | Clip / video | Giây cắt / phút video (trung vị) |
+|---|---|---|---|---|---|---|---|
+| `1` (30-40 / input) | 204 | 4.020 | 13.586 | 6.227 | 46 % | 31 | 13,3 |
+| `2` (≤ 150 / video) | 29 | 1.705 | 4.410 | 4.032 | 91 % | 139 | 22,6 |
+| `n` (cắt hết) | 18 | 1.085 | 6.528 | 6.112 | 94 % | 340 | 29,6 |
+| Tổng | 251 | 6.810 | | 16.371 | | | |
+
+- Nguồn `2` / `n` lọc trước bằng quét mặt 4 fps (9.777 cửa sổ loại ở bước này, không tính vào "cửa sổ kiểm"), nên tỉ lệ giữ cao; nguồn `1` không quét trước nên mọi cửa sổ có tiếng đều kiểm kỹ, kể cả cảnh minh hoạ.
+- Lý do loại ở bước kiểm từng frame: mặt không đạt ở một frame 5.524 · chuyển cảnh 1.387 · jump cut 1.183 · đổi người giữa clip 59.
+- Cờ trên clip ứng viên: `jump_suspect` 3.810 · `face_gap` 399 · `sync_unreliable` 198 · `face_outlier` 64 · `voice_outlier` 49 · `sync_few` 2.
+- Thời gian cắt ≈ 30,6 giờ CPU (single 10,9 · pair 10,3 · multi 9,4) trên máy CPU 16 luồng, RAM 7,8 GB.
+- Cách gán clip ở identify: người mới 10.470 · khớp trong kênh 5.504 · khớp toàn cục 396 · chưa gán 1.
+
+**Người đã duyệt xong (120 người trong part)**
+
+| Số video có clip được chọn | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| Người | **72 (60 %)** | 37 | 9 | 1 | 1 |
+
+- 117 / 120 người chỉ từ 1 kênh. Clip được chọn trên một cặp (người, video): trung vị 11, tối đa 20. Ứng viên / người p10 / p50 / p90 = 32 / 77 / 236.
+
+| Loại nguồn | Nam | Nữ | Người | Clip được chọn |
+|---|---|---|---|---|
+| `1` | 33 | 36 | 69 | 1.380 |
+| `2` | 20 | 9 | 29 | 580 |
+| `n` | 7 | 15 | 22 | 440 |
+
+**Part**
+
+| | Part 1 | Part 2 | Part 3 |
+|---|---|---|---|
+| Người | 40 (20 + 20) | 40 (20 + 20) | 40 (20 + 20) |
+| Clip | 800 | 800 | 800 |
+| Người theo split (nam + nữ) | 12+12 / 3+3 / 5+5 | 12+12 / 3+3 / 5+5 | 12+12 / **2+3** / **6+5** |
+| Clip train / validation / test | 480 / 120 / 200 | 480 / 120 / 200 | 480 / 100 / 220 |
+| Video / kênh nguồn | 75 / 39 | 45 / 18 | 44 / 10 |
+| Clip `unreliable` (không dịch tiếng) | 4 | 0 | 0 |
+| Zip (lưu Drive) | 0,84 GB | 0,68 GB | 0,65 GB |
 
 `06_parts` → `09_clean` chạy thật lần đầu với part 1 (20/10).
 
@@ -411,7 +590,7 @@ Tiêu chí cộng đồng dùng để đánh giá bộ dữ liệu: quy mô và 
 
 | Tiêu chí | AV-Deepfake1M++ ✔ | v003 | |
 |---|---|---|---|
-| Quy mô | 2,05 triệu video, 4.656 giờ, 7.109 người | ~5.850-7.800 file / part; 5 part = 200 người, ~29-39 nghìn file ○ | **kém xa**, giới hạn chính |
+| Quy mô | 2,05 triệu video, 4.656 giờ, 7.109 người | hiện có 3 part = 120 người, 2.400 clip real ●; ~5.850-7.800 file / part; 5 part = 200 người, ~29-39 nghìn file ○ | **kém xa**, giới hạn chính |
 | Nguồn real | VoxCeleb2, LRS3, EngageNet | YouTube tiếng Việt, nhiều kênh | khác loại; **tiếng Việt** là điểm mới |
 | Chia theo người | chỉ ở test (train / validation chia ngẫu nhiên theo mẫu) | **cả 3 tập** | v003 chặt hơn |
 | Phương pháp chưa thấy | có | có (2 generator + 3 kiểu giọng) | ngang |
@@ -427,23 +606,31 @@ Phản biện quan trọng: **Deepfake-Eval-2024** (45 giờ video lưu hành n�
 
 ## 11. Hạn chế và việc mở (phần dữ liệu)
 
-**Hạn chế:**
-1. Quy mô nhỏ hơn hàng chục lần so với bộ chuẩn; một loại nguồn (YouTube).
-2. Chưa có bản test nhiễu thực tế.
-3. Góc mặt chọn tay, không có số đo.
-4. "Điểm 0" của SyncNet chưa kiểm chéo (chờ AV-HuBERT trên Kaggle); sai số còn ±1 frame sau sửa.
-5. Ngưỡng sync (3,0 / 80 %) và chỉ tiêu cắt (30-40) dựa trên batch thử nhỏ.
-6. Dữ liệu là người thật trên YouTube: **không công bố video**; nếu phát hành thì chỉ ID + mốc thời gian + script tái tạo.
+**Hạn chế** (nêu trong báo cáo):
+1. Quy mô nhỏ hơn hàng chục lần so với bộ chuẩn (120 người so với hàng nghìn); một loại nguồn (YouTube), chủ yếu nói chuyện trước camera / phỏng vấn.
+2. Chưa có bản test nhiễu thực tế (nén lại, giảm độ phân giải, đổi fps).
+3. **Đa dạng buổi quay thấp**: 60 % người chỉ có clip từ 1 video, 117 / 120 người từ 1 kênh (phần lớn URL là link video lẻ) - thấp hơn khuyến nghị "15-20 clip từ 2-3 video" (§3.3).
+4. **Một người duyệt**, chưa đo độ đồng thuận; góc mặt chọn bằng mắt, không có số đo.
+5. Độ lệch đo theo video, độ phân giải ±1 frame; "điểm 0" của SyncNet chưa kiểm chéo; 4 clip `unreliable` trong part 1 không được sửa.
+6. `jump_suspect` có ở ~24 % clip được chọn mà không ảnh hưởng quyết định duyệt (§7.2).
+7. **Giới lệch theo loại nguồn** (`2`: 20 nam / 9 nữ; `n`: 7 nam / 15 nữ) dù tổng cân 60 / 60 → nếu loại nguồn tương quan với điều kiện quay, nên báo kết quả theo giới × loại nguồn khi dùng dữ liệu.
+8. Nguồn 30 / 50 / 60 fps chuyển về 25 fps bằng bỏ frame; nguồn 24 fps bị loại → bộ dữ liệu lệch về kênh quay ≥ 25 fps.
+9. 72 % video đăng năm 2026.
+10. Nhóm lớn quanh MC làm part 3 lệch split nhẹ (validation 2 nam, test 6 nam).
+11. Raw batch 1 trên Drive là lần tải thứ hai (hash khác lần đầu; mốc thời gian và clip không đổi).
+12. Dữ liệu là người thật trên YouTube: **không công bố video**; nếu phát hành thì chỉ ID + mốc thời gian + script tái tạo.
 
 **Việc mở:**
 
 | # | Việc | Ghi chú |
 |---|---|---|
-| 1 | Chạy part 1 thật tới export | đang chạy (batch 1 tải lại từ đầu 18/10) |
-| 2 | **Bản test nhiễu thực tế**: nén lại nhiều codec / bitrate, giảm độ phân giải, đổi fps, rớt frame | chỉ cần ffmpeg trên file đã sinh |
-| 3 | Kiểm chéo độ lệch bằng AV-HuBERT | bước prepare, đã có code |
-| 4 | In tiến độ cho bước VAD trong `03_cut` | đổi code `cut.py` → đóng dấu lại chữ ký |
-| 5 | Sửa link tài liệu trong docstring `features/syncnet.py` (đang trỏ tên file cũ) | file nằm trong chữ ký luật cắt: sửa khi không có batch đang cắt, rồi đóng dấu lại |
+| 1 | Zip + up raw batch 2-6 (`08_archive raw N`, rồi `--uploaded`) | chưa xoá gì; mở khoá `09_clean pool` (~9,1 GB clip thừa) |
+| 2 | Batch 7 (8 video): tải, cắt, gán | chưa tải |
+| 3 | 25 người chờ duyệt; 3 người trong số đó chung video với người đã vào part 3 (qua nhóm MC) → nếu duyệt xong sau này sẽ vào `blocked_groups` | xử lý tay khi xảy ra (ví dụ theo split của nhóm) |
+| 4 | **Bản test nhiễu thực tế** | chỉ cần ffmpeg |
+| 5 | Thí nghiệm gợi ý S05 (mép giữa từ, §5.4), S06 (kiểm chéo độ lệch, §6.5), S07 (nhãn tay jump cut), S08 (đồng thuận người duyệt) (§7.2) | S05 / mở rộng S01 cần raw: làm trước `09_clean raw` |
+| 6 | Lệnh cắt lại clip theo ledger (tái hiện clip đã xoá) | chỉ khi cần |
+| 7 | In tiến độ cho bước VAD trong `03_cut`; sửa link docstring `features/syncnet.py` | đổi code trong chữ ký luật cắt → đóng dấu lại |
 
 ## 12. Nhật ký câu hỏi và quyết định (phần dữ liệu)
 
@@ -496,6 +683,13 @@ Phản biện quan trọng: **Deepfake-Eval-2024** (45 giờ video lưu hành n�
 | 20/10 | Clip `unreliable` được chọn lại có tính là lệch 0? | không: export **không dịch** (độ lệch gốc giữ nguyên); `few` vẫn dịch. User tự cân nhắc khi duyệt, không sửa code |
 | 20/10 | Backup ledger tự xoá? | trước giữ 30 bản; từ 20/10 giữ mọi bản, chỉ xoá tay |
 | 20/10 | Thêm loại `2` cắt tối đa 150 clip, từ batch 3 (user) | §5.3; chữ ký luật cắt tách luật số lượng (§5.5) |
+| 20/10 | Ledger có trong zip không? | không: user tự up thư mục `data/ledger/`; Claude không xoá / ghi đè ledger khi chưa được duyệt |
+| 20/10 | identify theo batch hay toàn bộ? Vừa duyệt vừa cắt được không? Dừng cắt giữa chừng? | theo batch, so khớp với mọi người đã có; duyệt song song với cắt batch khác được; Ctrl+C rồi chạy lại, video dở cắt lại |
+| 20/10 | `09_clean raw` có xoá clip? | không; clip chỉ bị xoá bởi `09_clean part` / `pool` |
+| 21/10 | Lỡ chốt 15 clip mà muốn thêm | "done" chưa khoá; sửa được tới khi vào part, hoặc đưa về pending qua API |
+| 22/10 | Thống kê, thí nghiệm kiểm chứng, báo cáo | S00-S04 (§5.3, §5.4, §6.5, §7.2, §9); báo cáo chỉ tới clip real hoàn chỉnh (§8.1); mọi nội dung báo cáo nằm trong file này (§14) |
+| 22/10 | Part 3 không tạo được dù trang duyệt báo 20/20 | người pending chung video (qua MC) giữ nhóm; "Khác người" chỉ bỏ gợi ý gộp. Sửa: người pending không giữ nhóm nữa, đến sau thì vào `blocked_groups` (§7.3) |
+| 22/10 | Export lấy clip từ pool là chép hay cắt? Clip đã xoá còn tái hiện được không? | chép, pool giữ nguyên; ledger giữ mốc giây + hash → cắt lại được từ raw (§8.1) |
 
 ## 13. Nguồn
 
@@ -516,3 +710,82 @@ Phản biện quan trọng: **Deepfake-Eval-2024** (45 giờ video lưu hành n�
 - Perfect Match [1809.08001](https://arxiv.org/abs/1809.08001) · VocaLiST [2204.02090](https://arxiv.org/abs/2204.02090) · ModEFormer [2303.11551](https://arxiv.org/abs/2303.11551) · IC-SyncNet [2409.00971](https://arxiv.org/abs/2409.00971) · PVSync [2610.09223](https://arxiv.org/abs/2610.09223) · LatentSync / StableSyncNet [2412.09262](https://arxiv.org/abs/2412.09262)
 - DFD-Lab [2609.23830](https://arxiv.org/abs/2609.23830) · DeepFake Doctor [2506.05851](https://arxiv.org/abs/2506.05851)
 - yt-dlp releases (Python 3.10): [GitHub](https://github.com/yt-dlp/yt-dlp/releases)
+
+**Kiểm thêm ngày 22/10** (mức kiểm ghi sau mỗi nguồn)
+- Smeu et al., Circumventing Shortcuts in Audio-visual Deepfake Detection Datasets with Unsupervised Learning, CVPR 2025 - [arXiv 2412.00175](https://arxiv.org/abs/2412.00175): fake trong FakeAVCeleb và AV-Deepfake1M bắt đầu bằng 25-30 ms lặng; bộ phân loại chỉ dùng khoảng lặng đạt AUC 98,4 / 98,2 % ✔ (abstract + Bảng 1, bản arXiv HTML).
+- Nagrani et al., VoxCeleb, Interspeech 2017 - [arXiv 1706.08612](https://arxiv.org/abs/1706.08612): dò ranh giới cảnh bằng so histogram màu giữa frame liên tiếp; SyncNet xác định mặt đang nói, loại lồng tiếng / lời dẫn; ngưỡng bảo thủ (precision 1,000, recall 0,613 ở bước này) ✔ (toàn văn ar5iv).
+- Chung et al., VoxCeleb2, Interspeech 2018 - [arXiv 1806.05622](https://arxiv.org/abs/1806.05622): pipeline tương tự VoxCeleb, thêm bước bỏ video trùng ◐.
+- Afouras et al., LRS3-TED, 2018 - [arXiv 1809.00496](https://arxiv.org/abs/1809.00496): tiếng và hình có thể lệch tới khoảng 1 s, dùng SyncNet đồng bộ và loại lời dẫn; câu ≤ 100 ký tự hoặc 6 s (train-val, test); chia split theo video ✔ (toàn văn ar5iv).
+- Gebru et al., Datasheets for Datasets, Communications of the ACM 64(12):86-92, 2021 - khung tài liệu hoá bộ dữ liệu ◐.
+- Wu, Peng, Yu, YuNet: A Tiny Millisecond-level Face Detector, Machine Intelligence Research 20(5):656-665, 2023 ◐.
+- Zhong et al., SFace: Sigmoid-Constrained Hypersphere Loss for Robust Face Recognition, IEEE TIP 2021 - [arXiv 2205.12010](https://arxiv.org/abs/2205.12010) ◐.
+- Wang et al., Wespeaker, ICASSP 2023 - [arXiv 2210.17016](https://arxiv.org/abs/2210.17016) ◐.
+- Silero VAD - [snakers4/silero-vad](https://github.com/snakers4/silero-vad) ◐ (trích dẫn theo CITATION của repo).
+- Thời gian bị YouTube chặn bot: không có số chính thức; người dùng diễn đàn kể vài giờ ◐ (không dùng làm bằng chứng trong báo cáo).
+
+## 14. Điền báo cáo theo template AIP491 (phần dữ liệu real)
+
+Template: `Template_AIP491_CP_StudentsGuide.docx` (gốc thư mục Deepfake_VN, không sửa bản gốc). Phạm vi hiện tại (user chốt 22/10): **chỉ tới khi tạo ra một clip real hoàn chỉnh**; thiết kế generator / kiến trúc mô hình bỏ qua cho tới khi user yêu cầu. Viết hai bản Việt / Anh cùng cấu trúc, cùng số (bản Việt dấu phẩy thập phân, bản Anh dấu chấm).
+
+### 14.1. Mục template → nội dung trong file này
+
+| Mục template | Lấy từ | Ghi chú |
+|---|---|---|
+| Bìa, thông tin nhóm, lời cảm ơn | - | user điền (chưa có thông tin) |
+| Thuật ngữ và từ viết tắt | AV, AUC, VAD, SyncNet, YuNet, SFace, WeSpeaker, fps, input, batch, clip ứng viên, keep, speaker, part, split, ledger, cut signature, shortcut | định nghĩa ở §0, §4-§8 |
+| I.1 Thông tin, tổng quan | §0, §8.1 | nêu rõ phạm vi: tạo clip real hoàn chỉnh; sinh fake và mô hình ngoài phạm vi |
+| I.2 Bối cảnh | §1 (khoảng trống tiếng Việt, bài học v001 / v002) | |
+| I.3 Mục tiêu | §0, §3.3; tình trạng §9.2 | 5 mục tiêu đo được: nhiều người, split theo người, không lối tắt cấu trúc, tái lập, mọi thông số có bằng chứng |
+| I.4 Phát biểu vấn đề | §3.1 (số người), §6.1 + Smeu 2025 (lối tắt), §5.1-§5.2 (video lộn xộn), §11 mục 12 (riêng tư) | |
+| I.5 Ý nghĩa | §10; số S01 (10,2 → 41,4 %) | |
+| I.6 Phạm vi và giới hạn | §11 | |
+| II.2.1 WBS | gói việc theo bước 01-10 + trạng thái §9.2, §11 | |
+| II.2.2 Rủi ro | bảng 14.2 dưới đây | |
+| II.2.3 Chất lượng | 40 test tự động cho pipeline, `quality_report.json` mỗi part, thí nghiệm S00-S04, mọi clip có người duyệt | |
+| II.2.5 Quản lý thay đổi | quy trình 14.3 + nhật ký §12 | |
+| II (các mục còn lại) | - | thông tin nhóm, user điền |
+| III Liên quan | §3.1, §3.2, §6.3, §10, §13 | lịch sử bộ dữ liệu, nghiên cứu số người, lối tắt (Smeu), cách xây VoxCeleb / LRS3, công cụ, bảng so sánh, khoảng trống |
+| IV.1 Câu hỏi nghiên cứu | RQ-D1 (đặc điểm dữ liệu, §9.2), RQ-D2 (luật cắt, §5.4), RQ-D3 (giới hạn 150, §5.3), RQ-D4 (độ lệch, §6.5), RQ-D5 (cờ duyệt, §7.2) | |
+| IV.2 Thu thập và tiền xử lý | §4, §5.1-§5.3, §6.2-§6.4, §7.1-§7.3, §8.2-§8.3 | |
+| IV.3 Đặc trưng | Silero VAD, YuNet, SFace, WeSpeaker, SyncNet, histogram màu - chỉ để làm sạch / tổ chức dữ liệu | |
+| IV.4 (đổi thành "Chia dữ liệu và kiểm tra tính đúng") | §2, §7.3; tỉ lệ clip = tỉ lệ người; kiểm số clip, hash khi export | không huấn luyện mô hình ở phạm vi này |
+| IV.5 Chỉ số | tỉ lệ giữ, mép sạch (VAD, mô tả) / mép lặng (năng lượng, độc lập), độ lệch, `conf`, `agree`, ứng viên / người, tỉ lệ chọn theo cờ | |
+| IV.6 Triển khai | §5.5, §9.2 (thời gian cắt), phần mềm: Python 3.11, yt-dlp, ffmpeg / PyAV, ONNX Runtime, PyTorch CPU, SQLite, FastAPI | |
+| IV.7 Đạo đức | §11 mục 12; giới tính là cảm nhận của người duyệt, không tự khai; fake không phát hành | |
+| V Thiết kế hệ thống | luồng 00-10 (`data_pipeline/README.md`), mô hình tích hợp (§6.3, §7.1), triển khai (máy cá nhân, Kaggle riêng tư, Drive), mở rộng theo batch / part | |
+| VI.1 Kết quả | §9.2 (S00), §5.4 (S01), §5.3 (S02), §6.5 (S03), §7.2 (S04) | |
+| VI.2 Thảo luận | luật cắt (S01 + Smeu), độ lệch (S03 + LRS3 / VoxCeleb), đa dạng buổi quay, giới theo loại nguồn, cờ `jump_suspect` | |
+| VI.3 Khuyến nghị | gợi ý S05-S08 (§5.4, §6.5, §7.2), thu thập 2-3 video / người, cân giới trong từng loại nguồn, test nhiễu | |
+| VI.4 Nhìn lại | đo trước khi đổi luật (7 s → chỗ ngắt), cái giá của đổi luật giữa chừng (cắt lại batch 1), chốt chặn thao tác xoá (sự cố raw batch 1), số lượng không thay được đa dạng | |
+| VII Kết luận | tóm tắt §0, §9.2 và các thí nghiệm; giới hạn §11 | |
+| VIII Tài liệu | §13 | kiểm đủ tác giả các mục "et al." trước khi nộp; nguồn ◐ chỉ trích thông tin xuất bản |
+| IX Phụ lục | tham số §5.1, §5.3, §6.4, §7.2, §7.3; thay đổi luật §5.1, §5.4, §3.3, §5.3, §12 | |
+
+### 14.2. Rủi ro đã gặp (cho mục II.2.2)
+
+| Rủi ro | Đã xảy ra? | Phòng / xử lý |
+|---|---|---|
+| YouTube chặn vì nghi bot | có, khi plan (20/10) | gặp xác minh bot thì dừng ngay; chạy lại với cookie trình duyệt đã đăng nhập hoặc chờ |
+| Cookie trình duyệt bị mã hoá kiểu mới | có (Edge, lỗi DPAPI) | dùng Firefox hoặc chờ hết chặn |
+| Xoá raw trước khi sao lưu | có (raw batch 1, 20/10) | khôi phục ledger từ backup, tải lại; chặn đóng gói khi thiếu file raw; lệnh xoá chỉ chạy sau `--uploaded` |
+| Đổi luật giữa chừng | có (19/10, cắt lại batch 1) | cut signature khoá cách làm clip |
+| Ổ đĩa đầy | nguy cơ | batch ≤ 20 giờ / 16 GB; raw lên Drive mới xoá |
+| Mất ledger | nguy cơ | mỗi lệnh tự sao lưu (giữ mọi bản); ledger up Drive cùng zip |
+| Part kẹt vì nhóm chung video | có (22/10) | người pending không giữ nhóm; người đến sau vào `blocked_groups` |
+| Lộ dữ liệu người thật | nguy cơ | không đẩy dữ liệu lên dịch vụ công khai (Kaggle riêng tư); báo cáo chỉ có số tổng hợp |
+
+### 14.3. Quy trình thay đổi luật (cho mục II.2.5)
+
+1. Nêu vấn đề bằng số đo (ví dụ 84 % clip dài đúng 7 s, 8 % mép ở chỗ ngắt).
+2. Đề xuất kèm bằng chứng, chờ chốt rồi mới sửa ("kế hoạch trước").
+3. Thử trên mẫu (luật cắt mới thử trên 6 video).
+4. Áp dụng; luật làm clip đổi → cut signature đổi → cắt lại (đã làm một lần với batch 1).
+5. Ghi quyết định, ngày, lý do vào §12 và vào ledger (sự kiện).
+
+### 14.4. Quy ước viết
+
+- Giọng sinh viên nghiên cứu: rõ ràng, đủ chi tiết, giải thích thuật ngữ lần đầu, không lan man; mỗi luật kèm lý do một câu.
+- Không bịa: số lấy từ file này (●), trích dẫn chỉ từ §13 (nguồn ◐ chỉ trích thông tin xuất bản / ý chính); thiếu thì ghi `[cần số liệu]` / `[cần trích dẫn]`.
+- Phân biệt đo trên dữ liệu (●) / tài liệu (✔, ◐) / lựa chọn thiết kế / ước tính (○); thước đo chỉ mô tả (mép sạch theo VAD) phải ghi rõ.
+- Riêng tư: không tên người, tên kênh, tiêu đề, mã video, mã speaker.
+

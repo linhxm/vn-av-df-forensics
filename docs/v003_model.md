@@ -1,4 +1,4 @@
-> Bản sao từ nhật ký nghiên cứu (`RESEARCH_WORKLOG/v003_model.md`, ngoài repo) ngày 20/10/2026. Sửa ở nhật ký rồi chép lại vào đây.
+> Bản sao từ nhật ký nghiên cứu (`RESEARCH_WORKLOG/v003_model.md`, ngoài repo) ngày 22/10/2026. Sửa ở nhật ký rồi chép lại vào đây.
 
 # v003 · Model: phương pháp, huấn luyện, đánh giá
 
