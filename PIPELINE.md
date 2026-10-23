@@ -63,8 +63,20 @@ Danh sách nằm ở `settings.py` (`TRAIN_GENERATORS`, `TEST_ONLY_GENERATORS`, 
 1. **Phiên giọng** (`PHASE = "voice"`, cần GPU). Chạy **trước**, vì cell ⑥ cần track B.
 2. **Các phiên lip-sync** (`PHASE = "lipsync"`, `GENERATORS = [...]`), mỗi phiên vài generator. Phiên sau attach Output của phiên trước vào `PREVIOUS_OUTPUT`; job đã xong được bỏ qua.
 3. Phiên cuối (đủ mọi job) tự finalize → `datasets/vn-av-df-data/<part>/manifest.jsonl`.
+4. **Chia đợt** (tuỳ chọn): `BATCH = (k, n)` (local: `--batch k/n`) chỉ chạy job của đợt k trong n đợt clip cha. Lip-sync dừng báo lỗi nếu job ⑥ của đợt chưa có record giọng.
+5. **Ghép với máy local:** `python generation/03_lipsync.py --generators ... --batch k/n --previous <Output Kaggle>/vn-av-df-forensics` (cũng có ở `02_voice.py`, `04_finalize.py`). Plan lấy từ Kaggle qua `--previous`, không chạy `01_plan.py` ở local: plan ghi đường dẫn của máy nên plan tạo ở hai nơi khác nhau. Mỗi generator chỉ chạy ở một nơi.
 
 Mỗi job ghi `records/<key>.json`. Hết giờ (`TIME_BUDGET_HOURS`) hoặc lỗi thì chạy lại, job dở được xoá và làm lại. Lỗi riêng một clip (không thấy mặt, generator báo lỗi) thì bỏ job đó; bỏ 10 job liên tiếp thì dừng.
+
+**Đường dự phòng khi generator lỗi** (từ part 2; job chạy được giữ y như trước nên record cũ vẫn dùng được):
+
+| Generator | Lỗi ở part 1 | Dự phòng |
+|---|---|---|
+| IP-LAP | 43/400 job: FaceMesh trượt một frame là bỏ cả clip (mặt nhỏ, nghiêng, người thứ hai) | chạy lại trên khung vuông cố định quanh mặt cả clip rồi dán về (`iplap_worker.py`); thử trên part 1: còn 9 % clip trượt |
+| VideoRetalking | 4 job `TypeError`: dlib không thấy mặt ở nửa đầu clip | lấy hộp mặt từ S3FD, landmark vẫn bằng dlib (`vrt_worker.py`) |
+| Diff2Lip | 3 job hết VRAM (cả 3 đúng 108 frame) | chạy lại với batch lấy mẫu 8 rồi 2 (kết quả không đổi) |
+
+**Tiếng donor (② sham, ⑤)** (`donor_fit` trong `settings.py`): part 1 cắt cứng tiếng donor theo độ dài clip gốc, nên sham / donor full hết tiếng giữa câu (AUC khoảng lặng cuối 0,08). Từ part 2, plan ghi mọi donor cùng người, cùng split, dài ≥ clip gốc − 1 s; lúc sinh, chọn donor có đoạn nói vừa nhất, giữ lặng đầu / cuối như clip gốc (`voice/audio.py: fit_donor`). Mô phỏng trên part 1 cho AUC khoảng lặng cuối 0,55 và không clip nào thiếu donor (trước đây 33 clip dài nhất không có sham). Plan cũ không có khoá này vẫn chạy theo cách cũ.
 
 ## Model
 

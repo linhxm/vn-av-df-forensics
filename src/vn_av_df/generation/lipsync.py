@@ -38,6 +38,23 @@ DRIVE_FOLDERS = {
     "videoretalking": "18rhjMpxK8LVVxf7PI6XwOidt8Vouv_H0",
     "diff2lip": "1UMiHAhVf5M_CKzjVQFC5jkz-IXAAnFo5",
 }
+# Adapter ở commit 45ef7a7 đã chạy trên Kaggle. VideoRetalking khi đó dùng chung cache temp/ giữa
+# hai GPU nên record cũ làm lại.
+OLD_ADAPTER = "9974d74899f69dd62bf86d04077e5e8de17136730a13f4c15590616bf875eb77"
+REDO = {"videoretalking": OLD_ADAPTER}
+# Adapter đã sinh part 1 (74953f7, IP-LAP: 45ef7a7). Bản sau chỉ thêm đường dự phòng khi job đó lỗi
+# (IP-LAP crop quanh mặt, VideoRetalking S3FD khi dlib trượt, Diff2Lip batch nhỏ khi hết VRAM):
+# job đã xong giữ y nguyên, record cũ vẫn dùng được.
+STILL_VALID = {
+    "iplap": {OLD_ADAPTER},
+    "videoretalking": {"d34310b689377261cfeb80c6ecb90572642515a3e2d566b8b9291ba45b170e51"},
+    "latentsync_1_5": {"d34310b689377261cfeb80c6ecb90572642515a3e2d566b8b9291ba45b170e51"},
+    "diff2lip": {"d34310b689377261cfeb80c6ecb90572642515a3e2d566b8b9291ba45b170e51"},
+}
+WORKERS = {"iplap": "iplap_worker.py", "videoretalking": "vrt_worker.py"}
+# Batch lấy mẫu của Diff2Lip (32 trong script upstream); hết VRAM thì chạy lại với batch nhỏ hơn.
+# Nhiễu đầu cố định theo seed, lặp cho mọi frame, DDIM tất định: chia batch khác không đổi kết quả.
+DIFF2LIP_BATCHES = (32, 8, 2)
 
 
 def repo_dir(cfg, name):
@@ -107,12 +124,21 @@ def provenance(cfg, name):
     if not files or any(not p.is_file() for p in files):
         raise FileNotFoundError(f"{name} weights missing; run the generator setup")
     lock = repo / "vn_av_revision.json"
-    return {
+    info = {
         "generator": name,
         "version": read_json(lock)["commit"] if lock.is_file() else "unknown",
         "checkpoint_sha256": sha(files[0]),
         "adapter_sha256": sha(__file__),
     }
+    if name in WORKERS:
+        info["worker_sha256"] = sha(Path(__file__).with_name(WORKERS[name]))
+    return info
+
+
+def still_valid(name, old, new):
+    """Job đã xong với provenance `old` vẫn đúng với `new` (chỉ khác đường dự phòng khi lỗi)."""
+    same = all(old.get(k) == new.get(k) for k in ("generator", "version", "checkpoint_sha256"))
+    return same and old.get("adapter_sha256") in STILL_VALID.get(name, set())
 
 
 def prepare_inputs(video, audio_source, folder, frames, width, height):
@@ -136,23 +162,31 @@ def prepare_inputs(video, audio_source, folder, frames, width, height):
     return face, audio
 
 
-def normalize_output(produced, output, frames, width, height):
-    """Đúng số frame (đệm frame cuối nếu thiếu) và kích thước gốc; ghi FFV1 lossless."""
+def normalize_output(produced, audio, output, frames, width, height):
+    """Đúng số frame (đệm frame cuối nếu thiếu) và kích thước gốc; ghi FFV1 lossless + PCM của
+    audio đầu vào (decode đòi đủ hai luồng; pipeline chỉ lấy hình)."""
     run(
         [
             ffmpeg(),
-            *("-nostdin", "-v", "error", "-y", "-i", produced),
+            *("-nostdin", "-v", "error", "-y", "-i", produced, "-i", audio),
             *("-vf", f"fps=25,scale={width}:{height},tpad=stop_mode=clone:stop={frames}"),
-            *("-frames:v", frames, "-an", "-c:v", "ffv1", output),
+            *("-map", "0:v:0", "-map", "1:a:0", "-frames:v", frames, "-c:v", "ffv1"),
+            *("-c:a", "pcm_s16le", "-ar", "48000", output),
         ]
     )
 
 
-def command(cfg, name, repo, face, audio, out_dir):
+def command(cfg, name, repo, face, audio, out_dir, batch=None):
     py = python_of(cfg, name)
+    # Job chạy song song trên hai GPU: thư mục tạm upstream phải riêng từng job.
     if name == "videoretalking":
+        # Upstream cache theo tên file (luôn là face.mp4) và ghi temp/<tmp_dir>/result.mp4.
         out = out_dir / "result.mp4"
-        return [py, "inference.py", "--face", face, "--audio", audio, "--outfile", out], out
+        worker = Path(__file__).with_name(WORKERS[name])
+        return [
+            *(py, worker, "--face", face, "--audio", audio, "--outfile", out),
+            *("--re_preprocess", "--tmp_dir", out_dir.name),
+        ], out
     if name == "latentsync_1_5":
         out = out_dir / "result.mp4"
         config = cfg["generation"].get("latentsync_config", "configs/unet/stage2.yaml")
@@ -162,15 +196,13 @@ def command(cfg, name, repo, face, audio, out_dir):
             *("--inference_ckpt_path", "checkpoints/latentsync_unet.pt"),
             *("--inference_steps", "20", "--guidance_scale", "1.5", "--enable_deepcache"),
             *("--video_path", face, "--audio_path", audio, "--video_out_path", out),
+            *("--temp_dir", out_dir / "temp"),
         ], out
     if name == "iplap":
-        # Tên output: <tên input bỏ 4 ký tự cuối>result_N_25_Nl_15.mp4 trong output_dir.
-        out = out_dir / "faceresult_N_25_Nl_15.mp4"
-        return [
-            py,
-            *("inference_single.py", "--input", face, "--audio", audio),
-            *("--output_dir", out_dir),
-        ], out
+        # Video upstream là [sketch | kết quả] ghép ngang; worker chỉ giữ nửa kết quả.
+        out = out_dir / "result.avi"
+        worker = Path(__file__).with_name("iplap_worker.py")
+        return [py, worker, "--video", face, "--audio", audio, "--output", out], out
     if name == "diff2lip":
         script = (repo / "scripts/inference_single_video.sh").read_text(encoding="utf-8")
         model = sorted((repo / "checkpoints").rglob("*.pt"))[0]
@@ -178,6 +210,12 @@ def command(cfg, name, repo, face, audio, out_dir):
         values = {"video_path": face, "audio_path": audio, "out_path": out, "model_path": model}
         for key, value in values.items():
             script = re.sub(rf"(?m)^{key}=.*$", lambda _, k=key, v=value: f'{k}="{v}"', script)
+        # Mặc định d2l_gen/temp/<tên video> trong repo, xoá cả temp/ sau mỗi bước.
+        script = script.replace("$GEN_FLAGS", f"$GEN_FLAGS --sample_path={out_dir / 'd2l_gen'}")
+        script = script.replace(
+            f"--sampling_batch_size={DIFF2LIP_BATCHES[0]}",
+            f"--sampling_batch_size={batch or DIFF2LIP_BATCHES[0]}",
+        )
         runner = out_dir / "run_diff2lip.sh"
         runner.write_text(script, encoding="utf-8")
         return ["bash", runner], out
@@ -190,24 +228,34 @@ def make_synthesize(name):
         with tempfile.TemporaryDirectory(dir=Path(output).parent) as tmp:
             folder = Path(tmp)
             face, audio = prepare_inputs(video, audio_video, folder, frames, width, height)
-            args, produced = command(
-                cfg, name, repo, face.resolve(), audio.resolve(), folder.resolve()
-            )
             env = os.environ.copy()
             env["PATH"] = str(Path(python_of(cfg, name)).parent) + os.pathsep + env.get("PATH", "")
             if gpu is not None:
                 env["CUDA_VISIBLE_DEVICES"] = str(gpu)
             log = folder / "generator.log"
-            try:
-                run(args, cwd=repo, timeout=3600, log=log, env=env)
-            except RuntimeError as exc:
-                text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
-                if re.search(r"face not detected|no face|face detect", text, re.I):
-                    raise RuntimeError(f"Worker failed: Face not detected ({name})") from exc
-                raise RuntimeError(f"Worker failed: {name} error: {text[-1500:]}") from exc
+            for batch in DIFF2LIP_BATCHES if name == "diff2lip" else (None,):
+                args, produced = command(
+                    cfg, name, repo, face.resolve(), audio.resolve(), folder.resolve(), batch
+                )
+                try:
+                    run(args, cwd=repo, timeout=3600, log=log, env=env)
+                    break
+                except RuntimeError as exc:
+                    text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+                    if re.search(r"face not detected|no face|face detect", text, re.I):
+                        raise RuntimeError(f"Worker failed: Face not detected ({name})") from exc
+                    if batch and batch != DIFF2LIP_BATCHES[-1] and "CUDA out of memory" in text:
+                        print(
+                            f"{name}: hết VRAM với batch {batch}, chạy lại batch nhỏ hơn",
+                            flush=True,
+                        )
+                        continue
+                    raise RuntimeError(f"Worker failed: {name} error: {text[-1500:]}") from exc
+                finally:
+                    shutil.rmtree(repo / "temp" / folder.name, ignore_errors=True)  # --tmp_dir VRT
             if not produced.is_file():
                 raise RuntimeError(f"Worker failed: {name} produced no video")
-            normalize_output(produced, output, frames, width, height)
+            normalize_output(produced, audio, output, frames, width, height)
 
     return synthesize
 

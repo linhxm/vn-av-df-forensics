@@ -12,6 +12,10 @@ Phương pháp giọng của clip thứ i: methods[(i + offset_speaker) mod n] (
 Donor (cho ② sham và ⑤): clip khác của CÙNG người, CÙNG split, dài ≥ clip gốc, không chồng thời
 gian nguồn. Không có donor thì ⑤ đổi thành ④ và bỏ ②. Tham chiếu giọng cho TTS: clip khác của
 cùng người (ưu tiên khác video).
+Có options["donor_fit"] (từ part 2): job ghi cả `donor_pool` (mọi donor, cho phép ngắn hơn clip gốc
+≤ shorter_s), lúc sinh chọn donor vừa nhất (generate.donor_audio): cắt cứng donor[:samples] để lại
+lối tắt "hết tiếng giữa câu" (part 1: AUC khoảng lặng cuối 0,08), và clip dài nhất của mỗi người
+không có donor dài hơn. Plan cũ không có khoá này giữ nguyên cách cũ.
 """
 
 import hashlib
@@ -31,7 +35,7 @@ def stable_int(text):
     return int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
 
 
-def donors_for(row, rows):
+def donors_for(row, rows, shorter_s=0.0):
     return sorted(
         (
             d
@@ -39,7 +43,7 @@ def donors_for(row, rows):
             if d["clip_id"] != row["clip_id"]
             and d["split"] == row["split"]
             and d.get("speaker_id") == row.get("speaker_id")
-            and d["duration_s"] >= row["duration_s"] - 1e-6
+            and d["duration_s"] >= row["duration_s"] - shorter_s - 1e-6
             and (
                 d["source_id"] != row["source_id"]
                 or d["source_end_s"] <= row["source_start_s"]
@@ -114,6 +118,7 @@ def make_plan(clean_dir, plan_path, options, seed=42):
         for r in in_split:
             by_speaker[r["speaker_id"]].append(r)
         per_clip = (options.get("generators_per_clip") or {}).get(split, len(generators))
+        fit = options.get("donor_fit")
         assignment = iter(assign_generators(len(in_split), generators, per_clip, f"{seed}:{split}"))
         for k, (speaker, clips) in enumerate(sorted(by_speaker.items())):
             clips.sort(key=lambda r: r["clip_id"])
@@ -121,12 +126,15 @@ def make_plan(clean_dir, plan_path, options, seed=42):
             # luôn dư một lần ở mỗi người khi số clip không chia hết cho số hệ giọng).
             offset = (k + stable_int(f"{seed}:voices")) % len(voices)
             for i, row in enumerate(clips):
-                candidates = donors_for(row, in_split)
-                donor = (
-                    candidates[stable_int(f"{seed}:{row['clip_id']}") % len(candidates)]
-                    if (candidates)
-                    else None
-                )
+                if fit:
+                    pool, donor = donors_for(row, in_split, fit["shorter_s"]), None
+                else:
+                    candidates, pool = donors_for(row, in_split), None
+                    donor = (
+                        candidates[stable_int(f"{seed}:{row['clip_id']}") % len(candidates)]
+                        if (candidates)
+                        else None
+                    )
                 voice_key = fingerprint(["voice", row["clip_id"]])[:20]
                 jobs.append(
                     {
@@ -136,12 +144,13 @@ def make_plan(clean_dir, plan_path, options, seed=42):
                         "voice": voices[(i + offset) % len(voices)],
                         "inpaint": inpaint,
                         "sham_donor": donor,
+                        "donor_pool": pool,
                         "reference": reference_for(row, in_split),
                     }
                 )
                 for generator, index in next(assignment):
                     cell = LIPSYNC_CELLS[index]
-                    if cell == "donor" and donor is None:
+                    if cell == "donor" and donor is None and not pool:
                         cell = "source"
                     jobs.append(
                         {
@@ -151,6 +160,7 @@ def make_plan(clean_dir, plan_path, options, seed=42):
                             "generator": generator,
                             "cell": cell,
                             "donor": donor if cell == "donor" else None,
+                            "donor_pool": pool if cell == "donor" else None,
                             "voice_key": voice_key if cell == "both" else None,
                         }
                     )
@@ -175,6 +185,6 @@ def summarize(plan):
         "cells": dict(Counter(j["cell"] for j in lip)),
         "generators": dict(Counter(j["generator"] for j in lip)),
         "voices": dict(Counter(j["voice"] for j in voice)),
-        "without_donor": sum(j["sham_donor"] is None for j in voice),
+        "without_donor": sum(j["sham_donor"] is None and not j.get("donor_pool") for j in voice),
         "by_split": dict(Counter(j["parent"]["split"] for j in voice)),
     }

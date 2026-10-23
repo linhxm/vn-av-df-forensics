@@ -111,6 +111,7 @@ CLEAN_PART = Path("/kaggle/input/datasets/YOUR_USER/vn-av-df-clean-part1")  # th
 PHASE = "voice"          # "voice" trước, rồi "lipsync"
 GENERATORS = ["wav2lip_gan", "musetalk_1_5"]  # phiên lip-sync: chia nhóm theo VRAM / thời gian
 PREVIOUS_OUTPUT = []     # [Path("/kaggle/input/<phiên trước>/vn-av-df-forensics"), ...]
+BATCH = None             # (k, n): chỉ chạy đợt k trong n đợt clip, vd. (1, 4)
 IPLAP_CHECKPOINTS = None # Path("/kaggle/input/datasets/YOUR_USER/iplap-checkpoints")
 TIME_BUDGET_HOURS = 11
 SEED = 42
@@ -173,6 +174,7 @@ cfg["generation_gpus"] = list(range(torch.cuda.device_count())) or [None]
 cfg["generation_deadline"] = SESSION_START + TIME_BUDGET_HOURS * 3600
 if PHASE == "lipsync":
     cfg["session_generators"] = GENERATORS
+cfg["session_batch"] = BATCH
 error = None
 try:
     print(run_generation(cfg, PHASE))
@@ -287,7 +289,7 @@ DATASET_PARTS = [Path("/kaggle/input/datasets/YOUR_USER/vn-av-df-data-part1")]
 CACHES = [Path("/kaggle/input/datasets/YOUR_USER/vn-av-df-features-part1")]
 PREVIOUS_RUN = None   # Path(".../runs/train_part1_v003") để train tiếp model chưa xong
 MODELS = settings.MODELS + settings.ABLATIONS
-SEEDS = [42, 43, 44]
+SEEDS = [42]          # đánh giá part 1: một seed; chốt thiết kế rồi chạy [42, 43, 44]
 RUN_TEST = True
 RUN_BENCHMARK = False
 import torch

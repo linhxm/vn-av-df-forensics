@@ -24,3 +24,6 @@ __pycache__/
 /data_pipeline/checkpoints/
 /wandb/
 **/wandb/
+
+# Dữ liệu fake sinh từ part real (video người thật): không bao giờ đưa lên git
+/vn-av-df-data-part*_fake/

@@ -109,6 +109,7 @@ def options():
         "generators_per_clip": {"test": 2},  # test: 2 trong 4 generator mỗi clip
         "partial_range_s": [0.5, 2.0],
         "edge_margin_s": 0.5,
+        "donor_fit": {"shorter_s": 1.0, "min_pause_s": 0.02},
         "blend_probability": 0.5,
         "blend_frames": [2, 6],
         "max_side": 320,
@@ -276,6 +277,19 @@ def test_generation_finalize_counts_and_labels(world):
     ]
     validate_rows(rows, out, verify_media=True)
     assert set(info["cells"]) == {"real", "sham", "voice", "source", "donor", "both"}
+
+    def video_md5(row):
+        path = out / row["video"]
+        return run(
+            [ffmpeg(), "-v", "error", "-i", path, "-map", "0:v", "-c", "copy", "-f", "md5", "-"]
+        )
+
+    # Job voice encode hình một lần, các sample còn lại chép luồng hình của real.
+    voiced = next(r for r in rows if r["variant"] == "voice_full")
+    real = next(
+        r for r in rows if r["sample_id"] == voiced["sample_id"][: -len("voice_full")] + "real"
+    )
+    assert video_md5(voiced) == video_md5(real)
     test_voice = [r for r in rows if r["split"] == "test" and r["cell"] == "voice"]
     assert any(r["variant"] == "voice_inpaint" for r in test_voice)
     assert not any(r["variant"] == "voice_inpaint" for r in rows if r["split"] == "train")
@@ -286,9 +300,216 @@ def test_generation_finalize_counts_and_labels(world):
     assert "voice/full" in audit["by_cell_vs_real"]
     sham = [r for r in rows if r["cell"] == "sham"]
     assert all(r["label"] == 0 and r["av_mismatch_intervals"] for r in sham)
+    # Tiếng sine liền không có chỗ nghỉ: donor cắt cứng và ghi lại.
+    assert all(r["donor_fit"] == "cut" for r in rows if r["cell"] in ("sham", "donor"))
     per_parent = Counter(r["source_clip_id"] for r in rows if r["split"] == "train")
     # train: real 1 + sham 2 + voice 2 + 3 generator × 2 = 11
     assert set(per_parent.values()) == {11}
+
+
+def test_donor_audio_picks_best_fitting_donor(tmp_path):
+    """Plan có donor_fit: thử mọi donor, lấy donor vừa nhất; plan cũ: cắt cứng như trước."""
+    from types import SimpleNamespace
+
+    from vn_av_df.data.media import decode
+    from vn_av_df.generation.generate import donor_audio
+    from vn_av_df.generation.plan import donors_for
+    from vn_av_df.generation.voice import audio as A
+
+    def clip(name, seconds, on):
+        path = tmp_path / f"{name}.mkv"
+        speech = f"0.3*sin(2*PI*200*t)*lt(mod(t\\,1)\\,{on})"
+        run(
+            [
+                ffmpeg(),
+                *("-nostdin", "-v", "error", "-y", "-f", "lavfi"),
+                *("-i", f"testsrc2=s=64x48:r=25:d={seconds}"),
+                *("-f", "lavfi", "-i", f"aevalsrc={speech}:s=48000:d={seconds}"),
+                *("-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", path),
+            ]
+        )
+        return {
+            "clip_id": name,
+            "video": path.name,
+            "source_id": f"yt_{name}",
+            "duration_s": seconds,
+        }
+
+    pool = [clip("a_steady", 4.0, 1.01), clip("b_gaps", 3.6, 0.7)]
+    parent = np.zeros(76 * 1920, np.float32)
+    parent[4800:-14400] = 0.3
+    ctx = SimpleNamespace(
+        clean=tmp_path,
+        options={"donor_fit": {"min_pause_s": 0.02}},
+        decode=lambda row: decode(tmp_path / row["video"], max_side=64, sample_rate=48000),
+    )
+    donor, pcm, note = donor_audio(ctx, {"donor_pool": pool}, parent, "sham_donor")
+    assert donor["clip_id"] == "b_gaps" and len(pcm) == len(parent) and "donor_window_s" in note
+    assert np.array(A.edge_silence(pcm)) / 48000 == pytest.approx([0.1, 0.24], abs=0.021)
+    donor, pcm, note = donor_audio(ctx, {"sham_donor": pool[0]}, parent, "sham_donor")
+    assert donor is pool[0] and note == {} and len(pcm) == len(parent)
+    # Clip dài nhất của một người vẫn có donor ngắn hơn trong shorter_s.
+    rows = [
+        {"clip_id": c, "split": "train", "speaker_id": "s", "duration_s": d, "source_id": c}
+        for c, d in (("x", 6.0), ("y", 5.5), ("z", 4.0))
+    ]
+    assert donors_for(rows[0], rows) == []
+    assert [d["clip_id"] for d in donors_for(rows[0], rows, 1.0)] == ["y"]
+
+
+def test_batches_split_clips_across_sessions(world, tmp_path, monkeypatch):
+    """4 đợt phủ đủ clip; phiên voice đợt 1 ở máy A, máy B gộp rồi chỉ lip-sync đợt 1 trên 2 GPU."""
+    import shutil
+    import threading
+    import time
+
+    from vn_av_df.generation.generate import batch_clips, merge_previous, run_generation
+    from vn_av_df.generation.voice.engines import Engine
+
+    plan = json.loads(Path(world["cfg"]["plan"]).read_text(encoding="utf-8"))
+    parts = [batch_clips(plan, (k, 4)) for k in range(1, 5)]
+    clips = {j["parent"]["clip_id"] for j in plan["jobs"]}
+    assert set().union(*parts) == clips and sum(map(len, parts)) == len(clips)
+    with pytest.raises(ValueError):
+        batch_clips(plan, (5, 4))
+
+    def session(name):
+        root = tmp_path / name
+        root.mkdir()
+        return {
+            **world["cfg"],
+            "root": str(root),
+            "plan": str(root / "plan.json"),
+            "generated_dataset": str(root / "datasets/vn-test-part1"),
+        }
+
+    a, b = session("a"), session("b")
+    shutil.copy2(world["cfg"]["plan"], a["plan"])
+    a["session_batch"] = (1, 4)
+    run_generation(a, "voice", engine=Engine(a, call=fake_call), transcriber=FakeTranscriber())
+    merge_previous(b, [a["root"]])
+    synth = {g: fake_synthesize for g in ("g_a", "g_b", "g_c", "g_new")}
+    with pytest.raises(RuntimeError, match="record giọng"):
+        run_generation(b, "lipsync", synthesizers=synth)  # đợt 2-4 chưa có giọng
+    b["session_batch"], b["generation_gpus"] = (1, 4), [0, 1]
+    guard, busy, clash, events = threading.Lock(), set(), [], []
+
+    def one_job_per_gpu(name):
+        def synthesize(*args, gpu, **kw):
+            with guard:
+                clash.append(gpu in busy)
+                busy.add(gpu)
+                events.append((name, "start", len(busy)))
+            try:
+                time.sleep(0.05)
+                fake_synthesize(*args, **kw)
+            finally:
+                with guard:
+                    busy.discard(gpu)
+                    events.append((name, "end", len(busy)))
+
+        return synthesize
+
+    result = run_generation(b, "lipsync", synthesizers={g: one_job_per_gpu(g) for g in synth})
+    assert len(clash) > 2 and not any(clash)
+    # Job đầu mỗi generator chạy một mình, các job sau song song trên 2 GPU.
+    for g in {e[0] for e in events}:
+        mine = [e[1] for e in events if e[0] == g]
+        assert mine[:2] == ["start", "end"]
+    assert max(e[2] for e in events) == 2
+    keys = {j["key"] for j in plan["jobs"] if j["parent"]["clip_id"] in parts[0]}
+    records = Path(b["generated_dataset"]) / "records"
+    assert result["remaining"] == 0 and {p.stem for p in records.glob("*.json")} == keys
+    assert not any("cell_fallback" in p.read_text(encoding="utf-8") for p in records.glob("*.json"))
+
+    # Một generator lỗi (không phải lỗi bỏ qua được): chỉ nó dừng, generator khác vẫn xong.
+    c = session("c")
+    merge_previous(c, [a["root"]])
+    c["session_batch"] = (1, 4)
+
+    def broken(*args, **kw):
+        raise RuntimeError("boom")
+
+    seen = []
+
+    def noting(name):
+        return lambda *args, **kw: (seen.append(name), fake_synthesize(*args, **kw))
+
+    c["session_generators"] = order = ["g_new", "g_c", "g_a", "g_b"]
+    result = run_generation(
+        c, "lipsync", synthesizers={**{g: noting(g) for g in synth}, "g_a": broken}
+    )
+    assert set(result["failed"]) == {"g_a"} and "boom" in result["failed"]["g_a"]
+    assert list(dict.fromkeys(seen)) == [g for g in order if g in seen] and len(set(seen)) > 1
+    done = {p.stem for p in (Path(c["generated_dataset"]) / "records").glob("*.json")}
+    lip = [j for j in plan["jobs"] if j["type"] == "lipsync" and j["key"] in keys]
+    assert {j["key"] for j in lip if j["generator"] != "g_a"} <= done
+    assert not done & {j["key"] for j in lip if j["generator"] == "g_a"}
+
+    # Job bỏ vì lỗi generator được phiên sau làm lại; gộp hai phiên theo thứ tự nào cũng lấy bản xong.
+    d, e = session("d"), session("e")
+    merge_previous(d, [a["root"]])
+    d["session_batch"] = e["session_batch"] = (1, 4)
+
+    def flaky(*args, **kw):
+        raise RuntimeError("Worker failed: CUDA out of memory")
+
+    run_generation(d, "lipsync", synthesizers={**synth, "g_a": flaky})
+    retried = {j["key"] for j in lip if j["generator"] == "g_a"} & {
+        p.stem for p in (Path(d["generated_dataset"]) / "records").glob("*.json")
+    }
+    assert retried
+    # Setup của g_a đổi sau phiên lỗi (sửa code adapter): chưa xong job nào thì không chặn.
+    log = Path(d["generated_dataset"]) / "generation.json"
+    stale = json.loads(log.read_text(encoding="utf-8"))
+    stale["provenance"]["g_a"] = {"version": "before-fix", "generator": "g_a"}
+    log.write_text(json.dumps(stale), encoding="utf-8")
+    merge_previous(e, [d["root"]])
+    assert run_generation(e, "lipsync", synthesizers=synth)["remaining"] == 0
+    merge_previous(e, [d["root"]])  # bản bỏ của d không đè bản đã làm của e
+    merge_previous(d, [e["root"]])
+    for key in retried:
+        mine, theirs = (Path(s["generated_dataset"]) for s in (d, e))
+        record, other = (
+            json.loads((side / "records" / f"{key}.json").read_text(encoding="utf-8"))
+            for side in (mine, theirs)
+        )
+        assert record == other and "rows" in record
+        assert all(sha(mine / row["video"]) == row["sha256"] for row in record["rows"])
+    assert json.loads(log.read_text(encoding="utf-8"))["provenance"]["g_a"]["version"] == "test"
+
+    # Setup khác của generator đã có job xong thì dừng, trừ adapter cũ ghi trong REDO: làm lại.
+    from vn_av_df.generation import generate
+
+    log = Path(e["generated_dataset"]) / "generation.json"
+    old = json.loads(log.read_text(encoding="utf-8"))
+    old["provenance"]["g_b"] = {"adapter_sha256": "old", "generator": "g_b"}
+    log.write_text(json.dumps(old), encoding="utf-8")
+    with pytest.raises(ValueError, match="g_b differs"):
+        run_generation(e, "lipsync", synthesizers=synth)
+    monkeypatch.setattr(generate, "REDO", {"g_b": "old"})
+    seen.clear()
+    result = run_generation(e, "lipsync", synthesizers={g: noting(g) for g in synth})
+    assert result["remaining"] == 0 and result["done"] > 0 and set(seen) == {"g_b"}
+
+    # Cả một người không thấy mặt (IP-LAP/mediapipe): bỏ hẳn từng job, không dừng generator.
+    f = session("f")
+    merge_previous(f, [a["root"]])
+    f["session_batch"] = (1, 4)
+    faceless = [j["key"] for j in lip if j["generator"] == "g_a"]
+    assert faceless
+    monkeypatch.setattr(generate, "MAX_SKIP_STREAK", len(faceless))
+
+    def no_face(*args, **kw):
+        raise RuntimeError("Worker failed: g_a error: raise NotImplementedError  # not detect face")
+
+    result = run_generation(f, "lipsync", synthesizers={**synth, "g_a": no_face})
+    assert "g_a" not in result["failed"] and result["remaining"] == 0
+    records = Path(f["generated_dataset"]) / "records"
+    kinds = {
+        json.loads((records / f"{k}.json").read_text(encoding="utf-8"))["kind"] for k in faceless
+    }
+    assert kinds == {"face"}
 
 
 def write_fake_caches(cfg, rows, dim=32):

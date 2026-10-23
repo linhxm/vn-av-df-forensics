@@ -111,6 +111,122 @@ def noise_floor(pcm, seconds=0.2):
     return pcm[best : best + size].copy()
 
 
+def frame_db(pcm, frame=960):
+    """Mức (dB) từng khung 20 ms."""
+    pcm = np.asarray(pcm, np.float64)
+    blocks = pcm[: len(pcm) // frame * frame].reshape(-1, frame)
+    return 20 * np.log10(np.sqrt((blocks**2).mean(1)) + 1e-9)
+
+
+def edge_silence(pcm, frame=960, floor_db=30.0):
+    """(lặng đầu, lặng cuối) tính bằng mẫu: khung thấp hơn khung to nhất floor_db dB là lặng
+    (cùng định nghĩa với audit.py)."""
+    db = frame_db(pcm, frame)
+    loud = db > db.max() - floor_db if len(db) else np.zeros(0, bool)
+    if not loud.any():
+        return len(pcm), 0
+    first = int(np.argmax(loud)) * frame
+    return first, len(pcm) - (len(loud) - int(np.argmax(loud[::-1]))) * frame
+
+
+def fit_error(window, samples, lead, tail):
+    """Độ lệch (giây) giữa đoạn nói fit_donor chọn và chỗ trống samples - lead - tail."""
+    return abs(window[1] - window[0] - (samples - lead - tail) / RATE)
+
+
+def crossfade_join(parts, fade):
+    """Nối các đoạn, chồng `fade` mẫu ở mỗi chỗ nối (đoạn ngắn hơn thì chồng ít hơn)."""
+    out = np.zeros(0, np.float32)
+    for part in parts:
+        part = np.asarray(part, np.float32)
+        f = min(fade, len(out), len(part))
+        if f:
+            ramp = np.linspace(0, 1, f, dtype=np.float32)
+            part = part.copy()
+            part[:f] = part[:f] * ramp + out[-f:] * (1 - ramp)
+            out = out[:-f]
+        out = np.concatenate([out, part])
+    return out
+
+
+def fit_donor(donor, samples, lead, tail, min_pause_s=0.02, floor_db=30.0, frame=960):
+    """Tiếng clip cho tiếng (② sham, ⑤) dài đúng `samples`, lặng đầu / cuối đúng như clip gốc.
+
+    Cắt cứng donor[:samples] (cách cũ) hết tiếng giữa câu: ở part 1, 79 % sham full không có
+    khoảng lặng cuối, real chỉ 3 % (AUC khoảng lặng cuối 0,08). Ở đây lấy đoạn nói donor[o:e] dài
+    gần samples - lead - tail nhất: o bắt đầu sau một chỗ nghỉ (≥ min_pause_s lặng) hoặc đầu clip,
+    e dừng trước một chỗ nghỉ hoặc cuối clip. Hai đầu dài đúng lead / tail: tiếng lặng thật sát
+    đoạn nói, thiếu thì tiếng nền của chính donor. Phần dư kéo dài chỗ nghỉ dài nhất trong đoạn nói
+    (không có thì dồn vào cuối). Lặng tính so với khung to nhất của đoạn nói (có thể nhỏ hơn của
+    cả donor); tiếng nền được hạ xuống dưới ngưỡng đó.
+    Trả (pcm, cửa sổ [o, e] giây trong donor), hoặc (None, None) nếu không đoạn nào vừa;
+    `fit_error(window, ...)` đo độ lệch để chọn donor vừa nhất.
+    """
+    donor = np.asarray(donor, np.float32)
+    db = frame_db(donor, frame)
+    n = len(db)
+    if not n:
+        return None, None
+    need = max(1, round(min_pause_s * RATE / frame))
+
+    def pauses(loud):
+        edges = np.flatnonzero(np.diff(np.r_[False, ~loud, False].astype(np.int8)))
+        return [(int(s), int(t)) for s, t in zip(edges[::2], edges[1::2])]
+
+    loud = db > db.max() - floor_db
+    runs = [(s, t) for s, t in pauses(loud) if t - s >= need or s == 0 or t == n]
+    onsets = sorted({t for s, t in runs if t < n} | ({0} if loud[0] else set()))
+    offsets = sorted({s for s, t in runs if s > 0})
+    # Đoạn nói gần đích nhất về cả hai phía (dài hơn thì lặng cuối ngắn lại, không âm): sai số
+    # đối xứng quanh clip gốc, không lệch một chiều.
+    target, room = (samples - lead - tail) / frame, (samples - lead) // frame
+    pairs = [(o, e) for o in onsets for e in offsets if o < e <= o + room]
+    if not pairs:
+        return None, None
+    o, e = min(pairs, key=lambda p: (abs(p[1] - p[0] - target), -(p[1] - p[0])))
+    tail = min(tail, samples - lead - (e - o) * frame)
+    ceiling = db[o:e].max() - floor_db - 3  # 3 dB dự phòng: vẫn lặng sau khi ghép
+    quiet = db < ceiling
+    start, stop = o, e
+    while start > 0 and quiet[start - 1] and (o - start) * frame < lead:
+        start -= 1
+    while stop < n and quiet[stop] and (stop - e) * frame < tail:
+        stop += 1
+    noise = noise_floor(donor)
+    if len(noise) >= frame:
+        noise = noise * min(1.0, 10 ** ((ceiling - 3 - frame_db(noise, frame).max()) / 20))
+
+    def fill(length):
+        if length <= 0:
+            return np.zeros(0, np.float32)
+        if not len(noise):
+            return np.zeros(length, np.float32)
+        return np.tile(noise, length // len(noise) + 1)[:length]
+
+    fade = int(0.005 * RATE)
+    extra = samples - lead - tail - (e - o) * frame
+    inner = [(s, t) for s, t in pauses(~quiet[o:e]) if 0 < s and t < e - o and t - s >= need]
+    if inner:
+        s, t = max(inner, key=lambda r: r[1] - r[0])
+        m = (o + (s + t) // 2) * frame
+        speech = [donor[o * frame : m], fill(extra + 2 * fade), donor[m : e * frame]]
+        extra = 0
+    else:
+        speech = [donor[o * frame : e * frame]]
+    pre = donor[max(start * frame, o * frame - lead) : o * frame]
+    post = donor[e * frame : min(stop * frame, e * frame + tail)]
+    parts = [
+        fill(lead - len(pre) + fade),
+        pre,
+        *speech,
+        post,
+        fill(tail - len(post) + extra + fade),
+    ]
+    out = crossfade_join([p for p in parts if len(p)], fade)
+    out = np.concatenate([out, fill(samples - len(out))])[:samples]
+    return out.astype(np.float32), [round(o * frame / RATE, 3), round(e * frame / RATE, 3)]
+
+
 def splice(base, insert, start, end, crossfade_s=0.015, match_loudness=True, noise=None):
     """Thay base[start:end] (mẫu) bằng insert (đã đúng độ dài), crossfade hai đầu.
 

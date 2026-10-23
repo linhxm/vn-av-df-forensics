@@ -6,6 +6,7 @@ record, xoá output dở của job chưa xong. Mọi sample encode cùng một c
 48 kHz), tiếng luôn lấy từ PCM do pipeline dựng, không lấy tiếng generator.
 """
 
+import queue
 import random
 import shutil
 import tempfile
@@ -19,9 +20,10 @@ import numpy as np
 
 from vn_av_df import worker
 from vn_av_df.common.runtime import fingerprint, read_json, sha, write_json
-from vn_av_df.data.media import decode, ffmpeg, probe
+from vn_av_df.data.media import decode, decode_audio, ffmpeg, probe
 from vn_av_df.data.render import encode
 from vn_av_df.generation.cells import labels
+from vn_av_df.generation.lipsync import REDO, still_valid
 from vn_av_df.generation.plan import stable_int
 from vn_av_df.generation.voice import audio as A
 from vn_av_df.generation.voice.asr import text_of
@@ -29,8 +31,17 @@ from vn_av_df.generation.voice.edit import choose_edit
 
 SPF = 1920  # mẫu 48 kHz mỗi frame 25 Hz
 # Lỗi generator không thấy mặt ở một số frame (bước cắt chỉ kiểm mặt ở vài điểm lấy mẫu).
-FACE_ERRORS = ("Face not detected", "Missing MuseTalk face", "Invalid face bbox")
-# Bỏ liên tiếp chừng này job thì dừng: lỗi hệ thống (hết VRAM, worker hỏng), không phải clip khó.
+# IP-LAP: mediapipe trượt một frame là raise "# not detect face"; VideoRetalking: GPEN không
+# thấy mặt ở một frame thì mask_sharp chưa gán.
+FACE_ERRORS = (
+    "Face not detected",
+    "Missing MuseTalk face",
+    "Invalid face bbox",
+    "not detect face",
+    "'mask_sharp'",
+)
+# Lỗi generator chừng này job liền nhau thì dừng: lỗi hệ thống (hết VRAM, worker hỏng), không phải
+# clip khó. Không thấy mặt thường cả một người (plan xếp job theo người) nên cho dài gấp ba.
 MAX_SKIP_STREAK = 10
 
 
@@ -45,8 +56,36 @@ def skip_reason(exc):
     if face:
         return "face", face
     if text.startswith("Worker failed: "):
-        return "generator_error", text.removeprefix("Worker failed: ").splitlines()[0][:200]
+        lines = [x.strip() for x in text.removeprefix("Worker failed: ").splitlines() if x.strip()]
+        # Dòng đầu là "<generator> error: <đầu log>", lỗi thật nằm ở dòng cuối: cắt dòng đầu.
+        return "generator_error", " … ".join([lines[0][:100], *lines[1:][-1:]])[:300]
     return None
+
+
+def free_ram():
+    """RAM còn trống (Linux); in cùng tiến độ để thấy RAM cạn trước khi kernel chết."""
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return f", RAM trống {int(line.split()[1]) / 2**20:.1f} GB"
+    except OSError:
+        pass
+    return ""
+
+
+def retry(record):
+    """Record bỏ vì lỗi generator (vd. lỗi code đã sửa): phiên sau làm lại job đó."""
+    return read_json(record).get("kind") == "generator_error"
+
+
+def finished(record):
+    return record.exists() and not retry(record)
+
+
+def has_finished(out, plan, generator):
+    """Đã có job xong của generator: chỉ khi đó setup (provenance) của nó mới phải giữ nguyên."""
+    keys = (j["key"] for j in plan["jobs"] if j.get("generator") == generator)
+    return any(finished(Path(out) / "records" / f"{key}.json") for key in keys)
 
 
 def adapter_for(name):
@@ -102,10 +141,12 @@ class Context:
             self.clean / row["video"], max_side=self.options["max_side"], sample_rate=48000
         )
 
-    def emit(self, key, variant, frames, pcm, parent, cell, kind, span=None, **extra):
+    def emit(
+        self, key, variant, frames, pcm, parent, cell, kind, span=None, video_from=None, **extra
+    ):
         n = len(frames)
         path = self.out / "clips" / f"{key}_{variant}.mp4"
-        encode(frames, pcm, path, self.options["crf"])
+        encode(frames, pcm, path, self.options["crf"], video_from)
         if abs(probe(path)["duration_s"] - n / 25) > 0.1:
             raise ValueError("Encoded duration differs")
         row = {
@@ -139,8 +180,37 @@ class Context:
         return row
 
 
-def run_voice(ctx, job):
+def donor_audio(ctx, job, pcm, key):
+    """(donor, tiếng dài bằng pcm, trường thêm vào sample) cho ② sham (key "sham_donor") / ⑤ ("donor").
+
+    Plan cũ: cắt cứng donor[:samples]. Plan có donor_fit: thử mọi donor trong job["donor_pool"]
+    bằng A.fit_donor (lặng đầu / cuối như clip gốc), lấy donor lệch ít nhất; thứ tự pool cố định
+    nên job giọng và job lip-sync của cùng clip chọn cùng donor. Không donor nào vừa thì cắt cứng
+    donor dài nhất (ghi donor_fit = "cut").
+    """
+    samples = len(pcm)
+    if not job.get("donor_pool"):
+        return job[key], ctx.decode(job[key])["pcm"][:samples], {}
+    lead, tail = A.edge_silence(pcm)
+    pause = ctx.options["donor_fit"]["min_pause_s"]
+    best = None
+    for donor in job["donor_pool"]:
+        audio = decode_audio(ctx.clean / donor["video"], 48000)
+        fitted, window = A.fit_donor(audio, samples, lead, tail, min_pause_s=pause)
+        if window is not None:
+            error = A.fit_error(window, samples, lead, tail)
+            if best is None or error < best[0]:
+                best = (error, donor, fitted, {"donor_window_s": window})
+    if best is None:
+        donor = max(job["donor_pool"], key=lambda d: d["duration_s"])
+        audio = decode_audio(ctx.clean / donor["video"], 48000)[:samples]
+        return donor, np.pad(audio, (0, samples - len(audio))), {"donor_fit": "cut"}
+    return best[1:]
+
+
+def run_voice(ctx, job, engine=None):
     """① real, ② sham full/partial, ③ track A (full) / B (partial, ghép) / C (sửa trực tiếp)."""
+    engine = engine or ctx.engine
     parent, key, seed = job["parent"], job["key"], ctx.plan["seed"]
     rng = random.Random(stable_int(f"{seed}:{key}"))
     media = ctx.decode(parent)
@@ -148,14 +218,20 @@ def run_voice(ctx, job):
     n = len(frames)
     samples = n * SPF
     rows = [ctx.emit(key, "real", frames, pcm, parent, "real", "full")]
+    # Mọi sample của job voice cùng hình với real: chép luồng hình, khỏi encode lại.
+    same = ctx.out / rows[0]["video"]
     noise = A.noise_floor(pcm)
-    if job.get("sham_donor"):
-        donor = ctx.decode(job["sham_donor"])["pcm"][:samples]
+    if job.get("sham_donor") or job.get("donor_pool"):
+        source, donor, extra = donor_audio(ctx, job, pcm, "sham_donor")
         if len(donor) < samples:
             raise ValueError("Sham donor shorter than parent")
-        extra = {"audio_source_id": job["sham_donor"]["source_id"]}
-        extra["parent_ids"] = sorted({parent["source_id"], job["sham_donor"]["source_id"]})
-        rows.append(ctx.emit(key, "sham_full", frames, donor, parent, "sham", "full", **extra))
+        extra["audio_source_id"] = source["source_id"]
+        extra["parent_ids"] = sorted({parent["source_id"], source["source_id"]})
+        rows.append(
+            ctx.emit(
+                key, "sham_full", frames, donor, parent, "sham", "full", video_from=same, **extra
+            )
+        )
         a, b = random_span(rng, n, ctx.options)
         spliced = A.splice(pcm, donor[a * SPF : b * SPF], a * SPF, b * SPF, noise=noise)
         rows.append(
@@ -168,6 +244,7 @@ def run_voice(ctx, job):
                 "sham",
                 "partial",
                 (a / 25, b / 25),
+                video_from=same,
                 **extra,
             )
         )
@@ -187,7 +264,7 @@ def run_voice(ctx, job):
         method = job["voice"]
         voice = {"voice_method": method, "audio_source_id": parent["source_id"]}
         # Track A: đọc lại cả câu bằng giọng nhân bản → thay toàn bộ tiếng.
-        ctx.engine.tts(method, text_of(words), ref_wav, text_of(ref_words), tmp / "a.wav", tmp)
+        engine.tts(method, text_of(words), ref_wav, text_of(ref_words), tmp / "a.wav", tmp)
         track_a, ratio_a = A.fit_whole(A.read_wav(tmp / "a.wav"), samples, ffmpeg())
         rows.append(
             ctx.emit(
@@ -198,6 +275,7 @@ def run_voice(ctx, job):
                 parent,
                 "voice",
                 "full",
+                video_from=same,
                 **voice,
                 stretch_ratio=round(ratio_a, 3),
                 transcript=text_of(words),
@@ -214,7 +292,7 @@ def run_voice(ctx, job):
         if edit is None:
             return rows, {"voice_skipped": "no editable phrase"}
         p, q = round(edit["span"][0] * 25), round(edit["span"][1] * 25)
-        ctx.engine.tts(method, edit["new"], ref_wav, text_of(ref_words), tmp / "b.wav", tmp)
+        engine.tts(method, edit["new"], ref_wav, text_of(ref_words), tmp / "b.wav", tmp)
         insert, ratio_b = A.time_stretch(
             A.trim_silence(A.read_wav(tmp / "b.wav")), (q - p) * SPF, ffmpeg()
         )
@@ -230,6 +308,7 @@ def run_voice(ctx, job):
                 "voice",
                 "partial",
                 span,
+                video_from=same,
                 **voice,
                 stretch_ratio=round(ratio_b, 3),
                 edit=edit,
@@ -247,7 +326,7 @@ def run_voice(ctx, job):
             before = [w["word"] for w in words if w["end"] <= edit["span"][0] + 1e-6]
             after = [w["word"] for w in words if w["start"] >= edit["span"][1] - 1e-6]
             text = " ".join([*before, edit["new"], *after])
-            ctx.engine.inpaint(job["inpaint"], whole, span, text, tmp / "c.wav")
+            engine.inpaint(job["inpaint"], whole, span, text, tmp / "c.wav")
             painted = A.read_wav(tmp / "c.wav")
             painted = np.pad(painted, (0, max(0, samples - len(painted))))[:samples]
             # Chỉ lấy đoạn đã sửa (vocoder tạo lại cả câu), nối 5 ms để giữ tiếng gốc ngoài đoạn.
@@ -269,6 +348,7 @@ def run_voice(ctx, job):
                     "voice",
                     "partial",
                     span,
+                    video_from=same,
                     voice_method=job["inpaint"],
                     audio_source_id=parent["source_id"],
                     edit=edit,
@@ -285,6 +365,8 @@ def run_lipsync(ctx, job, synthesize, gen_info, gpu=None):
     n, samples = len(frames), len(frames) * SPF
     note = {}
     track = None
+    if cell == "donor":
+        source, donor, donor_extra = donor_audio(ctx, job, pcm, "donor")
     if cell == "both":
         wav = ctx.out / "tracks" / f"{job['voice_key']}.wav"
         if not wav.is_file():
@@ -298,6 +380,10 @@ def run_lipsync(ctx, job, synthesize, gen_info, gpu=None):
         "both": ctx.out / "tracks" / f"{job['voice_key']}.wav" if track is not None else None,
     }[cell]
     with tempfile.TemporaryDirectory(dir=ctx.out) as tmp:
+        if cell == "donor" and job.get("donor_pool"):
+            # Generator nhép theo đúng tiếng sẽ ghép vào sample (donor đã căn lặng đầu / cuối).
+            driving = Path(tmp) / "donor.wav"
+            A.write_wav(driving, donor)
         target = Path(tmp) / "generated.mkv"
         call = {"gpu": gpu} if gpu is not None else {}
         synthesize(
@@ -322,11 +408,11 @@ def run_lipsync(ctx, job, synthesize, gen_info, gpu=None):
     if cell == "source":
         full_pcm, extra = pcm, {"audio_source_id": parent["source_id"]}
     elif cell == "donor":
-        donor = ctx.decode(job["donor"])["pcm"][:samples]
         full_pcm = donor
         extra = {
-            "audio_source_id": job["donor"]["source_id"],
-            "parent_ids": sorted({parent["source_id"], job["donor"]["source_id"]}),
+            **donor_extra,
+            "audio_source_id": source["source_id"],
+            "parent_ids": sorted({parent["source_id"], source["source_id"]}),
         }
     else:
         full_pcm = track
@@ -376,8 +462,21 @@ def run_lipsync(ctx, job, synthesize, gen_info, gpu=None):
     return rows, {}
 
 
+def batch_clips(plan, batch):
+    """Clip cha của đợt k / n (batch = (k, n)): clip theo thứ tự trong plan, cắt n phần liền nhau.
+
+    Thứ tự plan cũng là thứ tự phiên voice chạy, nên đợt đầu có giọng trước.
+    """
+    k, n = batch
+    if not 1 <= k <= n:
+        raise ValueError(f"Batch must be k/n with 1 <= k <= n, got {k}/{n}")
+    clips = list(dict.fromkeys(j["parent"]["clip_id"] for j in plan["jobs"]))
+    return set(clips[(k - 1) * len(clips) // n : k * len(clips) // n])
+
+
 def run_generation(cfg, phase, engine=None, transcriber=None, synthesizers=None):
-    """phase: "voice" | "lipsync". cfg["session_generators"] giới hạn generator của phiên."""
+    """phase: "voice" | "lipsync". cfg["session_generators"] giới hạn generator của phiên,
+    cfg["session_batch"] = (k, n) giới hạn ở đợt k / n clip cha."""
     plan = read_json(cfg["plan"])
     out = Path(cfg["generated_dataset"])
     out.mkdir(parents=True, exist_ok=True)
@@ -386,6 +485,17 @@ def run_generation(cfg, phase, engine=None, transcriber=None, synthesizers=None)
     if phase == "lipsync":
         active = set(cfg.get("session_generators") or {j["generator"] for j in jobs})
         jobs = [j for j in jobs if j["generator"] in active]
+    if cfg.get("session_batch"):
+        keep = batch_clips(plan, cfg["session_batch"])
+        jobs = [j for j in jobs if j["parent"]["clip_id"] in keep]
+    if phase == "lipsync":
+        # Thiếu record giọng thì run_lipsync lặng lẽ đổi ⑥ thành ④; bắt chạy / gộp voice trước.
+        waiting = sum(
+            j["cell"] == "both" and not finished(out / "records" / f"{j['voice_key']}.json")
+            for j in jobs
+        )
+        if waiting:
+            raise RuntimeError(f"{waiting} job ⑥ chưa có record giọng: chạy hoặc gộp voice trước")
     lock = out / "generation.json"
     log = (
         read_json(lock)
@@ -405,30 +515,43 @@ def run_generation(cfg, phase, engine=None, transcriber=None, synthesizers=None)
             else:
                 adapter = adapter_for(name)
                 synth[name], infos[name] = adapter.synthesize, adapter.provenance(cfg)
-            if log["provenance"].get(name, infos[name]) != infos[name]:
-                raise ValueError(f"{name} differs from earlier sessions")
+            old = log["provenance"].get(name, infos[name])
+            if (
+                old != infos[name]
+                and has_finished(out, plan, name)
+                and not still_valid(name, old, infos[name])
+            ):
+                if name not in REDO or old.get("adapter_sha256") != REDO[name]:
+                    raise ValueError(f"{name} differs from earlier sessions")
+                # Adapter cũ có lỗi: job đã xong của generator thành job lỗi, phiên này làm lại.
+                for job in plan["jobs"]:
+                    record = out / "records" / f"{job['key']}.json"
+                    if job.get("generator") == name and finished(record):
+                        write_json(record, {"skipped": "adapter cũ lỗi", "kind": "generator_error"})
             log["provenance"][name] = infos[name]
     else:
         if transcriber is None:
             from vn_av_df.generation.voice.asr import Transcriber
 
             transcriber = Transcriber(cfg["generation"]["asr_model"], cfg["device"], out / "asr")
-        if engine is None:
-            from vn_av_df.generation.voice.engines import Engine
-
-            engine = Engine(cfg)
     write_json(lock, log)
     ctx = Context(cfg, plan, out, engine, transcriber)
     records = out / "records"
     records.mkdir(exist_ok=True)
-    todo = [j for j in jobs if not (records / f"{j['key']}.json").exists()]
+    todo = [j for j in jobs if not finished(records / f"{j['key']}.json")]
     print(f"{phase}: {len(jobs)} job, còn {len(todo)}", flush=True)
     for leftover in out.glob("tmp*"):
         shutil.rmtree(leftover, ignore_errors=True)
     gpus = list(cfg.get("generation_gpus") or [None])
+    engines = {gpu: engine for gpu in gpus}
+    if phase == "voice" and engine is None:
+        from vn_av_df.generation.voice.engines import Engine
+
+        # Mỗi luồng một GPU: worker giọng nạp model trên GPU của luồng gọi nó.
+        engines = {gpu: Engine(cfg, gpu) for gpu in gpus}
     deadline = cfg.get("generation_deadline")
     began = time.monotonic()
-    state = {"done": 0, "skipped": 0, "streak": 0}
+    state = {"done": 0, "skipped": 0, "streak": 0, "errors": 0}
     timing = Counter()
     count = Counter()
 
@@ -440,7 +563,7 @@ def run_generation(cfg, phase, engine=None, transcriber=None, synthesizers=None)
         tick = time.monotonic()
         try:
             if phase == "voice":
-                rows, note = run_voice(ctx, job)
+                rows, note = run_voice(ctx, job, engines[gpu])
             else:
                 name = job["generator"]
                 rows, note = run_lipsync(ctx, job, synth[name], infos[name], gpu)
@@ -452,15 +575,17 @@ def run_generation(cfg, phase, engine=None, transcriber=None, synthesizers=None)
             with ctx.lock:
                 state["skipped"] += 1
                 state["streak"] += 1
-                if state["streak"] >= MAX_SKIP_STREAK:
+                state["errors"] += reason[0] != "face"
+                if state["errors"] >= MAX_SKIP_STREAK or state["streak"] >= 3 * MAX_SKIP_STREAK:
                     raise RuntimeError(
                         f"{state['streak']} jobs skipped in a row: {reason}"
                     ) from exc
+            print(f"[{phase}] {job['key']} bỏ qua ({reason[0]}): {reason[1]}", flush=True)
             return []
         write_json(records / f"{job['key']}.json", {"rows": rows, **note})
         with ctx.lock:
             state["done"] += 1
-            state["streak"] = 0
+            state["streak"] = state["errors"] = 0
             label = job.get("generator", job.get("voice"))
             timing[label] += time.monotonic() - tick
             count[label] += 1
@@ -469,17 +594,60 @@ def run_generation(cfg, phase, engine=None, transcriber=None, synthesizers=None)
         print(
             f"[{phase}] {job['key']} {job.get('generator') or job.get('voice')} "
             f"{job['parent']['split']} → {len(rows)} sample | {time.monotonic() - tick:.0f}s, "
-            f"xong {state['done']}/{len(todo)}, còn ~{left / 60:.0f} phút",
+            f"xong {state['done']}/{len(todo)}, còn ~{left / 60:.0f} phút{free_ram()}",
             flush=True,
         )
         return rows
 
-    slots = list(gpus)
+    free = queue.Queue()
+    for gpu in gpus:
+        free.put(gpu)
+
+    def on_free_gpu(job):
+        # Mỗi job đang chạy giữ riêng một GPU, nên hai job không gọi cùng lúc một worker.
+        gpu = free.get()
+        try:
+            return one(job, gpu)
+        finally:
+            free.put(gpu)
+
+    # Chạy hết một hệ giọng / generator rồi tắt worker của nó: mỗi lúc chỉ vài process model
+    # nằm trong RAM (Kaggle T4×2 ~30 GB; giữ mọi hệ trên cả 2 GPU thì hết RAM).
+    groups = {}
+    # Lip-sync chạy theo thứ tự GENERATORS của phiên: generator cần thử đặt đầu, lỗi hiện sớm.
+    order = list(cfg.get("session_generators") or [])
+    for job in sorted(
+        todo, key=lambda j: order.index(j["generator"]) if j.get("generator") in order else 0
+    ):
+        groups.setdefault(job.get("voice") or job.get("generator"), []).append(job)
+    failed = {}
     try:
-        with ThreadPoolExecutor(max_workers=len(slots)) as pool:
-            futures = [pool.submit(one, job, slots[i % len(slots)]) for i, job in enumerate(todo)]
-            for future in as_completed(futures):
-                future.result()
+        for name, group in groups.items():
+            state["streak"] = state["errors"] = 0  # chuỗi lỗi của generator trước không tính
+            try:
+                # Job đầu chạy một mình: lần đầu generator tự tải model phụ (vd. insightface của
+                # LatentSync), hai GPU cùng tải thì đụng thư mục.
+                on_free_gpu(group[0])
+                with ThreadPoolExecutor(max_workers=len(gpus)) as pool:
+                    futures = [pool.submit(on_free_gpu, job) for job in group[1:]]
+                    try:
+                        for future in as_completed(futures):
+                            future.result()
+                    except BaseException:
+                        # Không huỷ thì pool vẫn chạy hết job còn lại và nuốt lỗi của chúng.
+                        for future in futures:
+                            future.cancel()
+                        raise
+            except Exception as exc:
+                # Một hệ lỗi thì dừng hệ đó, các hệ khác vẫn chạy và phiên kết thúc bình thường:
+                # Output của phiên Kaggle lỗi không gắn được vào phiên sau.
+                text = f"{type(exc).__name__}: {exc}"
+                # Giữ cả dòng cuối traceback: log upstream ở đầu dễ chiếm hết chỗ.
+                failed[name] = text if len(text) <= 2000 else f"{text[:300]}\n...\n{text[-1700:]}"
+                print(
+                    f"[{phase}] {name} DỪNG, job chưa làm để phiên sau: {failed[name]}", flush=True
+                )
+            worker.close_all()
     finally:
         worker.close_all()
         log["sessions"].append(
@@ -493,12 +661,13 @@ def run_generation(cfg, phase, engine=None, transcriber=None, synthesizers=None)
             }
         )
         write_json(lock, log)
-    remaining = sum(not (records / f"{j['key']}.json").exists() for j in jobs)
+    remaining = sum(not finished(records / f"{j['key']}.json") for j in jobs)
     return {
         "phase": phase,
         "done": state["done"],
         "skipped": state["skipped"],
         "remaining": remaining,
+        "failed": failed,
     }
 
 
@@ -574,18 +743,46 @@ def merge_previous(cfg, sources):
             plan_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(other_plan, plan_path)
         folder = source / out.relative_to(cfg["root"])
+        log = folder / "generation.json"
+        take = {}
+        if log.is_file() and (out / "generation.json").exists():
+            # Cùng generator chạy ở hai nơi với setup khác → record lẫn hai phiên bản; dừng trước khi chép.
+            # Bên chưa xong job nào của generator đó (vd. phiên lỗi trước khi sửa code) thì nhường.
+            mine, theirs, plan = (
+                read_json(out / "generation.json"),
+                read_json(log),
+                read_json(plan_path),
+            )
+            for name, info in theirs["provenance"].items():
+                old = mine["provenance"].get(name, info)
+                if old == info or still_valid(name, old, info) or not has_finished(out, plan, name):
+                    take[name] = info
+                elif still_valid(name, info, old):
+                    pass  # bên kia chạy bản cũ tương thích: giữ provenance mới của bên này
+                elif has_finished(folder, plan, name):
+                    raise ValueError(f"{name} ran with another setup in {source}")
+        # Job ở đây bỏ vì lỗi generator nhưng phiên kia đã làm lại xong: lấy mọi file của job đó.
+        here = out / "records"
+        redone = {
+            p.stem
+            for p in (folder / "records").glob("*.json")
+            if (here / p.name).exists() and retry(here / p.name) and not retry(p)
+        }
         for path in sorted(folder.rglob("*")):
             if not path.is_file() or path.name == "generation.json":
                 continue
             target = out / path.relative_to(folder)
-            if target.exists():
-                if path.parent.name == "records" and read_json(target) != read_json(path):
+            if target.exists() and path.stem.split("_")[0] not in redone:
+                if (
+                    path.parent.name == "records"
+                    and not retry(path)
+                    and read_json(target) != read_json(path)
+                ):
                     raise ValueError(f"Conflicting record {path.name}")
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, target)
             copied += 1
-        log = folder / "generation.json"
         if log.is_file():
             mine = (
                 read_json(out / "generation.json") if (out / "generation.json").exists() else None
@@ -597,6 +794,6 @@ def merge_previous(cfg, sources):
                 mine["sessions"] = mine["sessions"] + [
                     s for s in theirs["sessions"] if s not in mine["sessions"]
                 ]
-                mine["provenance"].update(theirs["provenance"])
+                mine["provenance"].update(take)
                 write_json(out / "generation.json", mine)
     return {"files_copied": copied}

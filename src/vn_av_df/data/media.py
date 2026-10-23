@@ -124,3 +124,27 @@ def decode(path, max_duration=60.0, max_side=384, sample_rate=16000):
         "selected_pts_s": np.asarray(selected_pts),
         "origin_s": origin,
     }
+
+
+def decode_audio(path, sample_rate=48000):
+    """Chỉ tiếng (mono float32), cùng gốc thời gian với decode (khỏi giải mã hình)."""
+    import av
+
+    require_file(path, "input video")
+    chunks, origin = [], None
+    with av.open(str(path)) as container:
+        if container.start_time is not None:
+            origin = float(container.start_time / av.time_base)
+        resampler = av.AudioResampler(format="fltp", layout="mono", rate=sample_rate)
+        for frame in container.decode(audio=0):
+            for f in resampler.resample(frame):
+                chunks.append((f.pts, f.time_base, f.to_ndarray().reshape(-1)))
+        chunks.extend(
+            (f.pts, f.time_base, f.to_ndarray().reshape(-1)) for f in resampler.resample(None)
+        )
+    if not chunks:
+        return np.zeros(0, np.float32)
+    if origin is None:
+        origin = float(chunks[0][0] * chunks[0][1])
+    start = max(0, round((float(chunks[0][0] * chunks[0][1]) - origin) * sample_rate))
+    return np.concatenate([np.zeros(start, np.float32), *(c[2] for c in chunks)]).astype(np.float32)

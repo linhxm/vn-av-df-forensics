@@ -41,7 +41,7 @@ ABLATIONS = [
     "trihead_v2_no_trace",
     "trihead_v2_no_ref",
 ]
-SEEDS = [42, 43, 44]
+SEEDS = [42]  # giai đoạn đánh giá part 1: một seed; chốt thiết kế rồi mới chạy [42, 43, 44]
 # Python của từng môi trường worker (environments/worker_envs.py in ra đường dẫn sau khi cài).
 ENVS = {}
 AVH_PYTHON = os.environ.get(
@@ -94,6 +94,10 @@ def config():
             "generators_per_clip": {"train": 2, "validation": 2, "test": 3},
             "partial_range_s": [0.3, 3.0],  # gồm cả đoạn sửa 1 từ (LAV-DF: trung bình 0,65 s)
             "edge_margin_s": 0.5,
+            # Tiếng donor (② sham, ⑤) căn lặng đầu / cuối như clip gốc, chọn donor vừa nhất trong
+            # mọi donor dài ≥ clip gốc - shorter_s (part 1 cắt cứng: AUC khoảng lặng cuối 0,08;
+            # mô phỏng trên part 1: 0,55, không clip nào thiếu donor). Bỏ khoá = cách cũ.
+            "donor_fit": {"shorter_s": 1.0, "min_pause_s": 0.02},
             "blend_probability": 0.5,
             "blend_frames": [2, 6],
             "max_side": 1280,  # giữ nguyên 720p (1280×720) khi sinh
