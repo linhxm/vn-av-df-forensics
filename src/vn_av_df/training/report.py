@@ -102,6 +102,13 @@ def fmt(values):
     )
 
 
+def num(value, digits=3):
+    """Số trong bảng report; thiếu (None / NaN) thì '-' thay vì làm hỏng cả report cuối run."""
+    if value is None or (isinstance(value, float) and value != value):
+        return "-"
+    return f"{value:.{digits}f}"
+
+
 def build_report(cfg):
     runs = Path(cfg["runs"])
     evaluation = read_json(runs / "evaluation.json")
@@ -205,10 +212,10 @@ def build_report(cfg):
         if point:
             rates = point["base_rates"]
             lines.append(
-                f"| {name} | {point['tpr']:.3f} | {point['fpr']:.3f} | "
-                f"{rates['0.5']['precision']:.3f} | {rates['0.1']['precision']:.3f} | "
-                f"{rates['0.01']['precision']:.3f} | "
-                f"{rates['0.5']['false_alarms_per_1000_real']:.0f} |"
+                f"| {name} | {num(point['tpr'])} | {num(point['fpr'])} | "
+                f"{num(rates['0.5']['precision'])} | {num(rates['0.1']['precision'])} | "
+                f"{num(rates['0.01']['precision'])} | "
+                f"{num(rates['0.5']['false_alarms_per_1000_real'], 0)} |"
             )
     lines += [
         "",
@@ -223,7 +230,7 @@ def build_report(cfg):
             values = [
                 temporal.get(k) for k in ("ap@0.5", "ap@0.75", "ap@0.95", "ar@1", "ar@5", "ar@10")
             ]
-            lines.append(f"| {name} | " + " | ".join(f"{v:.3f}" for v in values) + " |")
+            lines.append(f"| {name} | " + " | ".join(num(v) for v in values) + " |")
     lines += ["", "## Phân rã (seed đầu tiên của mỗi model, tác vụ ai)", ""]
     for name, items in sorted(by_model.items()):
         folder, metrics = sorted(items)[0]
