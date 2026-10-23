@@ -54,12 +54,13 @@ WANDB_CELL = """
 # Thêm secret WANDB_API_KEY: Add-ons → Secrets. Không đẩy ảnh / video người thật.
 USE_WANDB = True
 WANDB_PROJECT = "vn-av-df-v003"
+WANDB_ENTITY = "vn-av-df-capstone"  # team trong org vn-av-df-capstone-org; key tạo trong org đó
 if USE_WANDB:
     from kaggle_secrets import UserSecretsClient
     os.environ["WANDB_API_KEY"] = UserSecretsClient().get_secret("WANDB_API_KEY")
     os.environ["WANDB_DIR"] = "/kaggle/temp"  # file tạm W&B ở ngoài Output
     os.makedirs(os.environ["WANDB_DIR"], exist_ok=True)
-WANDB = {"project": WANDB_PROJECT} if USE_WANDB else None
+WANDB = {"project": WANDB_PROJECT, "entity": WANDB_ENTITY} if USE_WANDB else None
 """
 
 ENV_HELPER = '''
