@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from vn_av_df import worker
-from vn_av_df.common.runtime import fingerprint, read_json, sha, write_json
+from vn_av_df.common.runtime import environment, fingerprint, read_json, sha, write_json
 from vn_av_df.data.media import decode, decode_audio, ffmpeg, probe
 from vn_av_df.data.render import encode
 from vn_av_df.generation.cells import labels
@@ -28,6 +28,7 @@ from vn_av_df.generation.plan import stable_int
 from vn_av_df.generation.voice import audio as A
 from vn_av_df.generation.voice.asr import text_of
 from vn_av_df.generation.voice.edit import choose_edit
+from vn_av_df.progress import system_status
 
 SPF = 1920  # mẫu 48 kHz mỗi frame 25 Hz
 # Lỗi generator không thấy mặt ở một số frame (bước cắt chỉ kiểm mặt ở vài điểm lấy mẫu).
@@ -624,6 +625,11 @@ def run_generation(cfg, phase, engine=None, transcriber=None, synthesizers=None)
     try:
         for name, group in groups.items():
             state["streak"] = state["errors"] = 0  # chuỗi lỗi của generator trước không tính
+            print(
+                f"== [{phase}] {name}: {len(group)} job trên {len(gpus)} GPU "
+                f"(job đầu chạy một mình để tải model phụ) | {system_status()}",
+                flush=True,
+            )
             try:
                 # Job đầu chạy một mình: lần đầu generator tự tải model phụ (vd. insightface của
                 # LatentSync), hai GPU cùng tải thì đụng thư mục.
@@ -658,6 +664,11 @@ def run_generation(cfg, phase, engine=None, transcriber=None, synthesizers=None)
                 "done": state["done"],
                 "skipped": state["skipped"],
                 "seconds_per_job": {k: round(timing[k] / count[k], 1) for k in count},
+                # Generator / hệ giọng dừng giữa phiên và lý do (trước chỉ in ra màn hình).
+                "failed": failed,
+                "generators": sorted(active) if active else None,
+                "batch": list(cfg["session_batch"]) if cfg.get("session_batch") else None,
+                "environment": environment(),
             }
         )
         write_json(lock, log)

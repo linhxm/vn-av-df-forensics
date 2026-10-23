@@ -2,6 +2,7 @@
 
 import json
 import sys
+import time
 from pathlib import Path
 
 from vn_av_df import worker
@@ -62,6 +63,14 @@ class AVHubertVideoEncoder:
         # Worker sống suốt lượt trích (nạp fairseq/checkpoint/dlib một lần), mỗi encoder một
         # worker; worker chết thì lần sau tự mở lại.
         if self.worker is None or not self.worker.alive:
+            again = self.worker is not None
+            device = self.cfg.get("device", "cpu")
+            print(
+                f"AV-HuBERT worker ({device}): {'mở lại sau khi worker chết' if again else 'khởi động'}"
+                ", nạp checkpoint + dlib…",
+                flush=True,
+            )
+            began = time.monotonic()
             self.worker = worker.Worker(
                 [
                     self.cfg.get("python", sys.executable),
@@ -70,6 +79,10 @@ class AVHubertVideoEncoder:
                     "--serve",
                     json.dumps(self.cfg, sort_keys=True),
                 ]
+            )
+            print(
+                f"AV-HuBERT worker ({device}): sẵn sàng sau {time.monotonic() - began:.0f} s",
+                flush=True,
             )
         self.worker.call(
             dict(

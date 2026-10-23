@@ -100,20 +100,26 @@ def open_run(cfg, job_type, name, group=None, config=None, folder=None, tags=())
 
     record = Path(folder) / f"wandb-{name}.json" if folder else None
     previous = read_json(record) if record and record.exists() else {}
-    run = wandb.init(
-        project=options.get("project", PROJECT),
-        entity=options.get("entity"),
-        mode=options.get("mode", "online"),
-        dir=options.get("dir") or os.environ.get("WANDB_DIR"),
-        job_type=job_type,
-        group=group,
-        name=name,
-        id=previous.get("id"),
-        resume="allow",
-        config=config or {},
-        tags=list(tags),
-        reinit=True,
-    )
+    try:
+        run = wandb.init(
+            project=options.get("project", PROJECT),
+            entity=options.get("entity"),
+            mode=options.get("mode", "online"),
+            dir=options.get("dir") or os.environ.get("WANDB_DIR"),
+            job_type=job_type,
+            group=group,
+            name=name,
+            id=previous.get("id"),
+            resume="allow",
+            config=config or {},
+            tags=list(tags),
+            reinit=True,
+        )
+    except Exception as exc:  # key / quyền / mạng: log W&B là bản sao, file local vẫn ghi đủ
+        print(
+            f"CẢNH BÁO W&B: không mở được run {name} ({exc}); chạy tiếp không log W&B", flush=True
+        )
+        return Run()
     if record:
         write_json(record, {"id": run.id, "name": name, "job_type": job_type, "group": group})
     return Run(wandb, run)

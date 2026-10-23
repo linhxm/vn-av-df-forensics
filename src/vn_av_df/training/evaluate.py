@@ -22,6 +22,7 @@ Báo cáo:
 Kết quả: `<run>/<model>_seed<seed>/metrics.json`, `predictions-{val,test}.npz`; khoá test-lock.json.
 """
 
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -303,6 +304,13 @@ def breakdown(rows, scores, task, seen):
         labels = [1] * len(members) + [0] * len(reals)
         values = [scores[r["sample_id"]] for r in members] + real_scores
         out[name] = {"n": len(members), "auc": auc(labels, values)}
+    # Theo giới (Model Cards: kết quả phân rã theo nhóm nhân khẩu học): dương và real cùng giới.
+    for gender in sorted({r.get("gender") for r in rows if r.get("gender")}):
+        positives = [r for r in rows if r.get("gender") == gender and target(r, task)]
+        negatives = [r for r in reals if r.get("gender") == gender]
+        labels = [1] * len(positives) + [0] * len(negatives)
+        values = [scores[r["sample_id"]] for r in positives + negatives]
+        out[f"gender/{gender}"] = {"n": len(positives), "auc": auc(labels, values)}
     return out
 
 
@@ -540,9 +548,22 @@ def evaluate_all(cfg, force=False):
         "voices": {r["voice_method"] for r in train_rows if r.get("voice_method")},
     }
     results = {}
-    for folder in models:
-        print(f"Evaluate {folder.name}", flush=True)
+    began = time.monotonic()
+    test = sum(r["split"] == "test" for r in rows)
+    for index, folder in enumerate(models, 1):
+        print(f"=== evaluate [{index}/{len(models)}] {folder.name}: {test} mẫu test", flush=True)
+        tick = time.monotonic()
         results[folder.name] = evaluate_model(cfg, folder, rows, device, seen)
+        aucs = " ".join(
+            f"{t} {m['auc']:.3f}"
+            for t, m in results[folder.name]["tasks"].items()
+            if m.get("auc") is not None
+        )
+        print(
+            f"    {folder.name}: AUC test {aucs} | {time.monotonic() - tick:.0f} s "
+            f"(tổng {(time.monotonic() - began) / 60:.1f} phút)",
+            flush=True,
+        )
     results.update(evaluate_ensemble(cfg, runs, rows, seen))
     write_json(lock, {"stamp": fingerprint(stamp), "details": stamp})
     write_json(

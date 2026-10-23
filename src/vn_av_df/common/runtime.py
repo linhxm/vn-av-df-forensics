@@ -15,6 +15,49 @@ import numpy as np
 VERSION = "1.0"
 
 
+def environment():
+    """Phần mềm / phần cứng của lần chạy (checklist NeurIPS mục 8, Pineau: hạ tầng tính toán,
+    phiên bản thư viện). Ghi vào file kết quả, không dựa vào W&B (W&B chỉ ghi commit /
+    requirements khi bật Code Saving)."""
+    import platform
+    from importlib import metadata
+
+    info = {"python": platform.python_version(), "platform": platform.platform()}
+    packages = {}
+    for name in ("torch", "numpy", "transformers", "scikit-learn", "av", "opencv-python"):
+        try:
+            packages[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            continue
+    info["packages"] = packages
+    try:
+        import torch
+
+        info["cuda"] = torch.version.cuda
+        info["cudnn"] = (
+            torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None
+        )
+        info["cudnn_deterministic"] = torch.backends.cudnn.deterministic
+        info["cudnn_benchmark"] = torch.backends.cudnn.benchmark
+        info["gpus"] = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]
+    except ImportError:
+        info["gpus"] = []
+    try:
+        info["nvidia_driver"] = (
+            subprocess.run(
+                ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            .stdout.strip()
+            .splitlines()[0]
+        )
+    except (OSError, IndexError, subprocess.SubprocessError):
+        info["nvidia_driver"] = None
+    return info
+
+
 def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 

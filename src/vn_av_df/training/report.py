@@ -109,11 +109,25 @@ def build_report(cfg):
     by_model = defaultdict(list)
     for folder, metrics in results.items():
         by_model[model_name(folder)].append((folder, metrics))
+    seeds = sorted({len(items) for items in by_model.values()})
     lines = [
         "# Kết quả v003",
         "",
         f"Generator đã thấy khi train: {', '.join(evaluation['seen']['generators'])}",
         f"Giọng đã thấy khi train: {', '.join(evaluation['seen']['voices'])}",
+        "",
+        "## Cách đọc",
+        "",
+        f"- Số seed mỗi model: {', '.join(map(str, seeds))}. "
+        "± là độ lệch chuẩn giữa các seed (ddof 0); một seed thì không có ±.",
+        f"- CI 95 % của cổng: bootstrap theo speaker ({cfg.get('bootstrap_replicates', 1000)} lần, "
+        "phân vị 2,5-97,5 %), trên seed đầu tiên: chỉ gồm biến động do mẫu người ở test, "
+        "không gồm biến động do khởi tạo / thứ tự dữ liệu"
+        + (" (chạy 1 seed)." if seeds == [1] else "."),
+        "- Không dò siêu tham số: baseline theo công thức của code gốc, M1 / M2 đặt trước; "
+        "checkpoint và ngưỡng chọn trên validation; test mở một lần (`test-lock.json`).",
+        "- Môi trường, commit, dữ liệu, cache: `provenance.json`; thời gian từng lần train: "
+        "`<model>_seed<seed>/history.json`.",
         "",
         "## AUC test (mean ± std theo seed)",
         "",

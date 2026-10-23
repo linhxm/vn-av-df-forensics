@@ -656,6 +656,65 @@ def test_vrt_worker_falls_back_to_s3fd_box(tmp_path):
     assert failed.returncode and "Face not detected" in failed.stderr
 
 
+def test_wandb_failure_does_not_stop_run(monkeypatch, capsys):
+    """Key / quyền W&B sai: cảnh báo rồi chạy tiếp không log (file local vẫn là bằng chứng)."""
+    import sys
+    import types
+
+    from vn_av_df import tracking
+
+    fake = types.ModuleType("wandb")
+
+    def init(**kwargs):
+        raise RuntimeError("the provided API key cannot access this resource")
+
+    fake.init = init
+    monkeypatch.setitem(sys.modules, "wandb", fake)
+    run = tracking.open_run({"wandb": {"project": "p"}}, "prepare", "x")
+    assert not run.active
+    run.log({"a": 1})
+    run.summary({"b": 2})
+    run.finish()
+    assert "CẢNH BÁO W&B" in capsys.readouterr().out
+
+
+def test_environment_and_lipinc_fallback_count(tmp_path):
+    from vn_av_df.common.runtime import environment, write_json
+    from vn_av_df.training.prepare import cache_quality
+
+    env = environment()
+    assert env["python"] and "numpy" in env["packages"] and isinstance(env["gpus"], list)
+    rows = [
+        {"sample_id": "a", "cell": "real"},
+        {"sample_id": "b", "cell": "source"},
+        {"sample_id": "c", "cell": "source"},  # chưa trích: không tính
+    ]
+    write_json(tmp_path / "a.json", {"fallback": True})
+    write_json(tmp_path / "b.json", {"fallback": False})
+    count = cache_quality("lipinc", tmp_path, rows)["lipinc_fallback"]
+    assert count["samples"] == 2 and count["fallback"] == 1 and count["ratio"] == 0.5
+    assert count["ratio_by_cell"] == {"real": 1.0, "source": 0.0}
+    assert cache_quality("avhubert", tmp_path, rows) == {}
+
+
+def test_progress_prints_first_periodic_last_and_heartbeat(capsys):
+    """Tiến độ: mục đầu (gồm khởi động), mỗi every_n, mục cuối; luồng nền in "vẫn chạy"."""
+    import time
+
+    from vn_av_df.progress import Progress, duration, system_status
+
+    with Progress("x", 5, every_n=2, every_s=3600) as p:
+        for _ in range(5):
+            p.step()
+    lines = [x for x in capsys.readouterr().out.splitlines() if x.startswith("x:")]
+    assert [x.split()[1] for x in lines] == ["1/5", "2/5", "4/5", "5/5"]
+    assert "gồm khởi động" in lines[0]
+    with Progress("y", 3, every_s=0.05):
+        time.sleep(0.3)
+    assert "y: vẫn chạy, 0/3" in capsys.readouterr().out
+    assert isinstance(system_status(), str) and duration(4000) == "1 giờ 06 phút"
+
+
 def test_env_recipes_cover_every_worker():
     import sys
     from pathlib import Path

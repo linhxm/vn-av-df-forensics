@@ -275,7 +275,18 @@ Chốt 18/10: **chỉ cho quá trình train** (prepare, train, evaluate, report)
 | `evaluate` (một lần) | - | bảng tổng (AUC, AP, EER, F1, FAR), phân rã, theo người, ref-norm, định vị, ROC, histogram điểm theo ô; `evaluation.json` + `test-lock.json` + `metrics.json` + `predictions-test.npz` |
 | `report` | - | bảng AUC mean ± std theo seed, **các cổng + CI 95 %**; `report.md` + `gates.json` |
 
-Mỗi run ghi config (cấu hình, seed, hash dữ liệu / test-lock); run id lưu cạnh kết quả, chạy lại sau khi bị ngắt ghi tiếp đúng run. Bật trong notebook: `USE_WANDB = True`, secret `WANDB_API_KEY`.
+Mỗi run ghi config (cấu hình, seed, hash dữ liệu / test-lock); run id lưu cạnh kết quả, chạy lại sau khi bị ngắt ghi tiếp đúng run. Bật trong notebook: `USE_WANDB = True`, secret `WANDB_API_KEY` (key tạo trong org `vn-av-df-capstone-org`), entity = team `vn-av-df-capstone` (23/10: key mới gắn với một org; để trống entity thì W&B ghi vào team mặc định của key và báo "cannot access this resource").
+
+**Bằng chứng nằm ở file local, W&B là bản sao** (bổ sung 23/10 theo checklist NeurIPS mục 6-8, ML Reproducibility Checklist v2.0 của Pineau, Model Cards): W&B lỗi thì chỉ cảnh báo và chạy tiếp.
+
+| Mục checklist | Ghi ở đâu |
+|---|---|
+| Môi trường phần mềm / phần cứng (Python, torch, CUDA, cuDNN, cờ tất định, GPU, driver, gói chính) | `provenance.json` (train), `extraction.json` (prepare), `benchmark.json`, `generation.json` (mỗi phiên sinh) |
+| Dữ liệu bị loại / xử lý khác luật gốc | tỉ lệ frame hợp lệ (avhubert, mouth); **tỉ lệ clip LIPINC theo luật dự phòng** theo ô (`extraction.json` của lipinc) |
+| Cách chọn siêu tham số | `provenance.json: hyperparameter_search = null` + câu trong `report.md` (không dò; baseline theo code gốc; M1 / M2 đặt trước) |
+| Nguồn biến động của CI, số lần chạy | mục "Cách đọc" đầu `report.md` (số seed, bootstrap theo speaker 1.000 lần, phân vị 2,5-97,5 %, không gồm biến động do khởi tạo khi chạy 1 seed) |
+| Kết quả phân rã theo nhóm nhân khẩu học | `breakdown` thêm `gender/F`, `gender/M` (dương và real cùng giới) |
+| Compute mỗi lần chạy + tổng, kể cả phiên hỏng | giờ train (`history.json`), thời gian trích (`extraction.json`), phiên sinh (`generation.json`, thêm generator dừng và lý do); tổng hợp tay ở §11.1 |
 
 ## 10. Demo (Kaggle, Gradio)
 
@@ -292,6 +303,21 @@ Mỗi run ghi config (cấu hình, seed, hash dữ liệu / test-lock); run id l
 - Khác code gốc khi cài lại: §4.1.
 - **Đã kiểm (23/10):** 52 test trên dữ liệu tổng hợp (thêm: ngắt giữa epoch rồi train tiếp đúng epoch, provenance, benchmark), trong đó forward / backward cả 10 cấu hình (gồm XLS-R tí hon cho BL-A); train → test → BL-Ens → report end-to-end cho cả đội hình; luật chọn frame LIPINC-V2 (luật gốc + dự phòng); NPR theo định nghĩa pixel tham chiếu; gradient reversal; pseudo-fake; encoder LIPINC / waveform / tư thế đầu trên video tổng hợp; demo với LIPINC-V2 (khung không theo frame) và M2. **AVH-Align: nạp checkpoint công bố cho điểm giống hệt `FusionModel` gốc** ●. Ruff sạch.
 - **Chưa kiểm** (cần GPU + Internet thật): AV-HuBERT Large, XLS-R thật (trích và fine-tune), train thật, thời gian / bộ nhớ của BL-A trên T4, tỉ lệ clip LIPINC rơi vào luật dự phòng trên dữ liệu thật, demo với checkpoint thật.
+
+### 11.1. Nhật ký compute (checklist NeurIPS mục 8: kể cả phiên hỏng)
+
+Giờ phiên là thời gian chạy của phiên (Kaggle T4 × 2 chạy song song 2 job, nên giờ GPU ≈ 2 × giờ phiên). Thêm một dòng cho mỗi phiên mới.
+
+| Ngày | Việc | Máy | Giờ phiên | Kết quả | Nguồn |
+|---|---|---|---|---|---|
+| 20-23/10 | Part 1 · phiên giọng (9 phiên) | Kaggle T4 × 2 | 5,4 | 800 job giọng xong (tính cả job làm lại) | `generation.json` |
+| 20-23/10 | Part 1 · phiên lip-sync (15 phiên, trong đó 1 phiên rỗng 0 s và 1 phiên 10 phút bỏ 12 job, 0 xong) | Kaggle T4 × 2 | 49,2 | 1.409 lượt job xong (tính cả VideoRetalking làm lại do adapter cũ), 56 job bỏ ở bản cuối | `generation.json` |
+| 23/10 | Giây / job đo được (trung bình theo phiên) | Kaggle T4 | - | Wav2Lip 46 · MuseTalk 117 · IP-LAP 211 · VideoRetalking 342 · LatentSync 296 · Diff2Lip 186 · giọng 34-79 | `generation.json` |
+| 23/10 | Cắt 0,4 s cuối 7.622 file part 1 (`trim_part1.py`) | Local CPU 16 luồng | 1,4 | xong, 0 cờ lối tắt | output script |
+| 23/10 | Kiểm thử code sau khi gộp nhánh sinh (61 test) | Local CPU | 1,5 | 61 / 61 qua | pytest |
+| 23/10 | Prepare P1 lần 1 | Kaggle T4 × 2 | 0,13 | **hỏng**: W&B từ chối key (chưa trích mẫu nào) | log Kaggle |
+| 23/10 | Prepare P1 lần 2 | Kaggle T4 × 2 | 0,16 | **hỏng**: key đúng nhưng ghi vào team mặc định không có quyền | log Kaggle |
+| 23/10 | Prepare P1 lần 3 (entity `vn-av-df-capstone`) | Kaggle T4 × 2 | … | đang chạy | `extraction.json` |
 
 ## 12. Hạn chế và việc mở (phần model)
 
@@ -334,6 +360,7 @@ Mỗi run ghi config (cấu hình, seed, hash dữ liệu / test-lock); run id l
 | 23/10 | Sao BL-M chỉ học real, sao không học full? | paper chọn real-only để tránh lối tắt; nhưng so với M1 (có giám sát) thì cần bản học full → chạy **cả hai** (`avh_align`, `avh_align_sup`) |
 | 23/10 | "Khớp tiếng–môi" là gì khi generator vẽ đúng từng frame? | khớp **khẩu hình ↔ âm**, không phải thời gian; thời gian đã sửa bằng SyncNet, augment −1…+2 làm thời gian vô dụng với model |
 | 23/10 | Chốt: 9 cấu hình × 3 seed | cài đặt đầy đủ (§4-§5); 50 test qua |
+| 23/10 | Log đủ làm bằng chứng chưa (research) | đối chiếu checklist NeurIPS, Pineau v2.0, Model Cards: thêm môi trường, tỉ lệ dự phòng LIPINC, AUC theo giới, mục "Cách đọc" trong report, lý do dừng trong `generation.json`, benchmark lên W&B, W&B lỗi không dừng phiên, nhật ký compute §11.1 (§9) |
 | 23/10 | Giai đoạn đánh giá part 1: bao nhiêu seed? | **1 seed (42)**; thiết kế chốt rồi mới chạy 3 seed (`settings.SEEDS`) |
 | 23/10 | Đề xuất đã có tính mới chưa; baseline có paper không | rà lại: mọi baseline có paper (BL-M/sup do chính Smeu et al. đặt, BL-Ens theo Khalid et al. 2021); từng khối M1 / M2 đều đã có, cái mới là cách ghép + tách lệch / AI có sham; sửa §3 (Feng et al. 2023 đã có đặc trưng theo độ trễ; Referee đã có tham chiếu người); thêm §5.0, gắn link §14 |
 
@@ -361,6 +388,9 @@ Mã arXiv, tên và tác giả đầu kiểm lại bằng arXiv API ngày 23/10/
 - Gradient reversal: Ganin & Lempitsky, ICML 2015, [arXiv 1409.7495](https://arxiv.org/abs/1409.7495) · DANN, [arXiv 1505.07818](https://arxiv.org/abs/1505.07818) · Dao et al. 2026, [arXiv 2602.20805](https://arxiv.org/abs/2602.20805)
 - FiLM: Perez et al., AAAI 2018, [arXiv 1709.07871](https://arxiv.org/abs/1709.07871)
 - LipDA (ICML 2026 poster, chưa có link kiểm được) · Chandrasekaran et al. 2009 (PLoS Comput Biol)
+
+**Chuẩn ghi bằng chứng (§9, §11.1)**
+- [NeurIPS Paper Checklist](https://neurips.cc/public/guides/PaperChecklist) (mục 6 thiết lập, 7 ý nghĩa thống kê, 8 compute kể cả phiên hỏng) · [ML Reproducibility Checklist v2.0, Pineau](https://www.cs.mcgill.ca/~jpineau/ReproducibilityChecklist.pdf) · Model Cards: Mitchell et al., FAT* 2019, [arXiv 1810.03993](https://arxiv.org/abs/1810.03993) · [W&B: những gì tự ghi](https://docs.wandb.ai/guides/track/log) (commit / requirements chỉ khi bật Code Saving)
 
 **Khảo sát §1-§2**
 - BioLip / LADDER: [arXiv 2604.16808](https://arxiv.org/abs/2604.16808) · LoCC: ICME 2026, [arXiv 2606.22772](https://arxiv.org/abs/2606.22772) · PIA: [arXiv 2510.14241](https://arxiv.org/abs/2510.14241) · LipFD: NeurIPS 2024, [arXiv 2401.15668](https://arxiv.org/abs/2401.15668) · X-AVDT: [arXiv 2603.08483](https://arxiv.org/abs/2603.08483)

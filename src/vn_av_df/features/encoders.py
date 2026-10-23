@@ -71,6 +71,7 @@ class XLSREncoder:
                 "weights": sha(require_file(weights, "XLS-R weights")),
             }
             dtype = torch.float16 if self.device.startswith("cuda") else torch.float32
+            print(f"XLS-R: nạp {folder.name} lên {self.device} ({dtype})…", flush=True)
             model = Wav2Vec2Model.from_pretrained(str(folder), torch_dtype=dtype)
         else:
             assets = {"model": "test-fixture"}

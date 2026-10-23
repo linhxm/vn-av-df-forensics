@@ -302,6 +302,9 @@ def test_generation_finalize_counts_and_labels(world):
     assert all(r["label"] == 0 and r["av_mismatch_intervals"] for r in sham)
     # Tiếng sine liền không có chỗ nghỉ: donor cắt cứng và ghi lại.
     assert all(r["donor_fit"] == "cut" for r in rows if r["cell"] in ("sham", "donor"))
+    sessions = json.loads((out / "generation.json").read_text(encoding="utf-8"))["sessions"]
+    assert all("failed" in s and "environment" in s for s in sessions)
+    assert {s["phase"] for s in sessions} == {"voice", "lipsync"}
     per_parent = Counter(r["source_clip_id"] for r in rows if r["split"] == "train")
     # train: real 1 + sham 2 + voice 2 + 3 generator × 2 = 11
     assert set(per_parent.values()) == {11}
@@ -655,6 +658,7 @@ def test_train_evaluate_report_smoke(world):
     ai = metrics["tasks"]["ai"]
     assert ai["ref_norm"]["samples"] > 0 and "cell/both" in ai["breakdown"]
     assert ai["breakdown"]["generator_seen/False"]["n"] > 0
+    assert {"gender/F", "gender/M"} <= ai["breakdown"].keys()  # phân rã theo giới
     point = ai["operating_points"]["fpr_0.05"]
     assert 0 <= point["tpr"] <= 1 and set(point["base_rates"]) == {"0.5", "0.1", "0.01"}
     assert "real" in ai["fpr_by_cell"]
@@ -666,13 +670,20 @@ def test_train_evaluate_report_smoke(world):
     text = Path(built["report"]).read_text(encoding="utf-8")
     assert "| trihead_v2 |" in text and "| bl_ens |" in text and "Cổng" in text
     assert "Điểm vận hành" in text
+    assert "## Cách đọc" in text and "bootstrap theo speaker" in text and "(chạy 1 seed)" in text
     gates = {(g["first"], g["second"], g["task"]): g for g in built["gates"]}
     assert ("trihead_v2", "bl_ens", "ai") in gates
     assert gates[("trihead_v2", "ssl_aasist", "audio")]["subset"] == "unseen_voice"
     # W&B chỉ ở quá trình train: không có run nào của bước sinh fake; run nào cũng đóng.
     fake = world["wandb"]
     assert all(r.finished for r in fake.runs)
-    assert {r.kwargs["job_type"] for r in fake.runs} <= {"prepare", "train", "evaluate", "report"}
+    assert {r.kwargs["job_type"] for r in fake.runs} <= {
+        "prepare",
+        "train",
+        "evaluate",
+        "report",
+        "benchmark",
+    }
     trains = {r.kwargs["name"]: r for r in fake.by_type("train")}
     m1 = trains["trihead_v2_seed42"]
     assert {"loss/train", "val_auc/mismatch", "grad_norm"} <= m1.keys()
@@ -729,6 +740,7 @@ def test_resume_after_interruption_and_provenance(world, tmp_path, monkeypatch):
         records[-1]["selection"]["samples"] == len(rows)
         and "train.py" in records[-1]["code_sha256"]
     )
+    assert records[-1]["environment"]["python"] and "hyperparameter_search" in records[-1]
 
 
 def test_benchmark_estimates_epoch_time(world, tmp_path):

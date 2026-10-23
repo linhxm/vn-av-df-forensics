@@ -20,7 +20,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from vn_av_df.common.runtime import write_json
+from vn_av_df import tracking
+from vn_av_df.common.runtime import environment, write_json
 from vn_av_df.training.models import build
 from vn_av_df.training.train import feature_dim, loaders, recipe
 
@@ -251,5 +252,19 @@ def benchmark(cfg, models=None, steps=10, warmup=2, synthetic=False):
         "models": results,
         "max_hours_total": sum(r.get("max_hours_all_seeds", 0) for r in results.values()),
     }
+    report["environment"] = environment()
     write_json(Path(cfg["runs"]) / "benchmark.json", report)
+    run = tracking.open_run(cfg, "benchmark", f"{Path(cfg['runs']).name}-benchmark")
+    if run.active:
+        columns = ["model", "batch_size", "epoch_minutes", "max_hours_per_seed", "peak_gpu_gb"]
+        run.table(
+            "benchmark/models",
+            columns + ["error"],
+            [
+                [name] + [r.get(c) for c in columns[1:]] + [r.get("error")]
+                for name, r in results.items()
+            ],
+        )
+        run.summary({"benchmark/max_hours_total": report["max_hours_total"], "gpu": report["gpu"]})
+        run.finish()
     return report

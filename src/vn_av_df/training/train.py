@@ -24,8 +24,9 @@ import numpy as np
 import torch
 
 from vn_av_df import tracking
-from vn_av_df.common.runtime import atomic_bytes, read_json, write_json
+from vn_av_df.common.runtime import atomic_bytes, environment, read_json, write_json
 from vn_av_df.dataset import training_dataset
+from vn_av_df.progress import Progress, duration, system_status
 from vn_av_df.training.data import BenchData, cache_dir, collate, speaker_index, to_device
 from vn_av_df.training.models import build
 
@@ -114,12 +115,20 @@ def loaders(cfg, model, rows, seed, train, options=None, speakers=None):
     )
 
 
-def run_epoch(model, loader, optimizer, device, weights, stats=None, clip=5.0, scaler=None):
-    """Loss trung bình; `stats` (dict) nhận thêm trung bình từng thành phần loss + grad norm."""
+def run_epoch(
+    model, loader, optimizer, device, weights, stats=None, clip=5.0, scaler=None, label=None
+):
+    """Loss trung bình; `stats` (dict) nhận thêm trung bình từng thành phần loss + grad norm.
+    `label`: in tiến độ theo batch (batch đầu, rồi mỗi 60 s) kèm loss trung bình tới lúc đó."""
     total, count = 0.0, 0
     parts, norms = Counter(), []
     model.train(optimizer is not None)
     amp = scaler is not None and str(device).startswith("cuda")
+    progress = (
+        Progress(label, len(loader), unit="batch", every_n=10**9, heartbeat=False)
+        if label
+        else None
+    )
     for batch in loader:
         batch = to_device(batch, device)
         with torch.set_grad_enabled(optimizer is not None), torch.autocast("cuda", enabled=amp):
@@ -145,6 +154,8 @@ def run_epoch(model, loader, optimizer, device, weights, stats=None, clip=5.0, s
         count += size
         for key, value in (getattr(model, "loss_parts", None) or {}).items():
             parts[key] += value * size
+        if progress:
+            progress.step(note=f"loss {total / max(1, count):.4f}")
     if stats is not None:
         stats.update({k: v / max(1, count) for k, v in parts.items()})
         if norms:
@@ -300,16 +311,35 @@ def train_one(cfg, name, seed, rows, out):
         start = state["epoch"] + 1
         history.setdefault("resumed_at", []).append(start)
         print(f"{name} seed{seed}: train tiếp từ epoch {start}", flush=True)
+    print(
+        f"{name} seed{seed}: {sum(p.numel() for p in model.parameters()):,} tham số | "
+        f"{len(train_rows)} train / {len(val_rows)} val, {len(train_loader)} batch / epoch | "
+        f"{options.get('optimizer', 'adamw')} lr {lr:g}, batch {options['batch_size']}, tối đa "
+        f"{options['epochs']} epoch, dừng sớm {options['patience']} | AMP {bool(amp)} | "
+        f"real_only {model.real_only}, pseudo-fake {model.pseudo_fake} | {device} | {system_status()}",
+        flush=True,
+    )
     began = time.monotonic()
     for epoch in range(start, options["epochs"] + 1):
         tick = time.monotonic()
         train_loader.dataset.epoch = epoch
         model.on_epoch(epoch, options["epochs"])
         train_stats, val_stats = {}, {}
+        tag = f"{name} seed{seed} epoch {epoch}/{options['epochs']}"
         train_loss = run_epoch(
-            model, train_loader, optimizer, device, weights, train_stats, clip, scaler
+            model,
+            train_loader,
+            optimizer,
+            device,
+            weights,
+            train_stats,
+            clip,
+            scaler,
+            label=f"{tag} train",
         )
-        val_loss = run_epoch(model, val_loader, None, device, weights, val_stats)
+        val_loss = run_epoch(
+            model, val_loader, None, device, weights, val_stats, label=f"{tag} val"
+        )
         if scheduler is not None:
             scheduler.step(val_loss)
         metrics = validation_metrics(model, cfg, val_rows, device)
@@ -343,8 +373,21 @@ def train_one(cfg, name, seed, rows, out):
             },
             step=epoch,
         )
+        improved = best is None or val_loss < best - 1e-4
+        spent = time.monotonic() - began
+        per_epoch = spent / (epoch - start + 1)
+        aucs = " ".join(
+            f"{k.split('/')[1]} {v:.3f}"
+            for k, v in metrics.items()
+            if k.startswith("val_auc/") and v is not None
+        )
+        status = "tốt nhất" if improved else f"chưa tốt hơn {patience + 1}/{options['patience']}"
         print(
-            f"{name} seed{seed} epoch {epoch}: train {train_loss:.4f} val {val_loss:.4f}",
+            f"{tag}: train {train_loss:.4f} val {val_loss:.4f} ({status})"
+            f" | AUC val {aucs or '-'} | lr {optimizer.param_groups[0]['lr']:.2g}"
+            f" | grad {train_stats.get('grad_norm', float('nan')):.2f}"
+            f" | {duration(time.monotonic() - tick)} / epoch, còn tối đa "
+            f"~{duration(per_epoch * (options['epochs'] - epoch))} | {system_status()}",
             flush=True,
         )
         if best is None or val_loss < best - 1e-4:
@@ -393,6 +436,14 @@ def train_one(cfg, name, seed, rows, out):
     resume.unlink(missing_ok=True)  # checkpoint tạm (BL-A ~3,6 GB vì có trạng thái Adam của XLS-R)
     best_epoch = torch.load(out / "best.pt", map_location="cpu", weights_only=False)["epoch"]
     chosen = next(e for e in history["epochs"] if e["epoch"] == best_epoch)
+    print(
+        f"{name} seed{seed} XONG: epoch tốt nhất {best_epoch} (val {best:.4f}), dừng: {stop}, "
+        f"{len(history['epochs'])} epoch trong {duration(time.monotonic() - began)} | "
+        + " ".join(
+            f"{k} {v:.3f}" for k, v in chosen["validation"].items() if k.startswith("val_auc/")
+        ),
+        flush=True,
+    )
     run.summary(
         {
             "best_epoch": best_epoch,
@@ -484,6 +535,10 @@ def provenance(cfg, rows, selection):
         "git": git_state(here.parents[3]),
         "code_sha256": code,
         "assets": assets,
+        "environment": environment(),
+        # Không dò siêu tham số: baseline dùng công thức của code gốc (models.*.train_options),
+        # M1 / M2 đặt trước (settings.training); checkpoint chọn theo val loss.
+        "hyperparameter_search": None,
         "started": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -509,11 +564,28 @@ def train_all(cfg):
         history = []
     write_json(previous, [*history, record])
     report = {}
-    for name in cfg["models"]:
-        for seed in cfg["seeds"]:
-            history = train_one(cfg, name, seed, rows, runs / f"{name}_seed{seed}")
-            report[f"{name}_seed{seed}"] = {
-                "epochs": len(history["epochs"]),
-                "best_val_loss": history.get("best_val_loss"),
-            }
+    jobs = [(name, seed) for name in cfg["models"] for seed in cfg["seeds"]]
+    splits = Counter(r["split"] for r in rows)
+    print(
+        f"train: {len(jobs)} lượt ({len(cfg['models'])} model × seed {cfg['seeds']}) | dữ liệu "
+        f"{dict(splits)} | {runs} | {record['environment'].get('gpus') or 'CPU'}",
+        flush=True,
+    )
+    began = time.monotonic()
+    for index, (name, seed) in enumerate(jobs, 1):
+        folder = runs / f"{name}_seed{seed}"
+        done = (folder / "history.json").is_file() and read_json(folder / "history.json").get(
+            "complete"
+        )
+        print(
+            f"=== [{index}/{len(jobs)}] {name} seed{seed}"
+            f"{': đã xong, bỏ qua' if done else ''} | đã chạy {duration(time.monotonic() - began)}",
+            flush=True,
+        )
+        history = train_one(cfg, name, seed, rows, folder)
+        report[f"{name}_seed{seed}"] = {
+            "epochs": len(history["epochs"]),
+            "best_val_loss": history.get("best_val_loss"),
+        }
+    print(f"train xong {len(jobs)} lượt trong {duration(time.monotonic() - began)}", flush=True)
     return report
