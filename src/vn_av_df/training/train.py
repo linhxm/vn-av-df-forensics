@@ -1,8 +1,15 @@
 """Train model v003 trên cache: mỗi (model, seed) một thư mục `runs/<RUN>/<model>_seed<seed>/`.
 
 - Model không train (speechforensics) chỉ ghi checkpoint cấu hình.
-- avh_align (không giám sát) chỉ dùng clip real của train / validation.
+- Công thức train = cfg["training"] ghi đè bởi `model.train_options` (baseline giữ đúng optimizer,
+  lr, batch, epoch, scheduler của code gốc); cfg["training"]["max_epochs"] (nếu có) chặn trên số
+  epoch (dùng cho test nhanh).
+- Model `real_only` (avh_align) chỉ dùng clip real của train / validation.
 - Chọn checkpoint theo validation loss; early stopping `patience` epoch.
+- Train tiếp được giữa chừng: sau mỗi epoch ghi `last.pt` (model, optimizer, scheduler, AMP scaler,
+  lịch sử, trạng thái ngẫu nhiên); chạy lại thì tiếp từ epoch sau đó, xong thì xoá `last.pt`.
+- Nguồn gốc lần train ghi ở `runs/<RUN>/provenance.json` (dữ liệu, chữ ký cache, commit code, tài
+  sản); pipeline train không ghi vào ledger của data_pipeline (ledger chỉ cho dữ liệu real).
 - Đã có `best.pt` + `history.json` hoàn chỉnh thì bỏ qua (chạy lại sau khi ngắt sẽ tiếp tục
   các model chưa xong; model đang dở train lại từ đầu).
 """
@@ -19,13 +26,13 @@ import torch
 from vn_av_df import tracking
 from vn_av_df.common.runtime import atomic_bytes, read_json, write_json
 from vn_av_df.dataset import training_dataset
-from vn_av_df.training.data import BenchData, collate, to_device
+from vn_av_df.training.data import BenchData, cache_dir, collate, speaker_index, to_device
 from vn_av_df.training.models import build
 
 
 def feature_dim(cfg, rows):
     for row in rows:
-        path = Path(cfg["cache"]) / "avhubert" / f"{row['sample_id']}.npz"
+        path = cache_dir(cfg, "avhubert") / f"{row['sample_id']}.npz"
         if path.is_file():
             with np.load(path, allow_pickle=False) as z:
                 return int(z["audio"].shape[1])
@@ -64,8 +71,17 @@ def save(path, state):
     atomic_bytes(path, stream.getvalue())
 
 
-def loaders(cfg, model, rows, seed, train):
-    options = cfg["training"]
+def recipe(cfg, model):
+    """Tuỳ chọn train của model: mặc định chung, ghi đè bởi công thức gốc của từng paper."""
+    options = {**cfg["training"], **model.train_options}
+    cap = cfg["training"].get("max_epochs")
+    if cap:
+        options["epochs"] = min(options["epochs"], cap)
+    return options
+
+
+def loaders(cfg, model, rows, seed, train, options=None, speakers=None):
+    options = options or recipe(cfg, model)
     data = BenchData(
         cfg,
         rows,
@@ -76,6 +92,9 @@ def loaders(cfg, model, rows, seed, train):
         fixed_references=not train,
         seed=seed,
         crop_frames=model.crop_frames if train else None,
+        pseudo_fake=model.pseudo_fake if train else 0.0,
+        rawboost=train and model.rawboost,
+        speakers=speakers,
     )
     generator = torch.Generator().manual_seed(seed)
     weights = speaker_weights(data.rows) if train and options.get("speaker_balance") else None
@@ -95,21 +114,32 @@ def loaders(cfg, model, rows, seed, train):
     )
 
 
-def run_epoch(model, loader, optimizer, device, weights, stats=None):
+def run_epoch(model, loader, optimizer, device, weights, stats=None, clip=5.0, scaler=None):
     """Loss trung bình; `stats` (dict) nhận thêm trung bình từng thành phần loss + grad norm."""
     total, count = 0.0, 0
     parts, norms = Counter(), []
     model.train(optimizer is not None)
+    amp = scaler is not None and str(device).startswith("cuda")
     for batch in loader:
         batch = to_device(batch, device)
-        with torch.set_grad_enabled(optimizer is not None):
+        with torch.set_grad_enabled(optimizer is not None), torch.autocast("cuda", enabled=amp):
             out = model(batch)
             loss = model.loss(batch, out, weights)
         if optimizer is not None and loss.requires_grad:
             optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            norms.append(float(torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)))
-            optimizer.step()
+            if amp:
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+            else:
+                loss.backward()
+            params = [p for p in model.parameters() if p.grad is not None]
+            norm = torch.nn.utils.clip_grad_norm_(params, clip if clip else float("inf"))
+            norms.append(float(norm))
+            if amp:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
         size = len(batch["index"])
         total += float(loss.detach()) * size
         count += size
@@ -162,14 +192,23 @@ def train_one(cfg, name, seed, rows, out):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    options = cfg["training"]
     device = cfg["device"] if torch.cuda.is_available() or cfg["device"] == "cpu" else "cpu"
     dim = feature_dim(cfg, rows)
-    model = build(name, dim, options["hidden"], options["dropout"]).to(device)
-    config = {"name": name, "dim": dim, "hidden": options["hidden"], "dropout": options["dropout"]}
+    speakers = speaker_index(rows)
+    assets = {**(cfg.get("model_assets") or {}), "n_speakers": len(speakers)}
+    base = cfg["training"]
+    model = build(name, dim, base["hidden"], base["dropout"], assets=assets).to(device)
+    options = recipe(cfg, model)
+    config = {
+        "name": name,
+        "dim": dim,
+        "hidden": base["hidden"],
+        "dropout": base["dropout"],
+        "assets": model.rebuild_assets(),
+    }
     train_rows = [r for r in rows if r["split"] == "train"]
     val_rows = [r for r in rows if r["split"] == "validation"]
-    if name == "avh_align":  # chỉ học từ real (đúng paper)
+    if model.real_only:  # avh_align: chỉ học từ real (đúng paper)
         train_rows = [r for r in train_rows if r["label"] == 0 and r.get("cell") == "real"]
         val_rows = [r for r in val_rows if r["label"] == 0 and r.get("cell") == "real"]
     history = {
@@ -191,6 +230,8 @@ def train_one(cfg, name, seed, rows, out):
             **config,
             "training": options,
             "parameters": sum(p.numel() for p in model.parameters()),
+            "real_only": model.real_only,
+            "pseudo_fake": model.pseudo_fake,
             "needs": sorted(model.needs),
             "augment_mouth": model.augment,
             "augment_lag": getattr(model, "lag_augment", False),
@@ -210,18 +251,67 @@ def train_one(cfg, name, seed, rows, out):
         run.finish()
         return history
     weights = {k: torch.tensor(v, device=device) for k, v in pos_weights(train_rows).items()}
-    _, train_loader = loaders(cfg, model, train_rows, seed, True)
-    _, val_loader = loaders(cfg, model, val_rows, seed, False)
-    lr = options["lr"] if name != "avh_align" else options.get("avh_align_lr", 1e-5)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=options["weight_decay"])
-    best, patience, stop = None, 0, "max_epochs"
+    _, train_loader = loaders(cfg, model, train_rows, seed, True, options, speakers)
+    _, val_loader = loaders(cfg, model, val_rows, seed, False, options, speakers)
+    lr = options["lr"]
+    groups = (
+        model.optimizer_groups(lr) if hasattr(model, "optimizer_groups") else model.parameters()
+    )
+    kind = torch.optim.Adam if options.get("optimizer") == "adam" else torch.optim.AdamW
+    optimizer = kind(
+        groups, lr=lr, weight_decay=options["weight_decay"], eps=options.get("adam_eps", 1e-8)
+    )
+    scheduler = (
+        torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.1, patience=options.get("plateau_patience", 5)
+        )
+        if options.get("scheduler") == "plateau"
+        else None
+    )
+    amp = options.get("amp") and torch.cuda.is_available()
+    scaler = torch.amp.GradScaler("cuda") if amp else None
+    clip = options.get("clip", 5.0)
+    best, patience, stop, start = None, 0, "max_epochs", 1
+    resume = out / "last.pt"
+    if resume.is_file():
+        state = torch.load(resume, map_location=device, weights_only=False)
+        speed = ("workers", "eval_batch_size")  # chỉ ảnh hưởng tốc độ, đổi được khi chạy tiếp
+        same = {k: v for k, v in options.items() if k not in speed} == {
+            k: v for k, v in state["options"].items() if k not in speed
+        }
+        if state["config"] != config or not same:
+            raise ValueError(
+                f"{resume}: cấu hình model / công thức train khác lần train dở; "
+                f"chuyển thư mục {out} đi chỗ khác để train lại từ đầu"
+            )
+        model.load_state_dict(state["state"])
+        optimizer.load_state_dict(state["optimizer"])
+        if scheduler is not None:
+            scheduler.load_state_dict(state["scheduler"])
+        if scaler is not None and state.get("scaler"):
+            scaler.load_state_dict(state["scaler"])
+        train_loader.generator.set_state(state["rng"]["loader"])
+        torch.set_rng_state(state["rng"]["torch"])
+        if torch.cuda.is_available() and state["rng"].get("cuda") is not None:
+            torch.cuda.set_rng_state_all(state["rng"]["cuda"])
+        random.setstate(state["rng"]["python"])
+        np.random.set_state(state["rng"]["numpy"])
+        history, best, patience = state["history"], state["best"], state["patience"]
+        start = state["epoch"] + 1
+        history.setdefault("resumed_at", []).append(start)
+        print(f"{name} seed{seed}: train tiếp từ epoch {start}", flush=True)
     began = time.monotonic()
-    for epoch in range(1, options["epochs"] + 1):
+    for epoch in range(start, options["epochs"] + 1):
         tick = time.monotonic()
         train_loader.dataset.epoch = epoch
+        model.on_epoch(epoch, options["epochs"])
         train_stats, val_stats = {}, {}
-        train_loss = run_epoch(model, train_loader, optimizer, device, weights, train_stats)
+        train_loss = run_epoch(
+            model, train_loader, optimizer, device, weights, train_stats, clip, scaler
+        )
         val_loss = run_epoch(model, val_loader, None, device, weights, val_stats)
+        if scheduler is not None:
+            scheduler.step(val_loss)
         metrics = validation_metrics(model, cfg, val_rows, device)
         history["epochs"].append(
             {
@@ -274,10 +364,33 @@ def train_one(cfg, name, seed, rows, out):
                 stop = f"early_stop (patience {options['patience']})"
                 break
         write_json(out / "history.json", history)
+        save(
+            resume,
+            {
+                "config": config,
+                "options": options,
+                "epoch": epoch,
+                "state": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict() if scheduler is not None else None,
+                "scaler": scaler.state_dict() if scaler is not None else None,
+                "history": history,
+                "best": best,
+                "patience": patience,
+                "rng": {
+                    "loader": train_loader.generator.get_state(),
+                    "torch": torch.get_rng_state(),
+                    "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+                    "python": random.getstate(),
+                    "numpy": np.random.get_state(),
+                },
+            },
+        )
     history["complete"] = True
     history["best_val_loss"] = best
     history["stop"] = stop
     write_json(out / "history.json", history)
+    resume.unlink(missing_ok=True)  # checkpoint tạm (BL-A ~3,6 GB vì có trạng thái Adam của XLS-R)
     best_epoch = torch.load(out / "best.pt", map_location="cpu", weights_only=False)["epoch"]
     chosen = next(e for e in history["epochs"] if e["epoch"] == best_epoch)
     run.summary(
@@ -303,9 +416,76 @@ def train_one(cfg, name, seed, rows, out):
 def load_model(path, device="cpu"):
     state = torch.load(path, map_location=device, weights_only=False)
     config = state["config"]
-    model = build(config["name"], config["dim"], config["hidden"], config["dropout"])
+    assets = {**config.get("assets", {}), "load_pretrained": False}
+    model = build(config["name"], config["dim"], config["hidden"], config["dropout"], assets)
     model.load_state_dict(state["state"])
     return model.to(device).eval()
+
+
+def git_state(root):
+    import subprocess
+
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        return {"commit": commit, "dirty": bool(dirty)}
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def provenance(cfg, rows, selection):
+    """Nguồn gốc của lần train (thay cho ledger): dữ liệu, chữ ký từng cache, code, tài sản."""
+    from vn_av_df.common.runtime import sha
+    from vn_av_df.training.prepare import encoders_for
+
+    ids = {r["sample_id"] for r in rows}
+    caches = {}
+    for encoder in encoders_for(cfg["models"]):
+        folder = cache_dir(cfg, encoder)
+        signatures, found = Counter(), 0
+        for meta in folder.glob("*.json"):
+            if meta.stem in ids:
+                found += 1
+                signatures[read_json(meta).get("feature_signature")] += 1
+        extraction = folder / "extraction.json"
+        caches[encoder] = {
+            "folder": str(folder),
+            "samples_found": found,
+            "samples_needed": len(ids),
+            "feature_signatures": dict(signatures),
+            "extraction": read_json(extraction) if extraction.is_file() else None,
+        }
+    here = Path(__file__).resolve()
+    code = {p.name: sha(p) for p in sorted(here.parent.glob("*.py"))}
+    code["encoders.py"] = sha(here.parents[1] / "features/encoders.py")
+    assets = {}
+    for key, value in (cfg.get("model_assets") or {}).items():
+        if isinstance(value, str) and Path(value).exists():
+            path = Path(value)
+            record = path / "vn_av_revision.json" if path.is_dir() else None
+            receipt = path.with_suffix(path.suffix + ".download.json")
+            assets[key] = (
+                read_json(record)
+                if record and record.is_file()
+                else read_json(receipt)
+                if receipt.is_file()
+                else {"path": value}
+            )
+    return {
+        "selection": selection,
+        "models": cfg["models"],
+        "seeds": cfg["seeds"],
+        "options": cfg["training"],
+        "caches": caches,
+        "git": git_state(here.parents[3]),
+        "code_sha256": code,
+        "assets": assets,
+        "started": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
 
 def train_all(cfg):
@@ -320,6 +500,14 @@ def train_all(cfg):
             "options": cfg["training"],
         },
     )
+    record = provenance(cfg, rows, selection)
+    previous = runs / "provenance.json"
+    if previous.is_file():  # mỗi lần chạy (kể cả chạy tiếp) thêm một mục, không ghi đè
+        history = read_json(previous)
+        history = history if isinstance(history, list) else [history]
+    else:
+        history = []
+    write_json(previous, [*history, record])
     report = {}
     for name in cfg["models"]:
         for seed in cfg["seeds"]:

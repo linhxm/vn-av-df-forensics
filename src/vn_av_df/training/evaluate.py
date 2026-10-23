@@ -16,7 +16,10 @@ Báo cáo:
 - điểm vận hành theo tỉ lệ báo nhầm cố định trên real validation (FPR 1 %, 5 %) và precision / báo
   nhầm ở nhiều tỉ lệ fake ngoài thực tế (50 %, 10 %, 1 %), theo khuyến nghị Layton et al. (USENIX
   Security 2024): F1 tối đa trên validation (~70 % fake) cho ngưỡng hợp với môi trường nhiều fake.
-Kết quả: `<run>/<model>_seed<seed>/metrics.json`, `predictions-test.npz`; khoá test-lock.json.
+- BL-Ens (không train): max(BL-V, BL-A) sau khi chuẩn hoá điểm mỗi model theo clip real validation
+  (z-score), cho tác vụ ai; visual = BL-V, audio = BL-A. Model chỉ có điểm video (frame_level =
+  False, LIPINC-V2) không có phép đo định vị.
+Kết quả: `<run>/<model>_seed<seed>/metrics.json`, `predictions-{val,test}.npz`; khoá test-lock.json.
 """
 
 from collections import Counter, defaultdict
@@ -379,69 +382,143 @@ def operating_points(val_labels, val_scores, labels, scores):
     return out
 
 
+def task_metrics(cfg, val_rows, test_rows, val_scores, test_scores, task, seen):
+    """Mọi phép đo điểm video cho một tác vụ (ngưỡng chọn trên validation); None nếu không đo được."""
+    if any(test_scores.get(r["sample_id"]) is None for r in test_rows):
+        return None
+    v_labels = [target(r, task) for r in val_rows]
+    if len(set(v_labels)) < 2:
+        return None
+    v_values = [val_scores[r["sample_id"]] for r in val_rows]
+    threshold = best_threshold(v_labels, v_values)
+    labels = [target(r, task) for r in test_rows]
+    values = [test_scores[r["sample_id"]] for r in test_rows]
+    return {
+        "auc": auc(labels, values),
+        "auc_speaker_balanced": speaker_balanced_auc(test_rows, labels, values),
+        "ap": float(average_precision_score(labels, values)) if any(labels) else None,
+        "eer": eer(labels, values),
+        "threshold": threshold,
+        **at_threshold(labels, values, threshold),
+        "operating_points": operating_points(v_labels, v_values, labels, values),
+        "fpr_by_cell": {
+            cell: float(
+                np.mean(
+                    [
+                        test_scores[r["sample_id"]] >= threshold
+                        for r in test_rows
+                        if r.get("cell") == cell and not target(r, task)
+                    ]
+                )
+            )
+            for cell in ("real", "sham")
+            if any(r.get("cell") == cell and not target(r, task) for r in test_rows)
+        },
+        "breakdown": breakdown(test_rows, test_scores, task, seen),
+        "per_speaker": per_speaker(test_rows, test_scores, task),
+        "ref_norm": ref_norm(test_rows, test_scores, task, cfg["generation"]["references"]),
+        "localization": None,
+        "temporal": None,
+    }
+
+
+def save_predictions(path, scores):
+    """scores: {tác vụ: {sample_id: điểm}} → npz (sample_id, video_<tác vụ>)."""
+    ids = sorted({sid for values in scores.values() for sid in values})
+    np.savez_compressed(
+        path,
+        sample_id=np.array(ids),
+        **{
+            f"video_{t}": np.array([scores.get(t, {}).get(sid, np.nan) for sid in ids], float)
+            for t in TASKS
+        },
+    )
+
+
 def evaluate_model(cfg, model_dir, rows, device, seen):
     model = load_model(Path(model_dir) / "best.pt", device)
     val_rows = [r for r in rows if r["split"] == "validation"]
     test_rows = [r for r in rows if r["split"] == "test"]
     val_pred = predict(model, cfg, val_rows, device)
     test_pred = predict(model, cfg, test_rows, device)
-    metrics = {"model": Path(model_dir).name, "tasks": {}}
+    metrics = {"model": Path(model_dir).name, "frame_level": model.frame_level, "tasks": {}}
+    val_all, test_all = {}, {}
     for task in TASKS:
         val_scores = {s: task_scores(model, p).get(task) for s, p in val_pred.items()}
         test_scores = {s: task_scores(model, p).get(task) for s, p in test_pred.items()}
-        if any(v is None for v in test_scores.values()):
+        if all(v is not None for v in val_scores.values()):
+            val_all[task] = val_scores
+        if all(v is not None for v in test_scores.values()):
+            test_all[task] = test_scores
+        result = task_metrics(cfg, val_rows, test_rows, val_scores, test_scores, task, seen)
+        if result is None:
             continue
-        v_labels = [target(r, task) for r in val_rows]
-        if len(set(v_labels)) < 2:
-            continue
-        threshold = best_threshold(v_labels, [val_scores[r["sample_id"]] for r in val_rows])
-        labels = [target(r, task) for r in test_rows]
-        values = [test_scores[r["sample_id"]] for r in test_rows]
-        metrics["tasks"][task] = {
-            "auc": auc(labels, values),
-            "auc_speaker_balanced": speaker_balanced_auc(test_rows, labels, values),
-            "ap": float(average_precision_score(labels, values)) if any(labels) else None,
-            "eer": eer(labels, values),
-            "threshold": threshold,
-            **at_threshold(labels, values, threshold),
-            "operating_points": operating_points(
-                v_labels, [val_scores[r["sample_id"]] for r in val_rows], labels, values
-            ),
-            "fpr_by_cell": {
-                cell: float(
-                    np.mean(
-                        [
-                            test_scores[r["sample_id"]] >= threshold
-                            for r in test_rows
-                            if r.get("cell") == cell and not target(r, task)
-                        ]
-                    )
-                )
-                for cell in ("real", "sham")
-                if any(r.get("cell") == cell and not target(r, task) for r in test_rows)
-            },
-            "breakdown": breakdown(test_rows, test_scores, task, seen),
-            "per_speaker": per_speaker(test_rows, test_scores, task),
-            "ref_norm": ref_norm(test_rows, test_scores, task, cfg["generation"]["references"]),
-            "localization": localization(model, test_rows, test_pred, task)
-            if task != "mismatch"
-            else None,
-            "temporal": temporal_metrics(model, test_rows, test_pred, task)
-            if task != "mismatch"
-            else None,
-        }
-    np.savez_compressed(
-        Path(model_dir) / "predictions-test.npz",
-        sample_id=np.array(list(test_pred)),
-        **{
-            f"video_{t}": np.array(
-                [task_scores(model, p).get(t, np.nan) for p in test_pred.values()], float
-            )
-            for t in TASKS
-        },
-    )
+        if model.frame_level and task != "mismatch":
+            result["localization"] = localization(model, test_rows, test_pred, task)
+            result["temporal"] = temporal_metrics(model, test_rows, test_pred, task)
+        metrics["tasks"][task] = result
+    save_predictions(Path(model_dir) / "predictions-val.npz", val_all)
+    save_predictions(Path(model_dir) / "predictions-test.npz", test_all)
     write_json(Path(model_dir) / "metrics.json", metrics)
     return metrics
+
+
+ENSEMBLE = {"name": "bl_ens", "visual": "lipinc_v2", "audio": "ssl_aasist"}
+
+
+def load_predictions(path, task):
+    with np.load(path, allow_pickle=False) as z:
+        return dict(zip(z["sample_id"].tolist(), z[f"video_{task}"].tolist()))
+
+
+def zscore(val, test, val_rows):
+    """Chuẩn hoá theo TB / độ lệch điểm của clip real validation (cùng thang cho hai model)."""
+    reals = np.array([val[r["sample_id"]] for r in val_rows if r.get("cell") == "real"])
+    mean, std = (reals.mean(), reals.std() + 1e-6) if len(reals) else (0.0, 1.0)
+    return (
+        {k: (v - mean) / std for k, v in val.items()},
+        {k: (v - mean) / std for k, v in test.items()},
+    )
+
+
+def evaluate_ensemble(cfg, runs, rows, seen):
+    """BL-Ens cho từng seed có đủ BL-V và BL-A: ai = max(z_V, z_A), visual = z_V, audio = z_A."""
+    val_rows = [r for r in rows if r["split"] == "validation"]
+    test_rows = [r for r in rows if r["split"] == "test"]
+    results = {}
+    for visual_dir in sorted(runs.glob(f"{ENSEMBLE['visual']}_seed*")):
+        seed = visual_dir.name.rsplit("_seed", 1)[1]
+        audio_dir = runs / f"{ENSEMBLE['audio']}_seed{seed}"
+        if not (audio_dir / "predictions-test.npz").is_file():
+            continue
+        parts = {}
+        for task, folder in (("visual", visual_dir), ("audio", audio_dir)):
+            parts[task] = zscore(
+                load_predictions(folder / "predictions-val.npz", task),
+                load_predictions(folder / "predictions-test.npz", task),
+                val_rows,
+            )
+        val_scores = {t: parts[t][0] for t in ("visual", "audio")}
+        test_scores = {t: parts[t][1] for t in ("visual", "audio")}
+        for scores in (val_scores, test_scores):
+            scores["ai"] = {
+                k: max(scores["visual"][k], scores["audio"][k]) for k in scores["visual"]
+            }
+        out = runs / f"{ENSEMBLE['name']}_seed{seed}"
+        out.mkdir(parents=True, exist_ok=True)
+        metrics = {"model": out.name, "frame_level": False, "tasks": {}}
+        metrics["members"] = {"visual": visual_dir.name, "audio": audio_dir.name}
+        for task in ("ai", "visual", "audio"):
+            result = task_metrics(
+                cfg, val_rows, test_rows, val_scores[task], test_scores[task], task, seen
+            )
+            if result is not None:
+                metrics["tasks"][task] = result
+        save_predictions(out / "predictions-val.npz", val_scores)
+        save_predictions(out / "predictions-test.npz", test_scores)
+        write_json(out / "metrics.json", metrics)
+        results[out.name] = metrics
+    return results
 
 
 def evaluate_all(cfg, force=False):
@@ -466,6 +543,7 @@ def evaluate_all(cfg, force=False):
     for folder in models:
         print(f"Evaluate {folder.name}", flush=True)
         results[folder.name] = evaluate_model(cfg, folder, rows, device, seen)
+    results.update(evaluate_ensemble(cfg, runs, rows, seen))
     write_json(lock, {"stamp": fingerprint(stamp), "details": stamp})
     write_json(
         runs / "evaluation.json",
@@ -559,8 +637,8 @@ def log_evaluation(cfg, runs, rows, results, seen, stamp, models):
         f"evaluation-{runs.name}",
         "evaluation",
         [runs / "evaluation.json", runs / "test-lock.json"]
-        + [p / "metrics.json" for p in models]
-        + [p / "predictions-test.npz" for p in models],
+        + [runs / f / "metrics.json" for f in results]
+        + [runs / f / "predictions-test.npz" for f in results],
         {"stamp": fingerprint(stamp)},
     )
     run.finish()

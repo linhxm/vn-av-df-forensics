@@ -34,7 +34,7 @@ Một part có **600-800 clip real** (40 người × 15-20 clip) và sinh ra kho
 
 Phần in đậm ở cột test là generator và giọng **chưa thấy khi train**.
 
-**Bạn sẽ nhận được gì:** một file zip `vn-av-df-data-partN.zip` hoặc một Kaggle dataset private cùng tên (nội dung: v003_data §8.1), link repo code, và weight IP-LAP (chỉ phát hành qua OneDrive) nếu bạn chạy IP-LAP. Đây là video người thật: **không chia sẻ lại, không để public**.
+**Bạn sẽ nhận được gì:** một file zip `vn-av-df-data-partN.zip` hoặc một Kaggle dataset private cùng tên (nội dung: v003_data §4.8), link repo code, và weight IP-LAP (chỉ phát hành qua OneDrive) nếu bạn chạy IP-LAP. Đây là video người thật: **không chia sẻ lại, không để public**.
 
 **Bạn chạy:** gắn part vào notebook `generate` (`CLEAN_PART`), chạy phiên giọng trước rồi các phiên lip-sync (§7). Phiên cuối tự finalize ra bộ dữ liệu.
 
@@ -178,7 +178,7 @@ Số người và số clip mỗi người: v003_data §3. Ở đây: mỗi clip
 | Job giọng | 360-480 | 90-120 | 150-200 | **600-800** |
 | GPU sinh ○ | | | | **~40-100 giờ** (gần 2-4 tuần quota Kaggle) |
 
-Khoảng là vì mỗi người có 15-20 clip (từ 19/10; v003_data §3.3). Mỗi clip vẫn sinh đúng 9 / 12 file nên tỉ lệ có AI / không AI không đổi.
+Khoảng là vì mỗi người có 15-20 clip (từ 19/10; v003_data §3.4). Mỗi clip vẫn sinh đúng 9 / 12 file nên tỉ lệ có AI / không AI không đổi.
 
 - **69 % / 31 %** cùng vùng AV-Deepfake1M (75 % fake) và AV-Deepfake1M++ (69 %). Loss khi train đã cân trọng số lớp, nên không cần đổi tỉ lệ dữ liệu; chỗ cần sửa là ngưỡng (v003_model §8).
 - Full factorial (mọi generator × mọi ô × mọi giọng) là 59 / 124 mẫu mỗi clip, gấp ~7 lần, phần lớn do ô ⑥ = generator × giọng → bỏ từ 15/10.
@@ -212,7 +212,7 @@ User nghi xoay vòng lặp lại không cân. Mô phỏng trên part chuẩn (c�
 | Lối tắt | Cách chặn / kiểm |
 |---|---|
 | Khác biệt nén, độ phân giải, fps (v002 E6: nhánh artifact học dấu vết xử lý) | **encode lại mọi file, kể cả real**, cùng một cấu hình (H.264 CRF 18, 25 fps, ≤ 720p, AAC 48 kHz) |
-| Độ lệch tiếng-hình real ≠ fake | real đã dịch về 0 khi export (v003_data §6) |
+| Độ lệch tiếng-hình real ≠ fake | real đã dịch về 0 khi export (v003_data §4.3) |
 | Khoảng lặng đầu / cuối, độ to, độ dài (Smeu CVPR 2025: chỉ nhìn khoảng lặng đầu > 98 % trên FakeAVCeleb, AV-Deepfake1M ✔) | `shortcut_audit.json` khi finalize: AUC của từng đặc trưng (lặng đầu, lặng cuối, tỉ lệ lặng, độ to dB, độ dài) một mình đoán nhãn AI; **ngoài [0,3; 0,7] là cờ đỏ**, phải sửa cách sinh trước khi train. Rủi ro riêng: track A co giãn TTS vừa độ dài clip nên khoảng lặng có thể khác real |
 | Vết ghép tiếng | track B ghép giống hệt ② sham |
 | Vết nối hình ở partial | 50 % trộn mượt 2-6 frame |
@@ -256,7 +256,7 @@ Tab "tạo fake" của demo (v003_model §10) gọi đúng các hàm của pipel
 1. Mỗi clip chỉ 2-3 generator → không so được từng cặp generator trên cùng clip.
 2. **Chưa chạy thật**: worker env của 4 generator mới và 6 hệ giọng chưa chạy trên Kaggle; test hiện dùng generator / TTS / ASR giả lập.
 3. Chưa lọc chất lượng fake.
-4. Rủi ro "mặt nghiêng → real" nếu generator hay lỗi ở mặt nghiêng (v003_data §7.2).
+4. Rủi ro "mặt nghiêng → real" nếu generator hay lỗi ở mặt nghiêng (v003_data §4.5).
 
 **Việc mở:**
 

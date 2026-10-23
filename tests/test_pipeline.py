@@ -16,6 +16,18 @@ from vn_av_df.generation.cells import labels
 from vn_av_df.training import models as zoo
 
 SPLITS = {"train": ["s1", "s2"], "validation": ["s3", "s4"], "test": ["s5", "s6", "s7", "s8", "s9"]}
+# XLS-R tí hon cho BL-A (fine-tune) trong test: cùng kiến trúc Wav2Vec2, vài nghìn tham số.
+TINY_XLSR = dict(
+    hidden_size=32,
+    num_hidden_layers=2,
+    num_attention_heads=2,
+    intermediate_size=64,
+    conv_dim=(16, 16, 16, 16, 16, 16, 16),
+    conv_stride=(5, 2, 2, 2, 2, 2, 2),
+    conv_kernel=(10, 3, 3, 3, 3, 2, 2),
+    num_conv_pos_embeddings=16,
+    num_conv_pos_embedding_groups=2,
+)
 
 
 def make_clip(path, seconds=6, freq=440, size="320x240"):
@@ -167,11 +179,12 @@ def world(tmp_path_factory):
         "runs": str(tmp / "runs"),
         "seeds": [42],
         "wandb": {"project": "test", "mode": "offline"},
+        "model_assets": {"xlsr": TINY_XLSR},
         "training": {
             "epochs": 1,
+            "max_epochs": 1,
             "patience": 1,
             "lr": 1e-3,
-            "avh_align_lr": 1e-4,
             "weight_decay": 0.0,
             "hidden": 16,
             "dropout": 0.0,
@@ -301,7 +314,7 @@ def write_fake_caches(cfg, rows, dim=32):
         )
         np.savez(
             cache / "xlsr" / f"{sid}.npz",
-            ssl=rng.normal(size=(n, 1024)).astype(np.float16),
+            ssl=rng.normal(size=(n, 3, 1024)).astype(np.float16),
             times_s=np.arange(n) / 25,
             valid=np.ones(n, bool),
         )
@@ -311,6 +324,23 @@ def write_fake_caches(cfg, rows, dim=32):
             cache / "mouth" / f"{sid}.npz",
             mouth=mouth,
             lips=lips,
+            pose=rng.normal(scale=0.1, size=(n, 3)).astype(np.float32),
+            valid=np.ones(n, bool),
+            times_s=np.arange(n) / 25,
+        )
+        np.savez(
+            cache / "lipinc" / f"{sid}.npz",
+            frames=rng.integers(0, 255, size=(8, 64, 144, 3)).astype(np.uint8),
+            frame_ids=np.arange(8, dtype=np.int32),
+            valid=np.ones(n, bool),
+            times_s=np.arange(n) / 25,
+        )
+        wave = rng.normal(scale=3000, size=(n, 640))
+        if row.get("synthetic_audio"):
+            wave = wave * 2
+        np.savez(
+            cache / "wave" / f"{sid}.npz",
+            wave=wave.astype(np.int16),
             valid=np.ones(n, bool),
             times_s=np.arange(n) / 25,
         )
@@ -318,15 +348,19 @@ def write_fake_caches(cfg, rows, dim=32):
 
 def test_every_model_forward_backward():
     torch.manual_seed(0)
-    B, T, D = 2, 60, 32
+    B, T, D = 2, 110, 32
     mask = torch.ones(B, T, dtype=torch.bool)
-    mask[1, 50:] = False
+    mask[1, 100:] = False
     batch = {
         "a": torch.randn(B, T, D),
         "v": torch.randn(B, T, D),
-        "ssl": torch.randn(B, T, 1024),
+        "ssl": torch.randn(B, T, 3, 1024),
         "mouth": torch.randint(0, 255, (B, T, 96, 96), dtype=torch.uint8),
         "lips": torch.randn(B, T, 20, 2) * 0.1,
+        "pose": torch.randn(B, T, 3) * 0.1,
+        "wave": torch.randn(B, T, 640) * 0.1,
+        "lipinc": torch.randint(0, 255, (B, 8, 64, 144, 3), dtype=torch.uint8),
+        "speaker": torch.tensor([0, 1]),
         "mask": mask,
         "y_ai": torch.zeros(B, T),
         "y_visual": torch.zeros(B, T),
@@ -336,25 +370,24 @@ def test_every_model_forward_backward():
         "video": {
             "ai": torch.tensor([0.0, 1.0]),
             "visual": torch.tensor([0.0, 1.0]),
-            "audio": torch.tensor([0.0, 0.0]),
+            "audio": torch.tensor([0.0, 1.0]),
             "mismatch": torch.tensor([0.0, 1.0]),
         },
     }
-    batch["y_ai"][1, 10:30] = 1
-    batch["y_visual"][1, 10:30] = 1
-    batch["y_mismatch"][1, 10:30] = 1
+    for key in ("y_ai", "y_visual", "y_audio", "y_mismatch"):
+        batch[key][1, 10:30] = 1
     batch["refs"] = {
         k: batch[k][:, None].repeat(1, 1, *([1] * (batch[k].dim() - 1)))[:, :, :40]
-        for k in ("a", "v", "ssl", "mouth", "lips")
+        for k in ("a", "v", "ssl", "mouth", "lips", "pose")
     }
     batch["refs"]["valid"] = torch.ones(B, 1, 40, dtype=torch.bool)
     batch["ref_count"] = torch.tensor([1, 1])
     for name in zoo.SPECS:
-        model = zoo.build(name, dim=D, hidden=16)
+        model = zoo.build(name, dim=D, hidden=16, assets={"xlsr": TINY_XLSR, "n_speakers": 3})
         out = model(batch)
         for head in model.heads:
             assert out[head].shape == (B, T), name
-            assert torch.isfinite(out[head]).all(), name
+            assert torch.isfinite(out[head][mask]).all(), name
         if model.trainable:
             loss = model.loss(batch, out)
             assert torch.isfinite(loss), name
@@ -364,31 +397,39 @@ def test_every_model_forward_backward():
 def test_train_evaluate_report_smoke(world):
     from vn_av_df.dataset import training_dataset
     from vn_av_df.training.evaluate import evaluate_all
+    from vn_av_df.training.prepare import encoders_for
     from vn_av_df.training.report import build_report
     from vn_av_df.training.train import train_all
 
     cfg = copy.deepcopy(world["cfg"])
-    for name in ("avhubert", "xlsr", "mouth"):
+    cfg["models"] = list(zoo.SPECS)  # 9 cấu hình của đội hình + speechforensics (demo)
+    assert encoders_for(cfg["models"]) == ["avhubert", "mouth", "lipinc", "xlsr", "wave"]
+    for name in encoders_for(cfg["models"]):
         (Path(cfg["cache"]) / name).mkdir(parents=True, exist_ok=True)
     rows, _ = training_dataset(cfg)
     write_fake_caches(cfg, rows)
-    cfg["models"] = [
-        "speechforensics",
-        "avh_align",
-        "biolip",
-        "avcv",
-        "xlsr_aasist",
-        "mtn",
-        "trihead",
-        "trihead_no_ref",
-    ]
     report = train_all(cfg)
     assert set(report) == {f"{m}_seed42" for m in cfg["models"]}
     results = evaluate_all(cfg)
-    assert results["avcv_seed42"]["mismatch"] is not None
-    assert set(results["trihead_seed42"]) >= {"ai", "visual", "audio", "mismatch"}
+    assert results["avh_align_plus_seed42"]["mismatch"] is not None
+    assert set(results["trihead_v2_seed42"]) >= {"ai", "visual", "audio", "mismatch"}
+    assert set(results["bl_ens_seed42"]) == {
+        "ai",
+        "visual",
+        "audio",
+    }  # max(BL-V, BL-A), không train
+    lipinc = json.loads(
+        (Path(cfg["runs"]) / "lipinc_v2_seed42/metrics.json").read_text(encoding="utf-8")
+    )
+    assert not lipinc["frame_level"] and lipinc["tasks"]["visual"]["temporal"] is None
+    history = json.loads(
+        (Path(cfg["runs"]) / "avh_align_seed42/history.json").read_text(encoding="utf-8")
+    )
+    assert history["train_samples"] == sum(
+        r["split"] == "train" and r.get("cell") == "real" for r in rows
+    )  # BL-M chỉ học real
     metrics = json.loads(
-        (Path(cfg["runs"]) / "trihead_seed42/metrics.json").read_text(encoding="utf-8")
+        (Path(cfg["runs"]) / "trihead_v2_seed42/metrics.json").read_text(encoding="utf-8")
     )
     ai = metrics["tasks"]["ai"]
     assert ai["ref_norm"]["samples"] > 0 and "cell/both" in ai["breakdown"]
@@ -398,23 +439,92 @@ def test_train_evaluate_report_smoke(world):
     assert "real" in ai["fpr_by_cell"]
     assert set(ai["temporal"]) >= {"ap@0.5", "ap@0.75", "ap@0.95", "ar@1", "ar@5", "ar@10"}
     with pytest.raises(ValueError, match="already run"):
-        torch.save({"x": 1}, Path(cfg["runs"]) / "avcv_seed42/best.pt")
+        torch.save({"x": 1}, Path(cfg["runs"]) / "avh_align_plus_seed42/best.pt")
         evaluate_all(cfg)
     built = build_report(cfg)
     text = Path(built["report"]).read_text(encoding="utf-8")
-    assert "| trihead |" in text and "Cổng" in text and "Điểm vận hành" in text
+    assert "| trihead_v2 |" in text and "| bl_ens |" in text and "Cổng" in text
+    assert "Điểm vận hành" in text
+    gates = {(g["first"], g["second"], g["task"]): g for g in built["gates"]}
+    assert ("trihead_v2", "bl_ens", "ai") in gates
+    assert gates[("trihead_v2", "ssl_aasist", "audio")]["subset"] == "unseen_voice"
     # W&B chỉ ở quá trình train: không có run nào của bước sinh fake; run nào cũng đóng.
     fake = world["wandb"]
     assert all(r.finished for r in fake.runs)
     assert {r.kwargs["job_type"] for r in fake.runs} <= {"prepare", "train", "evaluate", "report"}
     trains = {r.kwargs["name"]: r for r in fake.by_type("train")}
-    avcv = trains["avcv_seed42"]
-    assert {"loss/train", "val_auc/mismatch", "grad_norm"} <= avcv.keys()
-    assert "best_epoch" in avcv.summary and avcv.artifacts[0].type == "model"
-    assert (
-        avcv.kwargs["config"]["augment_lag"]
-        and not trains["avh_align_seed42"].kwargs["config"]["augment_lag"]
-    )
+    m1 = trains["trihead_v2_seed42"]
+    assert {"loss/train", "val_auc/mismatch", "grad_norm"} <= m1.keys()
+    assert "best_epoch" in m1.summary and m1.artifacts[0].type == "model"
+    assert m1.kwargs["config"]["augment_lag"] and m1.kwargs["config"]["pseudo_fake"] > 0
+    assert not trains["avh_align_seed42"].kwargs["config"]["augment_lag"]
+    assert trains["avh_align_seed42"].kwargs["config"]["real_only"]
+    assert trains["ssl_aasist_seed42"].kwargs["config"]["training"]["lr"] == 1e-6  # công thức gốc
     evaluation = fake.by_type("evaluate")[-1]
     assert {"test/summary", "test/breakdown", "test/roc_ai"} <= evaluation.keys()
     assert {"report/gates", "report/auc_mean_std"} <= fake.by_type("report")[0].keys()
+
+
+def test_resume_after_interruption_and_provenance(world, tmp_path, monkeypatch):
+    """Ngắt giữa epoch 2 → chạy lại tiếp từ epoch 2 (không train lại epoch 1); last.pt bị xoá."""
+    from vn_av_df.dataset import training_dataset
+    from vn_av_df.training import train as T
+
+    cfg = copy.deepcopy(world["cfg"])
+    cfg["runs"] = str(tmp_path / "runs")
+    cfg["models"], cfg["seeds"] = ["avh_align_plus"], [7]
+    cfg["training"] = {**cfg["training"], "epochs": 3, "max_epochs": 3, "patience": 9}
+    for name in ("avhubert", "mouth", "lipinc", "xlsr", "wave"):
+        (Path(cfg["cache"]) / name).mkdir(parents=True, exist_ok=True)
+    rows, _ = training_dataset(cfg)
+    write_fake_caches(cfg, rows)
+    calls, original = {"n": 0}, T.run_epoch
+
+    def flaky(model, loader, optimizer, *args, **kwargs):
+        if optimizer is not None:
+            calls["n"] += 1
+            if calls["n"] == 2:  # đang train epoch 2 thì "hết giờ phiên"
+                raise KeyboardInterrupt
+        return original(model, loader, optimizer, *args, **kwargs)
+
+    monkeypatch.setattr(T, "run_epoch", flaky)
+    out = Path(cfg["runs"]) / "avh_align_plus_seed7"
+    with pytest.raises(KeyboardInterrupt):
+        T.train_all(cfg)
+    assert (out / "last.pt").is_file()
+    assert not json.loads((out / "history.json").read_text(encoding="utf-8"))["complete"]
+    monkeypatch.setattr(T, "run_epoch", original)
+    T.train_all(cfg)
+    history = json.loads((out / "history.json").read_text(encoding="utf-8"))
+    assert history["complete"] and history["resumed_at"] == [2]
+    assert [e["epoch"] for e in history["epochs"]] == [1, 2, 3]
+    assert not (out / "last.pt").exists() and (out / "best.pt").is_file()
+    records = json.loads((Path(cfg["runs"]) / "provenance.json").read_text(encoding="utf-8"))
+    assert len(records) == 2  # mỗi lần chạy thêm một mục
+    caches = records[-1]["caches"]
+    assert set(caches) == {"avhubert", "mouth"}
+    assert caches["avhubert"]["samples_found"] == 0  # cache giả không có .json chữ ký
+    assert (
+        records[-1]["selection"]["samples"] == len(rows)
+        and "train.py" in records[-1]["code_sha256"]
+    )
+
+
+def test_benchmark_estimates_epoch_time(world, tmp_path):
+    from vn_av_df.dataset import training_dataset
+    from vn_av_df.training.benchmark import benchmark
+
+    cfg = copy.deepcopy(world["cfg"])
+    cfg["runs"] = str(tmp_path / "runs")
+    for name in ("avhubert", "mouth", "lipinc", "xlsr", "wave"):
+        (Path(cfg["cache"]) / name).mkdir(parents=True, exist_ok=True)
+    rows, _ = training_dataset(cfg)
+    write_fake_caches(cfg, rows)
+    report = benchmark(cfg, ["avh_align_plus", "trihead_v2_no_trace"], steps=1, warmup=0)
+    for name in ("avh_align_plus", "trihead_v2_no_trace"):
+        entry = report["models"][name]
+        assert entry["error"] is None and entry["epoch_minutes"] > 0
+        assert entry["max_hours_all_seeds"] == pytest.approx(
+            entry["max_hours_per_seed"] * len(cfg["seeds"])
+        )
+    assert (Path(cfg["runs"]) / "benchmark.json").is_file()

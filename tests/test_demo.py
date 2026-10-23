@@ -115,7 +115,7 @@ def fake_features(dim=32):
 
         from vn_av_df.data.media import probe
 
-        for name in ("avhubert", "xlsr", "mouth"):
+        for name in ("avhubert", "xlsr", "mouth", "lipinc", "wave"):
             (cache / name).mkdir(parents=True, exist_ok=True)
         row = {"sample_id": sample_id, "duration_s": probe(video)["duration_s"]}
         write_fake_caches({"cache": str(cache)}, [row], dim)
@@ -129,19 +129,17 @@ def test_detector_scores_long_video_in_windows(tmp_path, monkeypatch):
     from vn_av_df.training.train import save
 
     runs = tmp_path / "runs"
-    for name in ("avcv", "mtn", "trihead", "speechforensics"):
+    names = ("avh_align_plus", "lipinc_v2", "trihead_v2", "speechforensics")
+    for name in names:
         model = build(name, dim=32, hidden=16)
         folder = runs / f"{name}_seed42"
         folder.mkdir(parents=True)
-        save(
-            folder / "best.pt",
-            {
-                "config": {"name": name, "dim": 32, "hidden": 16, "dropout": 0.1},
-                "state": model.state_dict(),
-                "epoch": 1,
-            },
-        )
-    write_json(runs / "avcv_seed42/metrics.json", {"tasks": {"mismatch": {"threshold": 0.0}}})
+        config = {"name": name, "dim": 32, "hidden": 16, "dropout": 0.1}
+        config["assets"] = model.rebuild_assets()
+        save(folder / "best.pt", {"config": config, "state": model.state_dict(), "epoch": 1})
+    write_json(
+        runs / "avh_align_plus_seed42/metrics.json", {"tasks": {"mismatch": {"threshold": 0.0}}}
+    )
     monkeypatch.setattr(Detector, "features", fake_features())
     video = make_clip(tmp_path / "long.mp4", seconds=12)
     ref = make_clip(tmp_path / "ref.mp4", seconds=4, freq=700)
@@ -150,16 +148,12 @@ def test_detector_scores_long_video_in_windows(tmp_path, monkeypatch):
     )
     with torch.no_grad():
         result = detector.analyze(video, [ref], tmp_path / "work")
-    assert result["references"] == 1 and set(result["models"]) == {
-        "avcv",
-        "mtn",
-        "trihead",
-        "speechforensics",
-    }
-    avcv = result["models"]["avcv"]
-    assert set(avcv["video"]) >= {"mismatch", "visual"}
-    assert len(avcv["frames"]["mismatch"]) == 300  # 12 s × 25 fps, ghép từ các cửa sổ 7 s
-    assert avcv["decision"]["mismatch"] in (True, False) and avcv["decision"]["visual"] is None
+    assert result["references"] == 1 and set(result["models"]) == set(names)
+    m2 = result["models"]["avh_align_plus"]
+    assert set(m2["video"]) >= {"mismatch", "ai"}
+    assert len(m2["frames"]["mismatch"]) == 300  # 12 s × 25 fps, ghép từ các cửa sổ 7 s
+    assert m2["decision"]["mismatch"] in (True, False) and m2["decision"]["ai"] is None
+    assert len(result["models"]["lipinc_v2"]["frames"]["visual"]) == 300
     from vn_av_df.demo.app import summary_rows, timeline_figure
 
     assert len(summary_rows(result)) >= 4

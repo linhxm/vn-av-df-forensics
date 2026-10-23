@@ -1,4 +1,8 @@
-"""Trích feature cho dataset v003 đã finalize: avhubert → mouth (cần hộp miệng) → xlsr.
+"""Trích feature cho dataset v003 đã finalize: avhubert → mouth / lipinc (cần landmark) → xlsr, wave.
+
+Chỉ trích encoder mà các model được chọn cần (`encoders_for`). cfg["cache"] có thể là danh sách:
+ghi vào thư mục đầu tiên, đọc cache avhubert (cho mouth / lipinc) ở thư mục nào có nó, để mỗi
+encoder trích ở một phiên Kaggle riêng rồi lưu thành dataset riêng (Output một phiên có giới hạn).
 
 Cache: <cfg["cache"]>/<encoder>/<sample_id>.npz (+ .json). Chạy lại thì bỏ qua cache còn khớp
 chữ ký; dừng giữa chừng không làm hỏng cache (ghi file tạm rồi đổi tên).
@@ -9,15 +13,35 @@ import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import numpy as np
 
 from vn_av_df import tracking
 from vn_av_df.common.runtime import write_json
 from vn_av_df.dataset import media_path, training_dataset
+from vn_av_df.training.data import cache_dir, cache_roots
 
-ORDER = ("avhubert", "mouth", "xlsr")
+ORDER = ("avhubert", "mouth", "lipinc", "xlsr", "wave")
+# needs của model → encoder phải có (mouth, lipinc đọc landmark / hộp miệng từ cache avhubert).
+NEEDS = {
+    "av": ("avhubert",),
+    "mouth": ("avhubert", "mouth"),
+    "pose": ("avhubert", "mouth"),
+    "lipinc": ("avhubert", "lipinc"),
+    "ssl": ("xlsr",),
+    "wave": ("wave",),
+}
+
+
+def encoders_for(models):
+    """Encoder cần cho danh sách model (theo thứ tự trích)."""
+    from vn_av_df.training.models import build
+
+    needed = set()
+    for name in models:
+        for need in build(name, dim=8, hidden=8, assets={"load_pretrained": False}).needs:
+            needed.update(NEEDS[need])
+    return [e for e in ORDER if e in needed]
 
 
 def make(cfg, name, device):
@@ -34,12 +58,20 @@ def make(cfg, name, device):
         from vn_av_df.features.encoders import MouthEncoder
 
         return MouthEncoder(spec)
+    if name == "lipinc":
+        from vn_av_df.features.encoders import LipincEncoder
+
+        return LipincEncoder(spec)
+    if name == "wave":
+        from vn_av_df.features.encoders import WaveEncoder
+
+        return WaveEncoder(spec)
     raise ValueError(f"Unknown encoder {name}")
 
 
 def prepare(cfg, encoders=ORDER, factory=None):
     rows, selection = training_dataset(cfg, verify_media=False)
-    cache = Path(cfg["cache"])
+    cache = cache_roots(cfg)[0]
     reports = {}
     chosen = [e for e in ORDER if e in encoders]
     run = tracking.open_run(
@@ -73,8 +105,9 @@ def prepare(cfg, encoders=ORDER, factory=None):
             try:
                 for row in group:
                     request = {"video": str(media_path(cfg["dataset"], row))}
-                    if name == "mouth":
-                        request["box_cache"] = str(cache / "avhubert" / f"{row['sample_id']}.npz")
+                    if name in ("mouth", "lipinc"):
+                        boxes = cache_dir(cfg, "avhubert")
+                        request["box_cache"] = str(boxes / f"{row['sample_id']}.npz")
                     encoder.extract(request, folder / f"{row['sample_id']}.npz")
                     with guard:
                         done[0] += 1

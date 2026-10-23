@@ -1,7 +1,8 @@
 """Demo: phân tích một video bằng các model v003 đã train (checkpoint trong `runs/<RUN>/`).
 
 1. Chuẩn hoá (25 fps, ≤ 720p, ≤ 60 s) và sửa độ lệch tiếng-hình bằng SyncNet (như bước dữ liệu).
-2. Trích đặc trưng như lúc train (AV-HuBERT, crop miệng, XLS-R), nạp bằng chính bộ nạp của train.
+2. Trích đặc trưng như lúc train (encoder mà các model cần: AV-HuBERT, crop miệng, khung LIPINC-V2,
+   XLS-R, waveform), nạp bằng chính bộ nạp của train.
 3. Chạy model trên cửa sổ 7 s chồng nửa (model được train trên clip 4-7 s); điểm frame lấy trung
    bình các cửa sổ phủ frame đó, điểm video = cửa sổ cao nhất.
 4. Ngưỡng mỗi tác vụ lấy từ `metrics.json` nếu đã chạy test: ngưỡng FPR 5 % trên real validation
@@ -16,10 +17,10 @@ import numpy as np
 import torch
 
 from vn_av_df.common.runtime import read_json
-from vn_av_df.training.data import BenchData, collate, to_device
+from vn_av_df.training.data import STATIC_KEYS, BenchData, collate, to_device
 from vn_av_df.training.evaluate import TASKS, frame_head, task_scores
 from vn_av_df.training.models import pool_scores
-from vn_av_df.training.prepare import make
+from vn_av_df.training.prepare import NEEDS, ORDER, make
 from vn_av_df.training.train import load_model
 
 WINDOW, STRIDE, REF_FRAMES = 175, 88, 50
@@ -79,17 +80,13 @@ class Detector:
 
     def features(self, video, cache, sample_id):
         """Trích đặc trưng vào `cache/<encoder>/<sample_id>.npz` (cùng bố cục lúc train)."""
-        needs = {"avhubert"} if self.needs & {"av", "mouth"} else set()
-        if "mouth" in self.needs:
-            needs.add("mouth")
-        if "ssl" in self.needs:
-            needs.add("xlsr")
-        for name in ("avhubert", "mouth", "xlsr"):
+        needs = {e for need in self.needs for e in NEEDS[need]}
+        for name in ORDER:
             if name not in needs:
                 continue
             (cache / name).mkdir(parents=True, exist_ok=True)
             request = {"video": str(video)}
-            if name == "mouth":
+            if name in ("mouth", "lipinc"):
                 request["box_cache"] = str(cache / "avhubert" / f"{sample_id}.npz")
             self.encoder(name).extract(request, cache / name / f"{sample_id}.npz")
 
@@ -108,7 +105,9 @@ class Detector:
         counts = np.zeros(length)
         best = {}
         for a, b in windows(length):
-            part = blank_targets({k: v[a:b] for k, v in item.items()}, b - a)
+            # Khung LIPINC-V2 chọn trên cả video, dùng chung cho mọi cửa sổ (không cắt theo frame).
+            part = {k: v if k in STATIC_KEYS else v[a:b] for k, v in item.items()}
+            part = blank_targets(part, b - a)
             part["index"] = 0
             if model.references:
                 part["refs"] = refs[: model.references]

@@ -3,8 +3,8 @@
 ```
 data_pipeline (real, local) ─► part sạch vn-av-df-data-partN (600-800 clip, 20 nam + 20 nữ × 15-20 clip, split sẵn)
   └─► notebooks/generate.ipynb   phiên "voice" → các phiên "lipsync" → finalize      (generation/0x_*.py)
-  └─► notebooks/prepare.ipynb    AV-HuBERT Large → crop miệng → XLS-R                (training/01_prepare.py)
-  └─► notebooks/train.ipynb      train 6 baseline + 3 đề xuất → test một lần → report.md  (training/02-04)
+  └─► notebooks/prepare.ipynb    AV-HuBERT Large → crop miệng / khung LIPINC → XLS-R → waveform (training/01_prepare.py)
+  └─► notebooks/train.ipynb      train 4 baseline + M1, M2 + 3 ablation → test một lần → report.md  (training/02-04)
 ```
 
 Mỗi bước chạy được ở local bằng script trong `generation/` và `training/`, hoặc trên Kaggle bằng notebook tương ứng; cả hai cách gọi cùng các lệnh trong `src/vn_av_df/cli.py`. Cấu hình nằm ở `settings.py` (local) và các cell đầu của notebook (Kaggle). Pipeline dữ liệu real: [data_pipeline/README.md](data_pipeline/README.md).
@@ -16,9 +16,10 @@ Mỗi bước chạy được ở local bằng script trong `generation/` và `t
 | Phiên giọng (①②③ + track B) | `generation/02_voice.py` | `generation/voice/`, `generation/generate.py` |
 | Phiên lip-sync (④⑤⑥) | `generation/03_lipsync.py --generators ...` | `generation/lipsync.py`, `generation/generate.py` |
 | Gom → manifest có nhãn | `generation/04_finalize.py` | `generation/generate.py` |
-| Tải encoder | `training/00_setup.py` | `assets.py` |
-| Trích feature | `training/01_prepare.py [--encoders ...]` | `training/prepare.py`, `features/` |
-| Train | `training/02_train.py [--models ...] [--seeds ...]` | `training/train.py`, `training/models.py` |
+| Tải encoder + tài sản model | `training/00_setup.py` | `assets.py`, `cli.py` (`model_assets`) |
+| Trích feature (bước riêng, dùng lại cho mọi model / seed / lần train / demo) | `training/01_prepare.py [--encoders ...]` | `training/prepare.py`, `features/` |
+| Đo thời gian / bộ nhớ train (tuỳ chọn) | `training/05_benchmark.py [--synthetic] [--models ...]` | `training/benchmark.py` |
+| Train (chạy lại thì tiếp từ epoch đã xong) | `training/02_train.py [--models ...] [--seeds ...]` | `training/train.py`, `training/models.py` |
 | Test một lần | `training/03_evaluate.py` | `training/evaluate.py` |
 | Báo cáo | `training/04_report.py` | `training/report.py` |
 
@@ -71,16 +72,16 @@ Chi tiết ở [docs/v003_model.md](docs/v003_model.md).
 
 | Tên | Loại | Ý chính |
 |---|---|---|
-| speechforensics | baseline (NeurIPS 2024) | cos audio / visual AV-HuBERT, độ trễ cố định tốt nhất ±15, không train |
-| avh_align / avh_align_sup | **BL-1** (CVPR 2025) | MLP căn tiếng-môi; InfoNCE chỉ trên real / bản có giám sát |
-| biolip | **BL-2** (2026) | động học landmark môi, không phụ thuộc ngôn ngữ |
-| av_lipsync_plus | baseline | AV-HuBERT + TCN, có giám sát (≈ B-AVH v002) |
-| xlsr_aasist | baseline audio | XLS-R + AASIST-lite |
-| avcv | **A1** | cost volume tiếng-môi theo độ trễ + CNN 2D → mismatch, visual |
-| mtn | **A2** | crop miệng độ phân giải gốc, residual NPR + thời gian + động học môi, augment bất biến xử lý |
-| trihead | **A3** | 3 nhánh (sync, trace, audio) → 3 đầu ra + tham chiếu người (FiLM) |
+| lipinc_v2 | **BL-V** (Datta et al. 2025, code gốc Keras) | 8 crop miệng màu (5 liên tiếp + 3 cùng tư thế) + ảnh hiệu → 2 vision temporal transformer + attention chéo; chỉ điểm video |
+| ssl_aasist | **BL-A** (Tak et al. 2022) | XLS-R 300M fine-tune + AASIST, RawBoost, cửa sổ 4 s |
+| avh_align | **BL-M** (CVPR 2025) | Φ(v, a) MLP, InfoNCE ±15 chỉ trên real; khởi tạo từ checkpoint công bố |
+| avh_align_sup | **BL-M/sup** | cùng Φ, cross-entropy trên log-sum-exp với nhãn AI |
+| bl_ens | **BL-Ens** | max(BL-V, BL-A) sau chuẩn hoá theo real validation; không train |
+| trihead_v2 | **M1** | 3 nhánh (sync, trace, audio) → 3 đầu + tham chiếu người; NPR đúng paper, tư thế đầu, trọng số nhóm lớp XLS-R, top-5 frame, pseudo-fake, gradient reversal người |
+| avh_align_plus | **M2** | Φ của AVH-Align trên cả dải độ trễ ±15 + CNN 2D, môi–đầu, pseudo-fake |
+| trihead_v2_no_sync / _no_trace / _no_ref | ablation M1 | bỏ một nhánh / bỏ tham chiếu |
 
-`settings.MODELS` là đội hình chính; ablation ở `settings.ABLATIONS`.
+`settings.MODELS` là đội hình chính; ablation ở `settings.ABLATIONS`; mặc định train cả hai (`cfg["models"]`). Encoder cần trích suy ra từ model (`prepare.encoders_for`). `speechforensics` chỉ còn cho demo khi chưa có checkpoint.
 
 ## Kết quả
 
@@ -97,6 +98,17 @@ Chi tiết ở [docs/v003_model.md](docs/v003_model.md).
 ## Log W&B (quá trình train)
 
 Chỉ ghi cho **quá trình train**: notebook `prepare` và `train` (`USE_WANDB = True`, secret `WANDB_API_KEY`, project **private**). Pipeline dữ liệu real và phần sinh fake **không** ghi W&B; nhật ký của chúng nằm ở ledger (`data_pipeline`) và `generation.json` / `records/` (sinh fake). Không đẩy ảnh / video người thật. Code ở `src/vn_av_df/tracking.py`.
+
+**Train không ghi vào ledger.** Ledger (`data_pipeline/data/ledger/ledger.sqlite`) chỉ là sổ của dữ liệu real ở máy local; train chạy trên Kaggle / máy GPU khác và không được ghi vào đó. Bản ghi tương ứng của train nằm trong `runs/<RUN_NAME>/`:
+
+| File | Nội dung |
+|---|---|
+| `provenance.json` | mỗi lần chạy thêm một mục: manifest (sha) từng part, chữ ký đặc trưng và số mẫu tìm thấy của từng cache, commit git + sha code train, tài sản (revision XLS-R, biên nhận tải checkpoint AVH-Align), tuỳ chọn train |
+| `training.json` | model, seed, tuỳ chọn của lần chạy gần nhất |
+| `<model>_seed<seed>/history.json` | từng epoch: loss train / val, thành phần loss, grad norm, AUC validation, thời gian; lần train tiếp (`resumed_at`), epoch tốt nhất, lý do dừng |
+| `<model>_seed<seed>/best.pt`, `last.pt` | checkpoint tốt nhất; checkpoint tạm để train tiếp (xoá khi model xong) |
+| `benchmark.json` | số đo của `05_benchmark.py` |
+| sau test | `metrics.json`, `predictions-{val,test}.npz`, `evaluation.json`, `test-lock.json`, `report.md`, `gates.json` |
 
 | Bước (job_type) | Ghi theo thời gian | Ghi lúc kết thúc / artifact |
 |---|---|---|
@@ -124,7 +136,8 @@ Chạy ở phiên tương tác có GPU, mở link `gradio.live` in ra ở cell c
 
 - **Một part** (600-800 clip): 1.350-1.800 lần chạy generator và 600-800 job giọng; khoảng 5.850-7.800 file.
 - **GPU cho sinh fake:** khoảng 55-100 giờ cho mỗi part (gần 2-4 tuần quota Kaggle). Chia phiên theo generator để chạy song song trên nhiều notebook, ghép bằng `PREVIOUS_OUTPUT`.
-- **Trích feature và train:** vài giờ.
+- **Trích feature:** nặng nhất là AV-HuBERT Large trên ~7.800 file / part; cache đã nén ước 20-27 GB / part (○). Nếu vượt giới hạn Output một phiên Kaggle: mỗi phiên vài encoder, lưu thành dataset riêng (notebook prepare: `ENCODERS`, `OTHER_CACHES`; notebook train: `CACHES`).
+- **Train (○, chưa đo):** cả đội hình 3 seed ~40-90 giờ T4 hoặc ~12-25 giờ RTX 4090; nặng nhất BL-A (fine-tune XLS-R, ~5-15 giờ T4 / seed) và nhóm M1. Đo thật bằng `training/05_benchmark.py` (trên cache) trước khi chia phiên.
 
 ## Kiểm thử
 

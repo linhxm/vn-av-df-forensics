@@ -1,4 +1,4 @@
-"""Tải encoder: AV-HuBERT Large (source + checkpoint + landmark) và XLS-R-300M."""
+"""Tải encoder (AV-HuBERT Large: source + checkpoint + landmark; XLS-R-300M) và checkpoint AVH-Align."""
 
 import sys
 from pathlib import Path

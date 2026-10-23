@@ -15,13 +15,36 @@ from vn_av_df.common.runtime import atomic_bytes, read_json, write_json
 from vn_av_df.dataset import training_dataset
 from vn_av_df.training.evaluate import TASKS, target
 
+# (model A, model B, tác vụ, ý nghĩa, tập con): tập con "unseen_generator" / "unseen_voice" giữ
+# mọi mẫu âm tính và chỉ các mẫu dương sinh bằng generator / giọng chưa thấy khi train.
 GATES = [
-    ("avcv", "avh_align", "mismatch", "A1 hơn AVH-Align ở đầu mismatch"),
-    ("mtn", "biolip", "visual", "A2 hơn BioLip ở visual"),
-    ("trihead", "trihead_no_ref", "ai", "A3: tham chiếu người giúp (≥ 0,03)"),
-    ("trihead", "avh_align", "ai", "A3 so với BL-1"),
-    ("trihead", "biolip", "visual", "A3 so với BL-2"),
+    ("trihead_v2", "bl_ens", "ai", "M1 hơn BL-Ens (max BL-V, BL-A)", None),
+    ("trihead_v2", "lipinc_v2", "visual", "M1 hơn BL-V, generator chưa thấy", "unseen_generator"),
+    ("trihead_v2", "ssl_aasist", "audio", "M1 hơn BL-A, giọng chưa thấy", "unseen_voice"),
+    ("trihead_v2", "avh_align_sup", "mismatch", "M1 hơn BL-M/sup ở mismatch", None),
+    ("trihead_v2", "avh_align", "mismatch", "M1 hơn BL-M ở mismatch", None),
+    ("trihead_v2", "trihead_v2_no_ref", "ai", "tham chiếu người giúp (≥ 0,03)", None),
+    ("trihead_v2", "trihead_v2_no_sync", "mismatch", "nhánh sync giúp mismatch", None),
+    ("trihead_v2", "trihead_v2_no_trace", "visual", "nhánh trace giúp visual", None),
+    ("avh_align_plus", "avh_align_sup", "mismatch", "M2 hơn BL-M/sup (cùng dữ liệu)", None),
+    ("avh_align_plus", "avh_align", "mismatch", "M2 hơn BL-M", None),
 ]
+
+
+def subset(rows, task, kind, seen):
+    """Giữ mẫu âm tính + mẫu dương thuộc generator / giọng chưa thấy khi train."""
+    if kind is None:
+        return rows
+    key, known = (
+        ("generator", seen["generators"])
+        if kind == "unseen_generator"
+        else ("voice_method", seen["voices"])
+    )
+    return [
+        r
+        for r in rows
+        if not target(r, task) or (r.get(key) not in (None, "none") and r[key] not in known)
+    ]
 
 
 def model_name(folder):
@@ -127,16 +150,22 @@ def build_report(cfg):
         "| So sánh | Tác vụ | ΔAUC | CI 95% | Speaker |",
         "|---|---|---|---|---|",
     ]
+    seen = {k: set(v) for k, v in evaluation["seen"].items()}
     gates = []
-    for first, second, task, note in GATES:
+    for first, second, task, note, kind in GATES:
         a = sorted(f for f, _ in by_model.get(first, []))
         b = sorted(f for f, _ in by_model.get(second, []))
         if not a or not b:
             continue
         result = paired_delta(
-            test_rows, load_scores(runs, a[0], task), load_scores(runs, b[0], task), task
+            subset(test_rows, task, kind, seen),
+            load_scores(runs, a[0], task),
+            load_scores(runs, b[0], task),
+            task,
         )
-        gates.append({"first": first, "second": second, "task": task, "note": note, **result})
+        gates.append(
+            {"first": first, "second": second, "task": task, "note": note, "subset": kind, **result}
+        )
         ci = (
             "-"
             if result["ci95"] is None

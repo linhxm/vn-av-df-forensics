@@ -3,7 +3,7 @@
 Chạy ở **máy local**: từ danh sách URL YouTube ra **part** real (20 nam + 20 nữ × 15-20 clip = 600-800 clip, chia sẵn train / validation / test theo người). Part là đầu vào của bước sinh fake (`generation/`, `notebooks/generate.ipynb`).
 
 - Chạy từng lệnh, đọc kết quả in ra, từ điển thuật ngữ: [RUNBOOK.md](RUNBOOK.md).
-- Căn cứ các con số và luật: [docs/v003_data.md](../docs/v003_data.md) (số người / clip §3, luật chọn và cắt §4-§5, độ lệch tiếng-hình §6, lưu trữ §8).
+- Căn cứ các con số và luật: [docs/v003_data.md](../docs/v003_data.md) (tổng quan tài liệu Ch.2, số người / clip Ch.3, pipeline Ch.4: chọn và cắt §4.1-§4.2, độ lệch tiếng-hình §4.3, lưu trữ §4.8; thí nghiệm Ch.5; lỗi và thay đổi Ch.6).
 
 Chỉ dùng video của chính mình hoặc đã được phép. Raw, clip và part là dữ liệu người thật: **không chia sẻ công khai**.
 

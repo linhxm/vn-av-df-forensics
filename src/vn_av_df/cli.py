@@ -1,12 +1,15 @@
 """Lệnh của pipeline v003 (gọi qua generation/0x_*.py, training/0x_*.py hoặc notebook).
 
-setup [--generators ...] [--encoders]   tải source / weight generator và encoder
+setup [--generators ...] [--encoders] [--models]
+                                         tải source / weight generator, encoder, tài sản model
 plan                                     kế hoạch sinh cho part sạch đang chọn
 voice                                    phiên giọng (①②③ + track B)
 lipsync [--generators ...]               phiên lip-sync (④⑤⑥) cho các generator chọn
 finalize                                 gom record → manifest
-prepare [--encoders ...]                 trích feature (avhubert, mouth, xlsr)
-train [--models ...] [--seeds ...]       train model
+prepare [--encoders ...]                 trích feature (mặc định: encoder các model cần)
+benchmark [--models ...] [--steps N] [--synthetic]
+                                         đo thời gian / bộ nhớ train từng model, ước giờ GPU
+train [--models ...] [--seeds ...]       train model (chạy lại thì tiếp từ epoch đã xong)
 evaluate [--force]                       test một lần
 report                                   bảng kết quả + cổng
 """
@@ -15,7 +18,24 @@ import argparse
 import json
 
 
-def setup(cfg, generators=None, encoders=False):
+def model_assets(cfg):
+    """Tài sản để train: XLS-R gốc (BL-A fine-tune) + checkpoint AVH-Align công bố (BL-M, M2)."""
+    from vn_av_df.assets import fetch_file, hf_snapshot
+
+    x, assets = cfg["encoders"]["xlsr"], cfg.get("model_assets") or {}
+    result = {
+        "xlsr": hf_snapshot(
+            x["hf_id"],
+            x["model"],
+            ["config.json", "*.bin", "*.safetensors", "preprocessor_config.json"],
+        )
+    }
+    if assets.get("avh_align_init"):
+        result["avh_align_init"] = fetch_file(assets["avh_align_url"], assets["avh_align_init"])
+    return result
+
+
+def setup(cfg, generators=None, encoders=False, models=False):
     from vn_av_df.generation.generate import adapter_for
 
     result = {}
@@ -28,15 +48,11 @@ def setup(cfg, generators=None, encoders=False):
         adapter = adapter_for(name)
         result[name] = adapter.setup(cfg)
     if encoders:
-        from vn_av_df.assets import hf_snapshot, setup_avhubert
+        from vn_av_df.assets import setup_avhubert
 
         result["avhubert"] = setup_avhubert(cfg["encoders"]["avhubert"])
-        x = cfg["encoders"]["xlsr"]
-        result["xlsr"] = hf_snapshot(
-            x["hf_id"],
-            x["model"],
-            ["config.json", "*.bin", "*.safetensors", "preprocessor_config.json"],
-        )
+    if encoders or models:
+        result.update(model_assets(cfg))
     return result
 
 
@@ -46,11 +62,16 @@ def main(argv=None):
     p = sub.add_parser("setup")
     p.add_argument("--generators", nargs="*")
     p.add_argument("--encoders", action="store_true")
+    p.add_argument("--models", action="store_true")
     sub.add_parser("plan")
     sub.add_parser("voice")
     sub.add_parser("lipsync").add_argument("--generators", nargs="*")
     sub.add_parser("finalize")
     sub.add_parser("prepare").add_argument("--encoders", nargs="*")
+    p = sub.add_parser("benchmark")
+    p.add_argument("--models", nargs="*")
+    p.add_argument("--steps", type=int, default=10)
+    p.add_argument("--synthetic", action="store_true")
     p = sub.add_parser("train")
     p.add_argument("--models", nargs="*")
     p.add_argument("--seeds", nargs="*", type=int)
@@ -62,7 +83,7 @@ def main(argv=None):
 
     cfg = config()
     if args.command == "setup":
-        result = setup(cfg, args.generators, args.encoders)
+        result = setup(cfg, args.generators, args.encoders, args.models)
     elif args.command == "plan":
         from vn_av_df.generation.plan import make_plan
 
@@ -78,9 +99,13 @@ def main(argv=None):
 
         result = finalize(cfg)
     elif args.command == "prepare":
-        from vn_av_df.training.prepare import ORDER, prepare
+        from vn_av_df.training.prepare import encoders_for, prepare
 
-        result = prepare(cfg, args.encoders or ORDER)
+        result = prepare(cfg, args.encoders or encoders_for(cfg["models"]))
+    elif args.command == "benchmark":
+        from vn_av_df.training.benchmark import benchmark
+
+        result = benchmark(cfg, args.models, args.steps, synthetic=args.synthetic)
     elif args.command == "train":
         from vn_av_df.training.train import train_all
 

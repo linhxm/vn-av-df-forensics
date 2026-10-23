@@ -25,29 +25,21 @@ TRAIN_GENERATORS = ["wav2lip_gan", "musetalk_1_5", "iplap", "videoretalking"]
 TEST_ONLY_GENERATORS = ["latentsync_1_5", "diff2lip"]
 TRAIN_VOICES = ["vieneu", "f5_vi", "omnivoice", "seedvc"]
 TEST_ONLY_VOICES = ["voxcpm2", "vixtts"]
-# 6 baseline + 3 đề xuất; ablation thêm khi cần. Xem docs/v003_model.md.
+# Đội hình chốt 23/10 (docs/v003_model.md §4-§5): 4 baseline cài lại đúng code gốc (BL-V, BL-A,
+# BL-M chỉ real, BL-M/sup) + M1 + M2; BL-Ens = max(BL-V, BL-A) tính ở evaluate, không train.
 MODELS = [
-    "speechforensics",
+    "lipinc_v2",
+    "ssl_aasist",
     "avh_align",
     "avh_align_sup",
-    "biolip",
-    "av_lipsync_plus",
-    "xlsr_aasist",
-    "avcv",
-    "mtn",
-    "trihead",
+    "trihead_v2",
+    "avh_align_plus",
 ]
+# Ablation của M1 (bảng phụ): bỏ nhánh sync, bỏ nhánh trace, bỏ tham chiếu người.
 ABLATIONS = [
-    "avcv_no2d",
-    "avcv_cos",
-    "mtn_no_npr",
-    "mtn_no_temporal",
-    "mtn_no_kin",
-    "mtn_no_aug",
-    "trihead_no_ref",
-    "trihead_no_audio",
-    "trihead_no_trace",
-    "trihead_no_sync",
+    "trihead_v2_no_sync",
+    "trihead_v2_no_trace",
+    "trihead_v2_no_ref",
 ]
 SEEDS = [42, 43, 44]
 # Python của từng môi trường worker (environments/worker_envs.py in ra đường dẫn sau khi cài).
@@ -83,7 +75,7 @@ def config():
         "cache": str(ROOT / "cache" / DATASET_NAME),
         "runs": str(ROOT / "runs" / RUN_NAME),
         "envs": dict(ENVS),
-        "models": MODELS,
+        "models": MODELS + ABLATIONS,
         "generation": {
             "generators": {
                 "train": train["generators"],
@@ -129,7 +121,6 @@ def config():
             "epochs": 30,
             "patience": 5,
             "lr": 3e-4,
-            "avh_align_lr": 1e-5,
             "weight_decay": 1e-4,
             "hidden": 128,
             "dropout": 0.1,
@@ -137,7 +128,7 @@ def config():
             "eval_batch_size": 8,
             "workers": 2,
             # Dịch tiếng so với hình k frame ∈ [−1, +2] khi train (dương = tiếng trễ); xem
-            # docs/v003_data.md §6.4 (BT.1359, sai số đo, điểm 0 generator).
+            # docs/v003_data.md §4.3.4 (BT.1359, sai số đo, điểm 0 generator).
             "audio_lag_aug": [-1, 2],
             # Mỗi người 15-20 clip: lấy mẫu train theo 1 / số clip của người đó để mỗi người đóng
             # góp như nhau (docs/v003_model.md §7).
@@ -169,11 +160,22 @@ def config():
             "kind": "xlsr",
             "model": str(ROOT / "weights/wav2vec2-xls-r-300m"),
             "hf_id": "facebook/wav2vec2-xls-r-300m",
-            "layer_low": 6,
-            "layer_high": 12,
+            # Nhóm lớp (hidden_states 1-4, 5-8, 9-12); M1 học trọng số softmax trên các nhóm.
+            # Lee et al. 2022 (XLSR-53 đóng băng): lớp 5 tốt nhất cho phát hiện giả.
+            "layer_groups": [[1, 4], [5, 8], [9, 12]],
             "device": DEVICE,
         },
         "mouth": {"kind": "mouth", "crop": 96, "box_max_side": 640},
+        "lipinc": {"kind": "lipinc", "box_max_side": 640},
+        "wave": {"kind": "wave"},
+    }
+    # Tài sản dựng model: XLS-R gốc cho BL-A fine-tune; checkpoint AVH-Align công bố (train trên
+    # 45 k video real AV-1M, commit đã pin) để khởi tạo BL-M và Φ của M2.
+    cfg["model_assets"] = {
+        "xlsr": cfg["encoders"]["xlsr"]["model"],
+        "avh_align_init": str(ROOT / "weights/avh_align/AVH-Align_AV1M.pt"),
+        "avh_align_url": "https://raw.githubusercontent.com/bit-ml/AVH-Align/"
+        "55401ded7d94a6ad59106c401696d89ce8d16faf/checkpoints/AVH-Align_AV1M.pt",
     }
     return cfg
 

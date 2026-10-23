@@ -2,12 +2,19 @@
 
 Nhãn theo frame: visual / audio / mismatch = tỉ lệ frame nằm trong khoảng tương ứng; nhãn video:
 label (bị AI), synthetic_visual, synthetic_audio, có mismatch.
+Đặc trưng (`needs`): av (AV-HuBERT a / v), ssl (XLS-R theo nhóm lớp [T, nhóm, 1024]), mouth (crop
+miệng + landmark môi + tư thế đầu), pose (chỉ landmark môi + tư thế đầu, không nạp crop), lipinc
+(8 crop màu LIPINC-V2, không theo frame), wave (tiếng 16 kHz [T, 640]).
 Augment độ lệch tiếng-hình (chỉ khi train): dịch đặc trưng tiếng (AV-HuBERT audio, XLS-R) so với
 hình k frame, k ngẫu nhiên đều trong cfg["training"]["audio_lag_aug"] (mặc định −1…+2; dương =
 tiếng trễ), như nhau cho real và fake, nhãn giữ nguyên; frame mất tiếng ở mép bị mask. Real đã
 được sửa độ lệch về 0 ở data pipeline nhưng còn sai số ±1 frame và mỗi generator có "điểm 0" riêng;
 khoảng −1…+2 nằm trong vùng người xem không nhận ra lệch (ITU-R BT.1359: tiếng sớm ~45 ms, trễ
-~125 ms). Căn cứ: docs/v003_data.md §6.4.
+~125 ms). Căn cứ: docs/v003_data.md §4.3.4.
+Pseudo-fake thay đoạn tiếng (chỉ khi train, model bật `pseudo_fake`): với clip real, xác suất p
+thay đặc trưng tiếng của một đoạn 0,3-3 s bằng đoạn cùng chỗ của một clip real khác cùng người
+(như ô ② sham nhưng sinh vô hạn khi nạp); nhãn mismatch = 1 trên đoạn, AI / audio / visual = 0.
+Căn cứ: Astrid et al. 2025 (thay đoạn: AUC chéo bộ 61 → 80 %), docs/v003_model.md §5.
 Tham chiếu người (enrollment): R clip real của cùng speaker trong cùng split. Khi train lấy ngẫu
 nhiên (bỏ clip gốc của chính sample); khi đánh giá cố định R clip real đầu tiên theo sample_id
 và các clip đó không được tính điểm ở chế độ "ref".
@@ -27,6 +34,9 @@ KEYS = {
     "audio": "audio_fake_intervals",
     "mismatch": "av_mismatch_intervals",
 }
+AUDIO_KEYS = ("a", "ssl", "wave")
+STATIC_KEYS = ("lipinc",)  # không theo frame: không cắt theo độ dài, không crop
+PSEUDO_RANGE_S, PSEUDO_MARGIN_S = (0.3, 3.0), 0.5
 
 
 def frame_targets(row, frames):
@@ -43,9 +53,6 @@ def video_targets(row):
         "audio": float(bool(row.get("synthetic_audio"))),
         "mismatch": float(bool(row.get("av_mismatch_intervals"))),
     }
-
-
-AUDIO_KEYS = ("a", "ssl")
 
 
 def lag_audio(item, lag):
@@ -67,6 +74,27 @@ def lag_audio(item, lag):
         keep[lag:] = False
     item["lag_valid"] = keep
     return item
+
+
+def replace_audio(item, other, targets, rng):
+    """Thay đặc trưng tiếng của một đoạn 0,3-3 s bằng đoạn cùng chỗ của clip khác; trả đoạn."""
+    keys = [k for k in AUDIO_KEYS if k in item and k in other]
+    if not keys:
+        return None
+    n, m = len(item[keys[0]]), len(other[keys[0]])
+    margin = int(round(PSEUDO_MARGIN_S * 25))
+    low, high = (int(round(s * 25)) for s in PSEUDO_RANGE_S)
+    high = min(high, n - 2 * margin, m)
+    if high < low:
+        return None
+    size = rng.randint(low, high)
+    start = rng.randint(margin, n - margin - size)
+    source = min(start, m - size)
+    for key in keys:
+        item[key] = item[key].copy()
+        item[key][start : start + size] = other[key][source : source + size]
+    targets["mismatch"][start : start + size] = 1.0
+    return start, start + size
 
 
 def augment_mouth(mouth, rng):
@@ -112,8 +140,26 @@ def enrollment(rows, count):
     return {k: sorted(v, key=lambda r: r["sample_id"])[:count] for k, v in reals.items()}
 
 
+def cache_roots(cfg):
+    """cfg["cache"] là một thư mục hoặc danh sách thư mục (mỗi encoder có thể nằm ở dataset riêng)."""
+    value = cfg["cache"]
+    return [Path(p) for p in (value if isinstance(value, (list, tuple)) else [value])]
+
+
+def cache_dir(cfg, encoder):
+    """Thư mục cache của một encoder: thư mục gốc đầu tiên có nó (mặc định: gốc đầu tiên)."""
+    roots = cache_roots(cfg)
+    return next((r / encoder for r in roots if (r / encoder).is_dir()), roots[0] / encoder)
+
+
+def speaker_index(rows):
+    """Chỉ số người của split train (cho đầu phân loại người qua gradient reversal)."""
+    names = sorted({r["speaker_id"] for r in rows if r["split"] == "train" and r.get("speaker_id")})
+    return {name: i for i, name in enumerate(names)}
+
+
 class BenchData(torch.utils.data.Dataset):
-    """needs ⊆ {"av", "ssl", "mouth"}; references = số clip tham chiếu mỗi sample (0 = tắt)."""
+    """needs ⊆ {"av", "ssl", "mouth", "pose", "lipinc", "wave"}; references = số clip tham chiếu."""
 
     def __init__(
         self,
@@ -127,12 +173,17 @@ class BenchData(torch.utils.data.Dataset):
         fixed_references=False,
         seed=0,
         crop_frames=None,
+        pseudo_fake=0.0,
+        rawboost=False,
+        speakers=None,
     ):
-        self.cache = Path(cfg["cache"])
+        self.dirs = {e: cache_dir(cfg, e) for e in ("avhubert", "xlsr", "mouth", "wave", "lipinc")}
         self.rows, self.needs, self.augment = list(rows), set(needs), augment
         self.lag_augment = lag_augment
         self.references, self.ref_frames, self.seed = references, ref_frames, seed
-        self.crop_frames = crop_frames  # train: cắt ngẫu nhiên một đoạn để tiết kiệm bộ nhớ
+        self.crop_frames = crop_frames  # train: cắt ngẫu nhiên một đoạn (bộ nhớ, cửa sổ 4 s)
+        self.pseudo_fake, self.rawboost = pseudo_fake, rawboost
+        self.speakers = speakers or {}
         self.fixed = enrollment(self.rows, references) if fixed_references else None
         pools = defaultdict(list)
         for r in self.rows:
@@ -145,25 +196,43 @@ class BenchData(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.rows)
 
-    def load(self, row, rng=None, frames=None):
+    def load(self, row, rng=None, frames=None, needs=None):
+        needs = self.needs if needs is None else set(needs)
         sid = row["sample_id"]
-        item, lengths = {}, []
-        if "av" in self.needs:
-            with np.load(self.cache / "avhubert" / f"{sid}.npz", allow_pickle=False) as z:
+        item, lengths, static = {}, [], {}
+        if "av" in needs:
+            with np.load(self.dirs["avhubert"] / f"{sid}.npz", allow_pickle=False) as z:
                 item["a"], item["v"] = z["audio"].astype(np.float32), z["visual"].astype(np.float32)
                 item["av_valid"] = (z["audio_valid"] & z["visual_valid"]).copy()
             lengths.append(len(item["a"]))
-        if "ssl" in self.needs:
-            with np.load(self.cache / "xlsr" / f"{sid}.npz", allow_pickle=False) as z:
-                item["ssl"] = z["ssl"].astype(np.float32)
+        if "ssl" in needs:
+            with np.load(self.dirs["xlsr"] / f"{sid}.npz", allow_pickle=False) as z:
+                ssl = z["ssl"].astype(np.float32)
+            item["ssl"] = ssl[:, None] if ssl.ndim == 2 else ssl  # [T, nhóm, 1024]
             lengths.append(len(item["ssl"]))
-        if "mouth" in self.needs:
-            with np.load(self.cache / "mouth" / f"{sid}.npz", allow_pickle=False) as z:
-                item["mouth"], item["lips"] = z["mouth"].copy(), z["lips"].astype(np.float32)
+        if needs & {"mouth", "pose"}:
+            with np.load(self.dirs["mouth"] / f"{sid}.npz", allow_pickle=False) as z:
+                if "mouth" in needs:
+                    item["mouth"] = z["mouth"].copy()
+                item["lips"] = z["lips"].astype(np.float32)
+                item["pose"] = (
+                    z["pose"].astype(np.float32)
+                    if "pose" in z.files
+                    else np.zeros((len(z["lips"]), 3), np.float32)
+                )
                 item["mouth_valid"] = z["valid"].copy()
-            if self.augment and rng is not None:
+            if "mouth" in item and self.augment and rng is not None:
                 item["mouth"] = augment_mouth(item["mouth"], rng)
-            lengths.append(len(item["mouth"]))
+            lengths.append(len(item["lips"]))
+        if "wave" in needs:
+            with np.load(self.dirs["wave"] / f"{sid}.npz", allow_pickle=False) as z:
+                item["wave"] = z["wave"].astype(np.float32) / 32768.0
+            lengths.append(len(item["wave"]))
+        if "lipinc" in needs:
+            with np.load(self.dirs["lipinc"] / f"{sid}.npz", allow_pickle=False) as z:
+                static["lipinc"] = z["frames"].copy()
+                item["lipinc_valid"] = z["valid"].copy()
+            lengths.append(len(item["lipinc_valid"]))
         if self.lag_augment and rng is not None and self.lag_range != (0, 0):
             item = lag_audio(item, rng.randint(*self.lag_range))
         length = min(lengths + ([frames] if frames else []))
@@ -173,6 +242,7 @@ class BenchData(torch.utils.data.Dataset):
             if key in item:
                 valid &= item[key]
         item["valid"] = valid
+        item.update(static)
         return item, length
 
     def __getitem__(self, index):
@@ -180,12 +250,36 @@ class BenchData(torch.utils.data.Dataset):
         rng = random.Random(f"{self.seed}:{self.epoch}:{row['sample_id']}")
         item, length = self.load(row, rng)
         targets = frame_targets(row, length)
+        video = video_targets(row)
+        if self.pseudo_fake and row.get("cell") == "real" and rng.random() < self.pseudo_fake:
+            key = (row["split"], row.get("speaker_id"))
+            pool = [
+                r for r in self.pools.get(key, []) if r["source_clip_id"] != row["source_clip_id"]
+            ]
+            if pool:
+                other, _ = self.load(
+                    rng.choice(pool), None, needs=self.needs & {"av", "ssl", "wave"}
+                )
+                if replace_audio(item, other, targets, rng):
+                    video["mismatch"] = 1.0
         item.update({f"y_{k}": v for k, v in targets.items()})
         if self.crop_frames and length > self.crop_frames:
             start = rng.randrange(length - self.crop_frames + 1)
-            item = {k: v[start : start + self.crop_frames] for k, v in item.items()}
+            item = {
+                k: v if k in STATIC_KEYS else v[start : start + self.crop_frames]
+                for k, v in item.items()
+            }
+        if self.rawboost and "wave" in item and rng is not None:
+            from vn_av_df.training.rawboost import ssi_additive_noise
+
+            flat = item["wave"].reshape(-1)
+            noisy = ssi_additive_noise(flat, np.random.default_rng(rng.randrange(2**32)))
+            item["wave"] = noisy.reshape(item["wave"].shape)
         item["index"] = index
-        item["video"] = video_targets(row)
+        item["video"] = video
+        item["speaker"] = (
+            self.speakers.get(row.get("speaker_id"), -1) if row["split"] == "train" else -1
+        )
         if self.references:
             key = (row["split"], row.get("speaker_id"))
             if self.fixed is not None:
@@ -201,6 +295,9 @@ class BenchData(torch.utils.data.Dataset):
         return item
 
 
+FRAME_KEYS = ("a", "v", "ssl", "lips", "pose", "wave")
+
+
 def collate(batch):
     """Đệm theo T dài nhất; mask = valid & trong độ dài thật."""
     size = max(len(b["valid"]) for b in batch)
@@ -213,12 +310,18 @@ def collate(batch):
             out[i, : len(x)] = x
         return torch.as_tensor(out, dtype=dtype)
 
-    out = {"mask": stack("valid", torch.bool), "index": torch.tensor([b["index"] for b in batch])}
-    for key in ("a", "v", "ssl", "lips"):
+    out = {
+        "mask": stack("valid", torch.bool),
+        "index": torch.tensor([b["index"] for b in batch]),
+        "speaker": torch.tensor([b.get("speaker", -1) for b in batch]),
+    }
+    for key in FRAME_KEYS:
         if key in batch[0]:
             out[key] = stack(key)
     if "mouth" in batch[0]:
         out["mouth"] = stack("mouth", torch.uint8)
+    if "lipinc" in batch[0]:
+        out["lipinc"] = torch.as_tensor(np.stack([b["lipinc"] for b in batch]))
     for key in ("y_ai", "y_visual", "y_audio", "y_mismatch"):
         out[key] = stack(key)
     out["video"] = {k: torch.tensor([b["video"][k] for b in batch]) for k in batch[0]["video"]}
@@ -229,7 +332,7 @@ def collate(batch):
             flat = [r for b in batch for r in b["refs"]] or []
             ref_size = max(len(r["valid"]) for r in flat)
             refs = {}
-            for key in ("a", "v", "ssl", "mouth", "lips", "valid"):
+            for key in ("a", "v", "ssl", "mouth", "lips", "pose", "valid"):
                 if key not in flat[0]:
                     continue
                 sample = flat[0][key]

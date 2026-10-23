@@ -92,9 +92,106 @@ def test_mouth_encoder_crops_native_resolution(tmp_path):
     with np.load(tmp_path / "m.npz") as z:
         assert z["mouth"].shape == (n, 64, 64) and z["lips"].shape == (n, 20, 2)
         assert float(z["native_side"]) == pytest.approx(100.0)  # 50 px ở 640 → 100 px ở 1280
+        assert z["pose"].shape == (n, 3) and np.isfinite(z["pose"]).all()
     assert meta["box_sha256"] == sha(box)
     lips = normalized_lips(np.random.default_rng(1).normal(0, 5, (3, 68, 2)))
     assert np.allclose(lips.astype(np.float32).mean(1), 0, atol=1e-2)
+
+
+def synthetic_video(path, seconds=2, size="64x64"):
+    from vn_av_df.common.runtime import run
+
+    run(
+        [
+            ffmpeg(),
+            "-nostdin",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc2=s={size}:r=25:d={seconds}",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=duration={seconds}",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            path,
+        ]
+    )
+    return path
+
+
+def face_points(opening):
+    """68 landmark dlib giả, mặt thẳng; opening = khoảng cách môi trong 62-66 (px ở khung 640)."""
+    p = np.zeros((68, 2), np.float32)
+    p[0:17, 0] = np.linspace(260, 380, 17)
+    p[0:17, 1] = 200 + 60 * np.sin(np.linspace(0, np.pi, 17))
+    p[17:27] = np.c_[np.linspace(270, 370, 10), np.full(10, 150)]
+    p[36:42] = np.c_[np.linspace(285, 305, 6), np.full(6, 170)]
+    p[42:48] = np.c_[np.linspace(335, 355, 6), np.full(6, 170)]
+    p[30] = (320, 200)
+    p[48:60] = np.c_[
+        300 + 40 * np.cos(np.linspace(0, 2 * np.pi, 12)),
+        230 + 8 * np.sin(np.linspace(0, 2 * np.pi, 12)),
+    ]
+    p[60:68] = np.c_[
+        305 + 30 * np.cos(np.linspace(0, 2 * np.pi, 8)),
+        230 + 3 * np.sin(np.linspace(0, 2 * np.pi, 8)),
+    ]
+    p[48], p[54], p[60], p[64] = (285, 230), (355, 230), (292, 230), (348, 230)
+    p[62], p[66] = (320, 230 - opening / 2), (320, 230 + opening / 2)
+    p[8] = (320, 262)
+    return p
+
+
+def test_lipinc_selection_follows_original_rule():
+    from vn_av_df.features.encoders import lipinc_select
+
+    # Frame 0-1 miệng khép (< 1 %) cắt chuỗi; 2-6 là 5 frame mở liên tiếp; frame cùng tư thế cách ≥ 3.
+    ratios = [(i, (0.005, 0.3, 0.2, 0.2)) for i in range(2)]
+    ratios += [(i, (0.05, 0.30, 0.20, 0.20)) for i in range(2, 7)]
+    ratios += [(i, (0.20, 0.50, 0.40, 0.40)) for i in range(7, 12)]
+    ratios += [(i, (0.051, 0.301, 0.201, 0.201)) for i in range(12, 30)]
+    local, found, fallback = lipinc_select(ratios)
+    assert not fallback and local == [2, 3, 4, 5, 6] and len(found) == 3
+    assert all(b - a >= 4 for a, b in zip(found, found[1:]))  # sau mỗi frame chọn bỏ qua 3 frame
+    # Không có frame cùng tư thế: vẫn chọn theo luật dự phòng, đánh dấu fallback.
+    lone = [(i, (0.05 + 0.03 * i, 0.3 + 0.05 * i, 0.2, 0.2)) for i in range(12)]
+    local, found, fallback = lipinc_select(lone)
+    assert fallback and len(local) == 5 and len(found) == 3
+
+
+def test_lipinc_and_wave_encoders(tmp_path):
+    from vn_av_df.common.runtime import save_npz, sha, write_json
+    from vn_av_df.features.encoders import LipincEncoder, WaveEncoder
+
+    video = synthetic_video(tmp_path / "v.mp4", size="1280x720")
+    n = 50
+    landmarks = np.stack([face_points(4 + 6 * (i % 7 > 1)) for i in range(n)])
+    box = tmp_path / "box.npz"
+    save_npz(box, landmarks=landmarks, visual_valid=np.ones(n, bool))
+    write_json(box.with_suffix(".json"), {"feature_sha256": sha(box)})
+    meta = LipincEncoder({}).extract(
+        {"video": str(video), "box_cache": str(box)}, tmp_path / "l.npz"
+    )
+    with np.load(tmp_path / "l.npz") as z:
+        assert z["frames"].shape == (8, 64, 144, 3) and z["frames"].dtype == np.uint8
+        assert (z["frame_ids"] >= 0).sum() == meta["selected"] == 8
+        assert z["frames"].reshape(8, -1).std(1).min() > 0  # mọi ô đều có ảnh
+    WaveEncoder({}).extract({"video": str(video)}, tmp_path / "w.npz")
+    with np.load(tmp_path / "w.npz") as z:
+        assert z["wave"].shape[0] in (50, 51) and z["wave"].shape[1] == 640  # AAC đệm thêm mẫu
+        assert z["wave"].dtype == np.int16
+        assert np.abs(z["wave"]).max() > 1000  # sóng sin, không chuẩn hoá
 
 
 def test_xlsr_encoder_pools_layers_to_25hz(tmp_path):
@@ -139,10 +236,45 @@ def test_xlsr_encoder_pools_layers_to_25hz(tmp_path):
             video,
         ]
     )
-    encoder = XLSREncoder({"layer_low": 6, "layer_high": 12}, model=Fake())
+    encoder = XLSREncoder({"layer_groups": [[1, 4], [5, 8], [9, 12]]}, model=Fake())
     encoder.extract({"video": str(video)}, tmp_path / "x.npz")
     with np.load(tmp_path / "x.npz") as z:
-        assert z["ssl"].shape[0] in (50, 51) and np.allclose(z["ssl"].astype(np.float32), 9.0)
+        ssl = z["ssl"].astype(np.float32)
+        assert ssl.shape[0] in (50, 51) and ssl.shape[1:] == (3, 1024)
+        assert np.allclose(ssl[:, :, 0].mean(0), [2.5, 6.5, 10.5])  # TB các lớp trong từng nhóm
+
+
+def test_npr_matches_reference_pixel_definition():
+    from vn_av_df.training.models import trace_streams
+
+    mouth = torch.randint(0, 255, (1, 3, 8, 8), dtype=torch.uint8)
+    npr = trace_streams(mouth)[0, 1]
+    x = mouth.float() / 255
+    expected = (x - x[..., ::2, ::2].repeat_interleave(2, -2).repeat_interleave(2, -1)) * 4
+    assert torch.allclose(npr, expected[0]) and torch.all(npr[..., ::2, ::2] == 0)
+
+
+def test_gradient_reversal_flips_gradient():
+    from vn_av_df.training.models import GradReverse
+
+    x = torch.ones(3, requires_grad=True)
+    GradReverse.apply(x, 0.5).sum().backward()
+    assert torch.allclose(x.grad, torch.full((3,), -0.5))
+
+
+def test_pseudo_fake_replaces_audio_segment_only():
+    import random
+
+    from vn_av_df.training.data import replace_audio
+
+    n = 150
+    item = {"a": np.zeros((n, 4), np.float32), "v": np.zeros((n, 4), np.float32)}
+    other = {"a": np.ones((n, 4), np.float32), "v": np.ones((n, 4), np.float32)}
+    targets = {"mismatch": np.zeros(n, np.float32)}
+    start, end = replace_audio(item, other, targets, random.Random(3))
+    assert 12 <= start and end <= n - 12 and 7 <= end - start <= 75
+    assert item["a"][start:end].all() and not item["a"][:start].any() and not item["v"].any()
+    assert targets["mismatch"][start:end].all() and targets["mismatch"].sum() == end - start
 
 
 def test_generator_commands(tmp_path):

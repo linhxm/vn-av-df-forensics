@@ -19,14 +19,18 @@ v003 is rebuilt from scratch. The earlier study (v001-v002, closed 14 October 20
 
 ## Detectors
 
+Baselines are re-implemented from the authors' released code (differences listed in the model docstrings and in [docs/v003_model.md](docs/v003_model.md)).
+
 | Name | Role |
 |---|---|
-| `avh_align` (+ `avh_align_sup`) | **BL-1**, AVH-Align (CVPR 2025): audio-visual alignment learned from reals |
-| `biolip` | **BL-2**, BioLip (2026): lip kinematics |
-| `speechforensics`, `av_lipsync_plus`, `xlsr_aasist` | Reference baselines (training-free sync, supervised AV-HuBERT, audio-only) |
-| `avcv` | **A1**: learned audio-lip cost volume over lags |
-| `mtn` | **A2**: native-resolution mouth traces (NPR + temporal residuals, kinematics, processing-invariance augmentation) |
-| `trihead` | **A3**: sync + trace + audio branches, three outputs, per-speaker reference clips |
+| `lipinc_v2` | **BL-V**, LIPINC-V2 (Datta et al. 2025): mouth-region vision temporal transformer (visual fake) |
+| `ssl_aasist` | **BL-A**, XLS-R 300M fine-tuned with AASIST + RawBoost (Tak et al. 2022) (audio fake) |
+| `avh_align` | **BL-M**, AVH-Align (CVPR 2025): audio-visual alignment learned from reals only, initialized from the released AV-1M checkpoint |
+| `avh_align_sup` | **BL-M/sup**, AVH-Align/sup: same network trained with labels |
+| `bl_ens` | **BL-Ens**, max(BL-V, BL-A) after z-normalization on validation reals (no training) |
+| `trihead_v2` | **M1**: sync (lag cost volume) + mouth trace (NPR, head pose) + audio (learned XLS-R layer weights) branches, three outputs, per-speaker reference clips, pseudo-fake audio replacement, speaker gradient reversal |
+| `avh_align_plus` | **M2**: AVH-Align scorer over a ±15-frame lag volume + lip–head motion + pseudo-fakes |
+| `trihead_v2_no_{sync,trace,ref}` | M1 ablations |
 
 Evaluation covers four tasks (ai / visual / audio / mismatch), per-cell, per-generator, per-voice and seen/unseen breakdowns, per-speaker AUC, localization inside partial segments, reference-normalized scores, and pre-registered gates with speaker-level bootstrap CIs. The test split is evaluated once and locked.
 

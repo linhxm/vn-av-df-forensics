@@ -44,7 +44,7 @@ cut:
     attempts_factor: 2.5       # tối đa ~2,5 cửa sổ kiểm cho mỗi clip cần lấy
   pair:                        # nguồn hai người (speakers = 2): kiểm như nhiều người, không cắt hết
     max_clips: 150             # tối đa 150 clip / video rải đều (~75 / người; nhiều người cắt hết
-                               # ra ~280 clip / video 60 phút, batch 2 - docs/v003_data.md §5)
+                               # ra ~280 clip / video 60 phút, batch 2 - docs/v003_data.md §4.2.4, §5.4)
     attempts_factor: 2.5
   sync:                        # độ lệch tiếng-hình của cả video (SyncNet), xem features/syncnet.py
     clips_per_video: 20        # đo tối đa 20 clip rải đều mỗi video
@@ -77,7 +77,7 @@ identify:
 parts:
   speakers_per_gender: 20      # mỗi part: 20 nam + 20 nữ
   min_clips_per_speaker: 15    # mỗi người 15-20 clip được chọn → part 600-800 clip
-  max_clips_per_speaker: 20    # (docs/v003_data.md §3); train cân theo người, split cân tổng clip
+  max_clips_per_speaker: 20    # (docs/v003_data.md §3.4); train cân theo người, split cân tổng clip
   seed: 42
   split:                       # [nam, nữ] theo speaker (60 / 15 / 25 %)
     train: [12, 12]
