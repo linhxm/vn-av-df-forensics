@@ -11,6 +11,7 @@ phiên sau mở lại đúng run (resume) khi chạy tiếp sau khi bị ngắt.
 
 import math
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -100,6 +101,9 @@ def open_run(cfg, job_type, name, group=None, config=None, folder=None, tags=())
 
     record = Path(folder) / f"wandb-{name}.json" if folder else None
     previous = read_json(record) if record and record.exists() else {}
+    # Tên hiển thị có ngày giờ bắt đầu (giờ Việt Nam); chạy tiếp sau khi ngắt giữ đúng tên và id cũ.
+    started = datetime.now(timezone(timedelta(hours=7))).strftime("%Y%m%d-%H%M")
+    display = previous.get("display") or f"{started} {name}"
     try:
         run = wandb.init(
             project=options.get("project", PROJECT),
@@ -108,7 +112,7 @@ def open_run(cfg, job_type, name, group=None, config=None, folder=None, tags=())
             dir=options.get("dir") or os.environ.get("WANDB_DIR"),
             job_type=job_type,
             group=group,
-            name=name,
+            name=display,
             id=previous.get("id"),
             resume="allow",
             config=config or {},
@@ -121,7 +125,10 @@ def open_run(cfg, job_type, name, group=None, config=None, folder=None, tags=())
         )
         return Run()
     if record:
-        write_json(record, {"id": run.id, "name": name, "job_type": job_type, "group": group})
+        write_json(
+            record,
+            {"id": run.id, "name": name, "display": display, "job_type": job_type, "group": group},
+        )
     return Run(wandb, run)
 
 

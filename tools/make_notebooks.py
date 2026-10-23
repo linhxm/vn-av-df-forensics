@@ -277,6 +277,7 @@ train = nb(
 Cần: dataset đã finalize + cache feature (notebook prepare). Model: `settings.MODELS` (4 baseline + M1, M2) + `settings.ABLATIONS` (3 ablation M1); BL-Ens tính ở bước test.
 Đầu ra: `runs/<RUN_NAME>/` (checkpoint, history, metrics, report.md, gates.json, test-lock.json, provenance.json).
 Hết giờ phiên giữa chừng: Save Version, phiên sau attach Output vào `PREVIOUS_RUN`; model xong được bỏ qua, model đang dở train tiếp từ epoch sau `last.pt`.
+Chạy song song nhiều notebook: mỗi notebook một nhóm `MODELS`, `RUN_TEST = False`. Notebook cuối đặt `PREVIOUS_RUN` = danh sách Output các notebook đó, `MODELS` đủ: model đã xong được gộp và bỏ qua, test + report chỉ chạy khi đủ mọi model.
 `RUN_BENCHMARK = True`: đo thời gian / bộ nhớ từng model trên cache thật trước (ghi `benchmark.json`), để chia phiên.
 """,
         ),
@@ -288,7 +289,7 @@ Hết giờ phiên giữa chừng: Save Version, phiên sau attach Output vào `
 DATASET_PARTS = [Path("/kaggle/input/datasets/YOUR_USER/vn-av-df-data-part1")]
 # Một hoặc nhiều dataset cache (gộp lại phải đủ avhubert/ mouth/ lipinc/ xlsr/ wave/)
 CACHES = [Path("/kaggle/input/datasets/YOUR_USER/vn-av-df-features-part1")]
-PREVIOUS_RUN = None   # Path(".../runs/train_part1_v003") để train tiếp model chưa xong
+PREVIOUS_RUN = None   # Path(".../runs/train_part1_v003") hoặc danh sách nhiều Output để gộp
 MODELS = settings.MODELS + settings.ABLATIONS
 SEEDS = [42]          # đánh giá part 1: một seed; chốt thiết kế rồi chạy [42, 43, 44]
 RUN_TEST = True
@@ -302,8 +303,10 @@ cfg["dataset"], cfg["dataset_parts"] = str(root), parts
 cfg["cache"] = [str(p) for p in CACHES]
 cfg["models"], cfg["seeds"] = list(MODELS), list(SEEDS)
 cfg["wandb"] = WANDB
-if PREVIOUS_RUN and not Path(cfg["runs"]).exists():
-    shutil.copytree(PREVIOUS_RUN, cfg["runs"])
+from vn_av_df.training.train import merge_runs, missing_runs
+previous = [PREVIOUS_RUN] if isinstance(PREVIOUS_RUN, (str, Path)) else list(PREVIOUS_RUN or [])
+if previous:
+    print("Gộp từ phiên trước:", merge_runs(cfg["runs"], previous))
 """,
         ),
         (
@@ -321,7 +324,10 @@ print(json.dumps(train_all(cfg), indent=2, ensure_ascii=False))
         (
             "code",
             """
-if RUN_TEST:
+missing = missing_runs(cfg)
+if RUN_TEST and missing:
+    print("Chưa đủ model, chưa chạy test (test chỉ chạy một lần, khi đủ):", missing)
+elif RUN_TEST:
     from vn_av_df.training.evaluate import evaluate_all
     from vn_av_df.training.report import build_report
     print(json.dumps(evaluate_all(cfg), indent=2))

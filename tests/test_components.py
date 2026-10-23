@@ -715,6 +715,35 @@ def test_progress_prints_first_periodic_last_and_heartbeat(capsys):
     assert isinstance(system_status(), str) and duration(4000) == "1 giờ 06 phút"
 
 
+def test_merge_parallel_train_outputs(tmp_path):
+    """Nhiều notebook train song song: gộp bản xong / nhiều epoch hơn, nối provenance, bỏ kết quả
+    test; test chỉ chạy khi đủ mọi model."""
+    from vn_av_df.common.runtime import read_json, write_json
+    from vn_av_df.training.train import merge_runs, missing_runs
+
+    def run(folder, model, complete, epochs):
+        write_json(
+            folder / f"{model}_seed42/history.json",
+            {"complete": complete, "epochs": [{"epoch": i} for i in range(1, epochs + 1)]},
+        )
+
+    a, b, target = tmp_path / "a", tmp_path / "b", tmp_path / "runs"
+    run(a, "ssl_aasist", True, 5)
+    run(a, "trihead_v2", False, 2)
+    run(b, "trihead_v2", False, 4)
+    run(b, "lipinc_v2", True, 3)
+    write_json(a / "provenance.json", [{"started": "a"}])
+    write_json(b / "provenance.json", [{"started": "b"}])
+    write_json(b / "test-lock.json", {"stamp": "x"})
+    taken = merge_runs(target, [a, b])
+    assert taken == {"ssl_aasist_seed42": "a", "trihead_v2_seed42": "b", "lipinc_v2_seed42": "b"}
+    assert len(read_json(target / "trihead_v2_seed42/history.json")["epochs"]) == 4
+    assert read_json(target / "provenance.json") == [{"started": "a"}, {"started": "b"}]
+    assert not (target / "test-lock.json").exists()
+    cfg = {"runs": str(target), "models": ["ssl_aasist", "trihead_v2", "lipinc_v2"], "seeds": [42]}
+    assert missing_runs(cfg) == ["trihead_v2_seed42"]
+
+
 def test_env_recipes_cover_every_worker():
     import sys
     from pathlib import Path

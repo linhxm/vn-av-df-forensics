@@ -545,6 +545,57 @@ def provenance(cfg, rows, selection):
     }
 
 
+def run_state(folder):
+    """(xong?, số epoch đã có) của một thư mục <model>_seed<seed>."""
+    history = Path(folder) / "history.json"
+    if not history.is_file():
+        return (False, 0)
+    data = read_json(history)
+    return (bool(data.get("complete")), len(data.get("epochs", [])))
+
+
+def merge_runs(target, sources):
+    """Gộp output train của nhiều notebook (chạy song song, mỗi notebook vài model) vào `target`.
+
+    Mỗi <model>_seed<seed>: giữ bản xong, hoặc bản nhiều epoch hơn (kèm last.pt để train tiếp).
+    provenance.json nối danh sách (không mất lần chạy nào). Không chép kết quả test
+    (test-lock / evaluation / report / gates): test chỉ chạy một lần khi đủ mọi model.
+    """
+    import shutil
+
+    target = Path(target)
+    target.mkdir(parents=True, exist_ok=True)
+    taken = {}  # <model>_seed<seed> → notebook giữ bản cuối
+    records = (
+        read_json(target / "provenance.json") if (target / "provenance.json").is_file() else []
+    )
+    for source in map(Path, sources):
+        for folder in sorted(p for p in source.iterdir() if p.is_dir()):
+            mine = target / folder.name
+            if run_state(folder) > run_state(mine):
+                shutil.rmtree(mine, ignore_errors=True)
+                shutil.copytree(folder, mine)
+                taken[folder.name] = source.name
+        if (source / "provenance.json").is_file():
+            records += [r for r in read_json(source / "provenance.json") if r not in records]
+        for name in ("benchmark.json", "training.json"):
+            if (source / name).is_file() and not (target / name).exists():
+                shutil.copy2(source / name, target / name)
+    write_json(target / "provenance.json", records)
+    return taken
+
+
+def missing_runs(cfg):
+    """<model>_seed<seed> chưa train xong trong cfg["runs"] (chạy test khi danh sách này rỗng)."""
+    runs = Path(cfg["runs"])
+    return [
+        f"{name}_seed{seed}"
+        for name in cfg["models"]
+        for seed in cfg["seeds"]
+        if not run_state(runs / f"{name}_seed{seed}")[0]
+    ]
+
+
 def train_all(cfg):
     rows, selection = training_dataset(cfg)
     runs = Path(cfg["runs"])

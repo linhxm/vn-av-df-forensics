@@ -2,6 +2,7 @@
 
 import copy
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -684,7 +685,9 @@ def test_train_evaluate_report_smoke(world):
         "report",
         "benchmark",
     }
-    trains = {r.kwargs["name"]: r for r in fake.by_type("train")}
+    # Tên hiển thị: "<YYYYmmdd-HHMM> <tên>" (giờ Việt Nam), id / tên giữ nguyên khi chạy tiếp.
+    assert all(re.match(r"\d{8}-\d{4} ", r.kwargs["name"]) for r in fake.runs)
+    trains = {r.kwargs["name"].split(" ", 1)[1]: r for r in fake.by_type("train")}
     m1 = trains["trihead_v2_seed42"]
     assert {"loss/train", "val_auc/mismatch", "grad_norm"} <= m1.keys()
     assert "best_epoch" in m1.summary and m1.artifacts[0].type == "model"
