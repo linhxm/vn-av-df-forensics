@@ -440,7 +440,9 @@ def train_one(cfg, name, seed, rows, out):
         f"{name} seed{seed} XONG: epoch tốt nhất {best_epoch} (val {best:.4f}), dừng: {stop}, "
         f"{len(history['epochs'])} epoch trong {duration(time.monotonic() - began)} | "
         + " ".join(
-            f"{k} {v:.3f}" for k, v in chosen["validation"].items() if k.startswith("val_auc/")
+            f"{k.split('/')[1]} {v:.3f}"
+            for k, v in chosen["validation"].items()
+            if k.startswith("val_auc/") and v is not None
         ),
         flush=True,
     )

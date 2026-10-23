@@ -48,12 +48,13 @@ def load(cfg):
     try:
         import fairseq
         import hubert  # noqa: F401 -- đăng ký model vào fairseq
+        import hubert_asr  # noqa: F401 -- đăng ký av_hubert_seq2seq (checkpoint fine-tune VSR)
         import hubert_pretraining  # noqa: F401 -- đăng ký task
     finally:
         sys.argv = argv
     models, _, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cfg["checkpoint"]])
     model = models[0]
-    # Checkpoint fine-tune (VSR/AVSR, vd. large_vox_433h của AVH-Align) bọc AVHubertModel trong
+    # Checkpoint fine-tune (VSR/AVSR, vd. self_large_vox_433h của AVH-Align) bọc AVHubertModel trong
     # encoder.w2v_model; chỉ dùng phần encoder đó. Kích thước 768 (Base) hoặc 1024 (Large).
     if hasattr(model, "decoder"):
         if not cfg.get("allow_finetuned", False):

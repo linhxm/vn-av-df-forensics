@@ -122,7 +122,7 @@ Bỏ khỏi đội hình: `biolip` (không có code gốc, bản cài khác pape
 
 **BL-Ens**: hai model chuyên trách chạy riêng rồi lấy max sau khi chuẩn hoá theo real validation. Đây là cách gộp người đọc sẽ hỏi "sao không làm vậy cho đơn giản"; M1 phải thắng nó thì mới có lý do để gộp trong một model. Căn cứ: Khalid et al. 2021 ✔ dùng đúng loại baseline này (một model tiếng MFCC + một model hình, soft / hard voting) và thấy nó hơn cả detector đơn kênh lẫn đa kênh trên FakeAVCeleb. Khác: lấy **max** thay vì trung bình, vì nhãn AI? của v003 = max(visual, audio) và ③ / ④ chỉ giả một kênh (trung bình làm loãng điểm của kênh giả); z-score theo real validation để hai thang điểm so được với nhau (○, lựa chọn của mình).
 
-**Encoder AV-HuBERT** giữ **Large VoxCeleb2 + LRS3 fine-tune VSR** (`large_vox_433h`, lớp cuối): đúng đặc trưng của checkpoint AVH-Align. Lưu ý (○): fine-tune VSR có thể làm lớp trên chuyên cho hình (Pasad 2021 thấy điều tương tự ở wav2vec 2.0); chưa dò lớp.
+**Encoder AV-HuBERT** giữ **Large VoxCeleb2 + LRS3 fine-tune VSR, bản self-training** (`self_large_vox_433h`, lớp cuối): đúng checkpoint AVH-Align dùng để trích đặc trưng (README và `deepfake_feature_extraction.py` ở commit `55401de`). Sửa 23/10: `settings.py` trước đó tải nhầm `large_vox_433h` (bản không self-training) và worker thiếu `import hubert_asr` (nơi đăng ký kiểu `av_hubert_seq2seq` của checkpoint fine-tune), nên prepare lần 3 dừng ngay khi nạp model. Lưu ý (○): fine-tune VSR có thể làm lớp trên chuyên cho hình (Pasad 2021 thấy điều tương tự ở wav2vec 2.0); chưa dò lớp.
 
 ## 5. Hai model đề xuất
 
@@ -317,7 +317,8 @@ Giờ phiên là thời gian chạy của phiên (Kaggle T4 × 2 chạy song son
 | 23/10 | Kiểm thử code sau khi gộp nhánh sinh (61 test) | Local CPU | 1,5 | 61 / 61 qua | pytest |
 | 23/10 | Prepare P1 lần 1 | Kaggle T4 × 2 | 0,13 | **hỏng**: W&B từ chối key (chưa trích mẫu nào) | log Kaggle |
 | 23/10 | Prepare P1 lần 2 | Kaggle T4 × 2 | 0,16 | **hỏng**: key đúng nhưng ghi vào team mặc định không có quyền | log Kaggle |
-| 23/10 | Prepare P1 lần 3 (entity `vn-av-df-capstone`) | Kaggle T4 × 2 | … | đang chạy | `extraction.json` |
+| 23/10 | Prepare P1 lần 3 (entity `vn-av-df-capstone`) | Kaggle T4 × 2 | ~0,3 | **hỏng**: worker AV-HuBERT không nạp được checkpoint fine-tune (`Could not infer model type av_hubert_seq2seq`; thiếu `import hubert_asr`), checkpoint cũng là bản nhầm `large_vox_433h` | log Kaggle |
+| 23/10 | Prepare P1 lần 4 (sửa import + `self_large_vox_433h` + worker nạp lần lượt) | Kaggle T4 × 2 | … | chưa chạy | `extraction.json` |
 
 ## 12. Hạn chế và việc mở (phần model)
 
@@ -360,6 +361,7 @@ Giờ phiên là thời gian chạy của phiên (Kaggle T4 × 2 chạy song son
 | 23/10 | Sao BL-M chỉ học real, sao không học full? | paper chọn real-only để tránh lối tắt; nhưng so với M1 (có giám sát) thì cần bản học full → chạy **cả hai** (`avh_align`, `avh_align_sup`) |
 | 23/10 | "Khớp tiếng–môi" là gì khi generator vẽ đúng từng frame? | khớp **khẩu hình ↔ âm**, không phải thời gian; thời gian đã sửa bằng SyncNet, augment −1…+2 làm thời gian vô dụng với model |
 | 23/10 | Chốt: 9 cấu hình × 3 seed | cài đặt đầy đủ (§4-§5); 50 test qua |
+| 23/10 | Prepare lỗi `av_hubert_seq2seq` | đối chiếu code AVH-Align (commit 55401de): thêm `import hubert_asr`, đổi checkpoint sang `self_large_vox_433h.pt` (đúng bản AVH-Align dùng; trước tải nhầm `large_vox_433h`), 4 worker nạp model lần lượt để không vượt RAM Kaggle |
 | 23/10 | Log đủ làm bằng chứng chưa (research) | đối chiếu checklist NeurIPS, Pineau v2.0, Model Cards: thêm môi trường, tỉ lệ dự phòng LIPINC, AUC theo giới, mục "Cách đọc" trong report, lý do dừng trong `generation.json`, benchmark lên W&B, W&B lỗi không dừng phiên, nhật ký compute §11.1 (§9) |
 | 23/10 | Giai đoạn đánh giá part 1: bao nhiêu seed? | **1 seed (42)**; thiết kế chốt rồi mới chạy 3 seed (`settings.SEEDS`) |
 | 23/10 | Đề xuất đã có tính mới chưa; baseline có paper không | rà lại: mọi baseline có paper (BL-M/sup do chính Smeu et al. đặt, BL-Ens theo Khalid et al. 2021); từng khối M1 / M2 đều đã có, cái mới là cách ghép + tách lệch / AI có sham; sửa §3 (Feng et al. 2023 đã có đặc trưng theo độ trễ; Referee đã có tham chiếu người); thêm §5.0, gắn link §14 |

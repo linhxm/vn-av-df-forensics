@@ -22,6 +22,8 @@ class AVHubertVideoEncoder:
         for name in (
             "hubert.py",
             "hubert_pretraining.py",
+            "hubert_asr.py",
+            "decoder.py",
             "utils.py",
             "preparation/align_mouth.py",
         ):
@@ -46,22 +48,9 @@ class AVHubertVideoEncoder:
             )
         )
 
-    def extract(self, row, output):
-        """Nhận media đã render; worker không tải model hoặc tự chỉnh lệch tiếng."""
-        output = Path(output).resolve()
-        video = require_file(row["video"], "video")
-        source = fingerprint({"assets": {"video": sha(video)}, "variant": {"kind": "clean"}})
-        if output.is_file() and output.with_suffix(".json").is_file():
-            meta = read_json(output.with_suffix(".json"))
-            if (
-                meta.get("feature_signature") == self.signature
-                and meta.get("source_fingerprint") == source
-                and meta.get("feature_sha256") == sha(output)
-            ):
-                return meta
-        output.parent.mkdir(parents=True, exist_ok=True)
-        # Worker sống suốt lượt trích (nạp fairseq/checkpoint/dlib một lần), mỗi encoder một
-        # worker; worker chết thì lần sau tự mở lại.
+    def start(self):
+        """Mở worker (nạp fairseq + checkpoint 5,7 GB + dlib) nếu chưa chạy. prepare gọi lần lượt
+        từng encoder trước khi trích: 4 worker cùng nạp một lúc vượt RAM Kaggle (~30 GB)."""
         if self.worker is None or not self.worker.alive:
             again = self.worker is not None
             device = self.cfg.get("device", "cpu")
@@ -84,6 +73,24 @@ class AVHubertVideoEncoder:
                 f"AV-HuBERT worker ({device}): sẵn sàng sau {time.monotonic() - began:.0f} s",
                 flush=True,
             )
+
+    def extract(self, row, output):
+        """Nhận media đã render; worker không tải model hoặc tự chỉnh lệch tiếng."""
+        output = Path(output).resolve()
+        video = require_file(row["video"], "video")
+        source = fingerprint({"assets": {"video": sha(video)}, "variant": {"kind": "clean"}})
+        if output.is_file() and output.with_suffix(".json").is_file():
+            meta = read_json(output.with_suffix(".json"))
+            if (
+                meta.get("feature_signature") == self.signature
+                and meta.get("source_fingerprint") == source
+                and meta.get("feature_sha256") == sha(output)
+            ):
+                return meta
+        output.parent.mkdir(parents=True, exist_ok=True)
+        # Worker sống suốt lượt trích (nạp fairseq/checkpoint/dlib một lần), mỗi encoder một
+        # worker; worker chết thì lần sau tự mở lại.
+        self.start()
         self.worker.call(
             dict(
                 video=str(video),

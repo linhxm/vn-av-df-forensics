@@ -108,7 +108,9 @@ def prepare(cfg, encoders=ORDER, factory=None):
         available = queue.Queue()
         with Progress(f"{name}: tạo worker", len(pool_devices), unit="worker", every_n=1) as made:
             for device in pool_devices:
-                available.put((factory or make)(cfg, name, device))
+                encoder = (factory or make)(cfg, name, device)
+                getattr(encoder, "start", lambda: None)()  # nạp model lần lượt, không cùng lúc
+                available.put(encoder)
                 made.step()
         startup = time.perf_counter() - began
         groups = defaultdict(list)

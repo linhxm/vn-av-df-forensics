@@ -145,8 +145,10 @@ def config():
             "kind": "avhubert",
             "repo": str(ROOT / "external/av_hubert"),
             # AVH-Align dùng AV-HuBERT Large (VoxCeleb2 + LRS3, fine-tune VSR 433 h).
-            "checkpoint": str(ROOT / "weights/avhubert/large_vox_433h.pt"),
-            "checkpoint_url": "https://dl.fbaipublicfiles.com/avhubert/model/lrs3_vox/vsr/large_vox_433h.pt",
+            # Đúng checkpoint AVH-Align dùng để trích đặc trưng (README + deepfake_feature_extraction.py
+            # ở commit 55401de): self-training, khác large_vox_433h.
+            "checkpoint": str(ROOT / "weights/avhubert/self_large_vox_433h.pt"),
+            "checkpoint_url": "https://dl.fbaipublicfiles.com/avhubert/model/lrs3_vox/vsr/self_large_vox_433h.pt",
             "allow_finetuned": True,
             "landmarks": str(ROOT / "weights/avhubert/shape_predictor_68_face_landmarks.dat"),
             "mean_face": str(ROOT / "weights/avhubert/20words_mean_face.npy"),
