@@ -318,7 +318,8 @@ Giờ phiên là thời gian chạy của phiên (Kaggle T4 × 2 chạy song son
 | 23/10 | Prepare P1 lần 1 | Kaggle T4 × 2 | 0,13 | **hỏng**: W&B từ chối key (chưa trích mẫu nào) | log Kaggle |
 | 23/10 | Prepare P1 lần 2 | Kaggle T4 × 2 | 0,16 | **hỏng**: key đúng nhưng ghi vào team mặc định không có quyền | log Kaggle |
 | 23/10 | Prepare P1 lần 3 (entity `vn-av-df-capstone`) | Kaggle T4 × 2 | ~0,3 | **hỏng**: worker AV-HuBERT không nạp được checkpoint fine-tune (`Could not infer model type av_hubert_seq2seq`; thiếu `import hubert_asr`), checkpoint cũng là bản nhầm `large_vox_433h` | log Kaggle |
-| 23/10 | Prepare P1 lần 4 (sửa import + `self_large_vox_433h` + worker nạp lần lượt) | Kaggle T4 × 2 | … | chưa chạy | `extraction.json` |
+| 23-24/10 | Prepare P1 lần 4 (sửa import + `self_large_vox_433h` + worker nạp lần lượt) | Kaggle T4 × 2 | ~0,3 | **hỏng**: nạp model được (2,6 GB / GPU), nhưng bước kiểm của mình đọc `stack_order_audio = 1` từ task của checkpoint VSR (fine-tune chỉ trên hình) thay vì kích thước đầu vào tiếng của encoder (104 = 26 × 4) | log Kaggle |
+| 24/10 | Prepare P1 lần 5 (kiểm theo đầu vào tiếng của encoder, như AVH-Align cố định stack 4) | Kaggle T4 × 2 | … | chưa chạy | `extraction.json` |
 
 ## 12. Hạn chế và việc mở (phần model)
 
@@ -361,6 +362,7 @@ Giờ phiên là thời gian chạy của phiên (Kaggle T4 × 2 chạy song son
 | 23/10 | Sao BL-M chỉ học real, sao không học full? | paper chọn real-only để tránh lối tắt; nhưng so với M1 (có giám sát) thì cần bản học full → chạy **cả hai** (`avh_align`, `avh_align_sup`) |
 | 23/10 | "Khớp tiếng–môi" là gì khi generator vẽ đúng từng frame? | khớp **khẩu hình ↔ âm**, không phải thời gian; thời gian đã sửa bằng SyncNet, augment −1…+2 làm thời gian vô dụng với model |
 | 23/10 | Chốt: 9 cấu hình × 3 seed | cài đặt đầy đủ (§4-§5); 50 test qua |
+| 24/10 | Prepare lỗi `expected crop88/stack4` | checkpoint VSR ghi `stack_order_audio = 1` trong task; encoder vẫn nhận tiếng 104 chiều. Kiểm theo `feature_extractor_audio.proj.in_features`; AVH-Align cũng cố định stack 4 |
 | 23/10 | Prepare lỗi `av_hubert_seq2seq` | đối chiếu code AVH-Align (commit 55401de): thêm `import hubert_asr`, đổi checkpoint sang `self_large_vox_433h.pt` (đúng bản AVH-Align dùng; trước tải nhầm `large_vox_433h`), 4 worker nạp model lần lượt để không vượt RAM Kaggle |
 | 23/10 | Log đủ làm bằng chứng chưa (research) | đối chiếu checklist NeurIPS, Pineau v2.0, Model Cards: thêm môi trường, tỉ lệ dự phòng LIPINC, AUC theo giới, mục "Cách đọc" trong report, lý do dừng trong `generation.json`, benchmark lên W&B, W&B lỗi không dừng phiên, nhật ký compute §11.1 (§9) |
 | 23/10 | Giai đoạn đánh giá part 1: bao nhiêu seed? | **1 seed (42)**; thiết kế chốt rồi mới chạy 3 seed (`settings.SEEDS`) |

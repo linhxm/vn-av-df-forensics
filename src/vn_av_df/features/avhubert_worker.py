@@ -62,6 +62,11 @@ def load(cfg):
         model = model.encoder.w2v_model
     if model.encoder_embed_dim not in (768, 1024):
         raise ValueError("Unexpected AV-HuBERT width")
+    # Tiếng: logfbank 26 chiều xếp 4 khung (104) như lúc pretrain. Checkpoint VSR fine-tune chỉ trên
+    # hình nên task ghi stack_order_audio = 1; kiểm kích thước đầu vào thật của encoder tiếng
+    # (AVH-Align cũng cố định stack 4, deepfake_feature_extraction.py ở commit 55401de).
+    proj = getattr(getattr(model, "feature_extractor_audio", None), "proj", None)
+    audio_dim = int(proj.in_features) if proj is not None else 104
     device = cfg.get("device", "cpu")
     model.to(device).eval().requires_grad_(False)
     return dict(
@@ -69,6 +74,7 @@ def load(cfg):
         model=model,
         task=task,
         device=device,
+        audio_dim=audio_dim,
         detector=dlib.get_frontal_face_detector(),
         predictor=dlib.shape_predictor(cfg["landmarks"]),
         mean_face=np.load(cfg["mean_face"], allow_pickle=False),
@@ -122,8 +128,11 @@ def extract(state, request):
             continue
         landmarks[i] = points
     crop = int(task.cfg.image_crop_size)
-    if crop != 88 or int(task.cfg.stack_order_audio) != 4:
-        raise ValueError("Unsupported AV-HuBERT preprocessing config; expected crop88/stack4")
+    if crop != 88 or state["audio_dim"] != 104:
+        raise ValueError(
+            f"Unsupported AV-HuBERT preprocessing: crop {crop}, audio input {state['audio_dim']} "
+            "(expected crop 88, audio 26 x 4 = 104)"
+        )
     # Làm mượt landmarks trong từng đoạn hợp lệ rồi căn chỉnh theo mean face upstream.
     rois = np.zeros((len(frames), crop, crop), np.float32)
     # [cx, cy, side] trên frame đã decode; nhánh artifact P2 cắt RGB từ frame gốc.
