@@ -628,7 +628,14 @@ def test_train_evaluate_report_smoke(world):
 
     cfg = copy.deepcopy(world["cfg"])
     cfg["models"] = list(zoo.SPECS)  # 9 cấu hình của đội hình + speechforensics (demo)
-    assert encoders_for(cfg["models"]) == ["avhubert", "mouth", "lipinc", "xlsr", "wave"]
+    assert encoders_for(cfg["models"]) == [
+        "landmarks",
+        "avhubert",
+        "mouth",
+        "lipinc",
+        "xlsr",
+        "wave",
+    ]
     for name in encoders_for(cfg["models"]):
         (Path(cfg["cache"]) / name).mkdir(parents=True, exist_ok=True)
     rows, _ = training_dataset(cfg)
@@ -737,13 +744,46 @@ def test_resume_after_interruption_and_provenance(world, tmp_path, monkeypatch):
     records = json.loads((Path(cfg["runs"]) / "provenance.json").read_text(encoding="utf-8"))
     assert len(records) == 2  # mỗi lần chạy thêm một mục
     caches = records[-1]["caches"]
-    assert set(caches) == {"avhubert", "mouth"}
+    assert set(caches) == {"landmarks", "avhubert", "mouth"}
     assert caches["avhubert"]["samples_found"] == 0  # cache giả không có .json chữ ký
     assert (
         records[-1]["selection"]["samples"] == len(rows)
         and "train.py" in records[-1]["code_sha256"]
     )
     assert records[-1]["environment"]["python"] and "hyperparameter_search" in records[-1]
+
+
+def test_prepare_retries_failed_samples(world, tmp_path, capsys):
+    """Một mẫu lỗi (worker bị giết) không bỏ cả nhóm clip: thử lại ở cuối; vẫn lỗi thì báo rõ."""
+    from vn_av_df.common.runtime import write_json
+    from vn_av_df.training.prepare import prepare
+
+    cfg = copy.deepcopy(world["cfg"])
+    cfg["cache"], cfg["wandb"] = str(tmp_path / "cache"), None
+    cfg["encoders"] = {"wave": {"kind": "wave", "workers_per_device": 2}}
+    calls = Counter()
+
+    class Flaky:
+        def __init__(self, broken):
+            self.broken = broken
+
+        def extract(self, request, output):
+            calls[output.name] += 1
+            if output.name in self.broken and calls[output.name] <= self.broken[output.name]:
+                raise RuntimeError("Worker exited (-9)")
+            write_json(Path(output).with_suffix(".json"), {"ok": True})
+
+    from vn_av_df.dataset import training_dataset
+
+    sample = training_dataset(cfg)[0][0]["sample_id"] + ".npz"
+    prepare(cfg, ["wave"], factory=lambda cfg, name, device: Flaky({sample: 1}))
+    out = capsys.readouterr().out
+    assert "thử lại 1 mẫu lỗi" in out and "đều được" in out and calls[sample] == 2
+    info = json.loads((tmp_path / "cache/wave/extraction.json").read_text(encoding="utf-8"))
+    assert info["environment"]["python"] and info["samples"] > 0
+    calls.clear()
+    with pytest.raises(RuntimeError, match="vẫn lỗi sau khi thử lại"):
+        prepare(cfg, ["wave"], factory=lambda cfg, name, device: Flaky({sample: 9}))
 
 
 def test_benchmark_estimates_epoch_time(world, tmp_path):

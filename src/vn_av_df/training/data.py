@@ -140,6 +140,17 @@ def enrollment(rows, count):
     return {k: sorted(v, key=lambda r: r["sample_id"])[:count] for k, v in reals.items()}
 
 
+# needs của model → encoder cần đọc (cùng bảng với prepare.NEEDS, không import để tránh vòng).
+ENCODERS_FOR_NEED = {
+    "av": ("avhubert",),
+    "mouth": ("avhubert", "mouth"),
+    "pose": ("avhubert", "mouth"),
+    "lipinc": ("avhubert", "lipinc"),
+    "ssl": ("xlsr",),
+    "wave": ("wave",),
+}
+
+
 def cache_roots(cfg):
     """cfg["cache"] là một thư mục hoặc danh sách thư mục (mỗi encoder có thể nằm ở dataset riêng)."""
     value = cfg["cache"]
@@ -150,6 +161,22 @@ def cache_dir(cfg, encoder):
     """Thư mục cache của một encoder: thư mục gốc đầu tiên có nó (mặc định: gốc đầu tiên)."""
     roots = cache_roots(cfg)
     return next((r / encoder for r in roots if (r / encoder).is_dir()), roots[0] / encoder)
+
+
+def cache_file(cfg, encoder, sample_id):
+    """File cache của một mẫu: tìm ở mọi thư mục gốc (mỗi part một dataset cache riêng; cache 3 part
+    ~60-75 GB không vừa một Output Kaggle 20 GB). Không thấy thì trả đường dẫn ở gốc đầu."""
+    roots = cache_roots(cfg)
+    for folder in roots:
+        path = folder / encoder / f"{sample_id}.npz"
+        if path.is_file():
+            return path
+    return roots[0] / encoder / f"{sample_id}.npz"
+
+
+def cache_index(cfg, encoder, sample_ids):
+    """{sample_id: file} cho cả tập, tìm một lần lúc dựng dataset (khỏi dò từng gốc mỗi lần nạp)."""
+    return {sid: cache_file(cfg, encoder, sid) for sid in sample_ids}
 
 
 def speaker_index(rows):
@@ -177,8 +204,12 @@ class BenchData(torch.utils.data.Dataset):
         rawboost=False,
         speakers=None,
     ):
-        self.dirs = {e: cache_dir(cfg, e) for e in ("avhubert", "xlsr", "mouth", "wave", "lipinc")}
         self.rows, self.needs, self.augment = list(rows), set(needs), augment
+        ids = [r["sample_id"] for r in self.rows]
+        # Encoder model cần (+ avhubert cho mặt nạ / hộp miệng): file từng mẫu, ở gốc cache nào cũng được.
+        wanted = {"avhubert"} | {e for need in self.needs for e in ENCODERS_FOR_NEED.get(need, ())}
+        self.files = {e: cache_index(cfg, e, ids) for e in sorted(wanted)}
+        self.cache_cfg = cfg
         self.lag_augment = lag_augment
         self.references, self.ref_frames, self.seed = references, ref_frames, seed
         self.crop_frames = crop_frames  # train: cắt ngẫu nhiên một đoạn (bộ nhớ, cửa sổ 4 s)
@@ -193,6 +224,11 @@ class BenchData(torch.utils.data.Dataset):
         self.epoch = 0
         self.lag_range = tuple((cfg.get("training") or {}).get("audio_lag_aug") or (0, 0))
 
+    def cache_file(self, encoder, sid):
+        """File cache của mẫu: tra bảng dựng sẵn; mẫu ngoài bảng (demo nạp video tạm) thì tìm trực tiếp."""
+        found = self.files.get(encoder, {}).get(sid)
+        return found if found is not None else cache_file(self.cache_cfg, encoder, sid)
+
     def __len__(self):
         return len(self.rows)
 
@@ -201,17 +237,17 @@ class BenchData(torch.utils.data.Dataset):
         sid = row["sample_id"]
         item, lengths, static = {}, [], {}
         if "av" in needs:
-            with np.load(self.dirs["avhubert"] / f"{sid}.npz", allow_pickle=False) as z:
+            with np.load(self.cache_file("avhubert", sid), allow_pickle=False) as z:
                 item["a"], item["v"] = z["audio"].astype(np.float32), z["visual"].astype(np.float32)
                 item["av_valid"] = (z["audio_valid"] & z["visual_valid"]).copy()
             lengths.append(len(item["a"]))
         if "ssl" in needs:
-            with np.load(self.dirs["xlsr"] / f"{sid}.npz", allow_pickle=False) as z:
+            with np.load(self.cache_file("xlsr", sid), allow_pickle=False) as z:
                 ssl = z["ssl"].astype(np.float32)
             item["ssl"] = ssl[:, None] if ssl.ndim == 2 else ssl  # [T, nhóm, 1024]
             lengths.append(len(item["ssl"]))
         if needs & {"mouth", "pose"}:
-            with np.load(self.dirs["mouth"] / f"{sid}.npz", allow_pickle=False) as z:
+            with np.load(self.cache_file("mouth", sid), allow_pickle=False) as z:
                 if "mouth" in needs:
                     item["mouth"] = z["mouth"].copy()
                 item["lips"] = z["lips"].astype(np.float32)
@@ -225,11 +261,11 @@ class BenchData(torch.utils.data.Dataset):
                 item["mouth"] = augment_mouth(item["mouth"], rng)
             lengths.append(len(item["lips"]))
         if "wave" in needs:
-            with np.load(self.dirs["wave"] / f"{sid}.npz", allow_pickle=False) as z:
+            with np.load(self.cache_file("wave", sid), allow_pickle=False) as z:
                 item["wave"] = z["wave"].astype(np.float32) / 32768.0
             lengths.append(len(item["wave"]))
         if "lipinc" in needs:
-            with np.load(self.dirs["lipinc"] / f"{sid}.npz", allow_pickle=False) as z:
+            with np.load(self.cache_file("lipinc", sid), allow_pickle=False) as z:
                 static["lipinc"] = z["frames"].copy()
                 item["lipinc_valid"] = z["valid"].copy()
             lengths.append(len(item["lipinc_valid"]))

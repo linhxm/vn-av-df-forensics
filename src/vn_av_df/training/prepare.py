@@ -1,13 +1,18 @@
-"""Trích feature cho dataset v003 đã finalize: avhubert → mouth / lipinc (cần landmark) → xlsr, wave.
+"""Trích feature cho dataset v003 đã finalize: landmarks → avhubert, mouth, lipinc → xlsr, wave.
 
 Chỉ trích encoder mà các model được chọn cần (`encoders_for`). cfg["cache"] có thể là danh sách:
-ghi vào thư mục đầu tiên, đọc cache avhubert (cho mouth / lipinc) ở thư mục nào có nó, để mỗi
-encoder trích ở một phiên Kaggle riêng rồi lưu thành dataset riêng (Output một phiên có giới hạn).
+ghi vào thư mục đầu tiên, đọc cache khác (landmark cho avhubert / mouth / lipinc) ở thư mục nào có
+nó, để mỗi nhóm encoder trích ở một phiên Kaggle riêng rồi lưu thành dataset riêng.
+
+Encoder chỉ cần CPU (`cpu_only`: landmarks, mouth, lipinc, wave) chạy số worker = số nhân CPU, trên
+phiên Kaggle không GPU (không tốn quota GPU). dlib dò mặt chiếm ~86 % thời gian của avhubert cũ
+(đo 24/10: 7,1 / 8,3 s mỗi mẫu), nên tách thành stage `landmarks` riêng.
 
 Cache: <cfg["cache"]>/<encoder>/<sample_id>.npz (+ .json). Chạy lại thì bỏ qua cache còn khớp
 chữ ký; dừng giữa chừng không làm hỏng cache (ghi file tạm rồi đổi tên).
 """
 
+import os
 import queue
 import threading
 import time
@@ -20,15 +25,15 @@ from vn_av_df import tracking
 from vn_av_df.common.runtime import environment, read_json, write_json
 from vn_av_df.dataset import media_path, training_dataset
 from vn_av_df.progress import Progress, duration, system_status
-from vn_av_df.training.data import cache_dir, cache_roots
+from vn_av_df.training.data import cache_file, cache_roots
 
-ORDER = ("avhubert", "mouth", "lipinc", "xlsr", "wave")
-# needs của model → encoder phải có (mouth, lipinc đọc landmark / hộp miệng từ cache avhubert).
+ORDER = ("landmarks", "avhubert", "mouth", "lipinc", "xlsr", "wave")
+# needs của model → encoder phải có (avhubert, mouth, lipinc đọc landmark / hộp miệng từ landmarks).
 NEEDS = {
-    "av": ("avhubert",),
-    "mouth": ("avhubert", "mouth"),
-    "pose": ("avhubert", "mouth"),
-    "lipinc": ("avhubert", "lipinc"),
+    "av": ("landmarks", "avhubert"),
+    "mouth": ("landmarks", "avhubert", "mouth"),
+    "pose": ("landmarks", "avhubert", "mouth"),
+    "lipinc": ("landmarks", "avhubert", "lipinc"),
     "ssl": ("xlsr",),
     "wave": ("wave",),
 }
@@ -45,8 +50,19 @@ def encoders_for(models):
     return [e for e in ORDER if e in needed]
 
 
+def landmark_file(cfg, sample_id):
+    """Landmark / hộp miệng của mẫu: cache stage landmarks; chưa có thì cache avhubert (cách cũ)."""
+    path = cache_file(cfg, "landmarks", sample_id)
+    return path if path.is_file() else cache_file(cfg, "avhubert", sample_id)
+
+
 def make(cfg, name, device):
     spec = {**cfg["encoders"][name], **({"device": device} if device else {})}
+    if name == "landmarks":
+        from vn_av_df.features.avhubert import AVHubertVideoEncoder
+
+        # Cùng worker / env / landmark model với avhubert, chỉ stage khác.
+        return AVHubertVideoEncoder({**cfg["encoders"]["avhubert"], **spec}, stage="landmarks")
     if name == "avhubert":
         from vn_av_df.features.avhubert import AVHubertVideoEncoder
 
@@ -93,12 +109,24 @@ def prepare(cfg, encoders=ORDER, factory=None):
         flush=True,
     )
     for index, name in enumerate(chosen, 1):
-        devices = list(cfg.get("prepare_devices") or [None])
-        copies = int(cfg["encoders"][name].get("workers_per_device", 1))
-        pool_devices = [d for d in devices for _ in range(copies)]
+        spec = cfg["encoders"][name]
+        if spec.get("cpu_only"):
+            # Không dùng GPU: số worker theo số nhân CPU (Kaggle 4), kể cả trên phiên có GPU.
+            pool_devices = [None] * int(spec.get("cpu_workers") or os.cpu_count() or 1)
+        else:
+            devices = list(cfg.get("prepare_devices") or [None])
+            copies = int(spec.get("workers_per_device", 1))
+            pool_devices = [d for d in devices for _ in range(copies)]
         folder = cache / name
         folder.mkdir(parents=True, exist_ok=True)
         cached = sum(1 for r in rows if (folder / f"{r['sample_id']}.json").is_file())
+        if name in ("avhubert", "mouth", "lipinc"):
+            ready = sum(cache_file(cfg, "landmarks", r["sample_id"]).is_file() for r in rows)
+            print(
+                f"{name}: landmark có sẵn (stage landmarks) cho {ready}/{len(rows)} mẫu"
+                + ("" if ready == len(rows) else "; mẫu còn lại dò bằng dlib / đọc cache avhubert"),
+                flush=True,
+            )
         print(
             f"== [{index}/{len(chosen)}] {name}: {len(rows)} mẫu, đã có {cached} file cache "
             f"(khớp chữ ký thì bỏ qua) | {len(pool_devices)} worker trên {pool_devices}",
@@ -116,24 +144,32 @@ def prepare(cfg, encoders=ORDER, factory=None):
         groups = defaultdict(list)
         for row in rows:
             groups[row.get("source_clip_id") or row["sample_id"]].append(row)
-        guard, done, first = threading.Lock(), [0], [None]
+        guard, done, first, failed = threading.Lock(), [0], [None], []
+
+        def run_row(encoder, row):
+            request = {"video": str(media_path(cfg["dataset"], row))}
+            if name in ("mouth", "lipinc"):
+                request["box_cache"] = str(landmark_file(cfg, row["sample_id"]))
+            elif name == "avhubert" and cache_file(cfg, "landmarks", row["sample_id"]).is_file():
+                request["landmarks"] = str(cache_file(cfg, "landmarks", row["sample_id"]))
+            encoder.extract(request, folder / f"{row['sample_id']}.npz")
 
         def extract(group):
             encoder = available.get()
             try:
                 for row in group:
-                    request = {"video": str(media_path(cfg["dataset"], row))}
-                    if name in ("mouth", "lipinc"):
-                        boxes = cache_dir(cfg, "avhubert")
-                        request["box_cache"] = str(boxes / f"{row['sample_id']}.npz")
                     try:
-                        encoder.extract(request, folder / f"{row['sample_id']}.npz")
+                        run_row(encoder, row)
                     except Exception as exc:
+                        # Một mẫu lỗi (vd. worker bị giết vì hết RAM) không bỏ cả nhóm: ghi lại, thử
+                        # lại ở cuối; worker chết thì lần gọi sau tự mở lại.
                         print(
-                            f"{name}: LỖI ở {row['sample_id']} ({request['video']}): {exc}",
+                            f"{name}: LỖI ở {row['sample_id']}, thử lại ở cuối: {str(exc)[:600]}",
                             flush=True,
                         )
-                        raise
+                        with guard:
+                            failed.append(row)
+                        continue
                     with guard:
                         done[0] += 1
                         if first[0] is None:
@@ -157,6 +193,23 @@ def prepare(cfg, encoders=ORDER, factory=None):
             ):
                 for future in [pool.submit(extract, g) for g in groups.values()]:
                     future.result()
+            if failed:
+                print(f"{name}: thử lại {len(failed)} mẫu lỗi, lần lượt", flush=True)
+                encoder, still = available.get(), []
+                try:
+                    for row in failed:
+                        try:
+                            run_row(encoder, row)
+                        except Exception as exc:
+                            still.append(f"{row['sample_id']}: {str(exc)[:300]}")
+                finally:
+                    available.put(encoder)
+                if still:
+                    raise RuntimeError(
+                        f"{name}: {len(still)} mẫu vẫn lỗi sau khi thử lại (chạy lại phiên với "
+                        f"PREVIOUS_CACHE để trích tiếp): " + " | ".join(still[:5])
+                    )
+                print(f"{name}: thử lại xong, {len(failed)} mẫu đều được", flush=True)
         finally:
             while not available.empty():
                 getattr(available.get(), "close", lambda: None)()
@@ -221,7 +274,7 @@ def log_cache(run, name, folder, rows):
     """Chất lượng cache: tỉ lệ frame hợp lệ; với AV-HuBERT thêm kiểm chéo độ lệch tiếng-hình
     trên clip real (đã sửa về 0 ở data pipeline bằng SyncNet; ở đây đo lại bằng đặc trưng
     AV-HuBERT theo cách của SpeechForensics). Trả số liệu tóm tắt để ghi vào extraction.json."""
-    if name not in ("avhubert", "mouth"):
+    if name not in ("landmarks", "avhubert", "mouth"):
         return {}
     valid, lags, peaks = [], [], []
     for row in rows:
@@ -239,6 +292,8 @@ def log_cache(run, name, folder, rows):
                         peaks.append(peak)
             elif name == "mouth":
                 valid.append(float(z["valid"].mean()))
+            elif name == "landmarks":
+                valid.append(float(z["visual_valid"].mean()))
     out = {}
     run.hist(f"{name}/valid_frame_ratio", valid)
     if valid:

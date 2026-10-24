@@ -49,11 +49,43 @@ def gpu_status():
     return " · ".join(parts)
 
 
+def process_ram():
+    """'RAM chính 2.1 GB · 4 tiến trình con 18.3 GB' (Linux /proc); rỗng nếu không đọc được.
+    Cho biết RAM tụt vì tiến trình chính hay vì worker (part 1: RAM trống 26 → 0,4 GB)."""
+    import os
+
+    def rss(pid):
+        try:
+            for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 2**20
+        except OSError:
+            pass
+        return 0.0
+
+    me = os.getpid()
+    if not Path(f"/proc/{me}/status").exists():
+        return ""
+    children = []
+    for folder in Path("/proc").iterdir():
+        if not folder.name.isdigit():
+            continue
+        try:
+            parent = int((folder / "stat").read_text().rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        if parent == me:
+            children.append(rss(folder.name))
+    out = f"RAM chính {rss(me):.1f} GB"
+    if children:
+        out += f" · {len(children)} tiến trình con {sum(children):.1f} GB"
+    return out
+
+
 def system_status():
     ram = ram_free_gb()
-    return " | ".join(
-        x for x in (f"RAM trống {ram:.1f} GB" if ram is not None else "", gpu_status()) if x
-    )
+    parts = (f"RAM trống {ram:.1f} GB" if ram is not None else "", process_ram(), gpu_status())
+    return " | ".join(x for x in parts if x)
 
 
 def duration(seconds):
@@ -72,7 +104,7 @@ class Progress:
         self.label, self.total, self.unit = label, total, unit
         self.every_n, self.every_s = every_n, every_s
         self.done = 0
-        self.began = self.last = time.monotonic()
+        self.began = self.last = self.moved = time.monotonic()
         self.lock = threading.Lock()
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self._beat, daemon=True) if heartbeat else None
@@ -89,8 +121,9 @@ class Progress:
     def _beat(self):
         while not self.stop.wait(self.every_s):
             with self.lock:
-                quiet = time.monotonic() - self.last
-                if quiet >= self.every_s:
+                # Chỉ khi không có mục nào xong trong every_s (khởi động / treo); đang chạy đều thì
+                # dòng tiến độ của step() đã đủ.
+                if time.monotonic() - self.moved >= self.every_s:
                     print(
                         f"{self.label}: vẫn chạy, {self.done}/{self.total} {self.unit} sau "
                         f"{duration(time.monotonic() - self.began)} | {system_status()}",
@@ -101,7 +134,7 @@ class Progress:
     def step(self, n=1, note=""):
         with self.lock:
             self.done += n
-            now = time.monotonic()
+            now = self.moved = time.monotonic()
             due = (
                 self.done == n
                 or self.done >= self.total

@@ -48,11 +48,16 @@ def setup(cfg, generators=None, encoders=False, models=False):
     for name in names:
         adapter = adapter_for(name)
         result[name] = adapter.setup(cfg)
-    if encoders:
+    # encoders: True (mọi encoder) hoặc danh sách; phiên CPU chỉ cần landmark model của dlib,
+    # không tải checkpoint AV-HuBERT 5,7 GB hay XLS-R.
+    chosen = set(encoders) if isinstance(encoders, (list, tuple, set)) else None
+    if encoders and (chosen is None or chosen & {"landmarks", "avhubert"}):
         from vn_av_df.assets import setup_avhubert
 
-        result["avhubert"] = setup_avhubert(cfg["encoders"]["avhubert"])
-    if encoders or models:
+        result["avhubert"] = setup_avhubert(
+            cfg["encoders"]["avhubert"], checkpoint=chosen is None or "avhubert" in chosen
+        )
+    if models or (encoders and (chosen is None or "xlsr" in chosen)):
         result.update(model_assets(cfg))
     return result
 

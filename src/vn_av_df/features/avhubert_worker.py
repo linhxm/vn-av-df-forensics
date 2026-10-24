@@ -3,9 +3,15 @@
 Không nội suy landmark qua khoảng mất mặt. Mỗi valid run/chunk được encoder
 xử lý độc lập; feature ở frame thiếu giữ zero và mask=False.
 
+Hai giai đoạn (tách 24/10: dlib dò mặt chiếm ~86 % thời gian, chỉ cần CPU):
+- stage "landmarks": giải mã → dlib 68 điểm → hộp miệng / mặt nạ hợp lệ → `landmarks/<id>.npz`.
+  Chạy được trên máy không GPU, không nạp torch / fairseq.
+- stage "full": đọc landmark có sẵn (request["landmarks"]) hoặc tự dò bằng dlib (demo) → ROI môi →
+  filterbank → hai lượt encoder → `avhubert/<id>.npz`. Hai cách cho cùng một kết quả: cùng hàm
+  `detect` / `geometry`.
+
 Một lần: `python avhubert_worker.py request.json`. Chạy liên tục: `--serve <config JSON>`,
-nạp fairseq/checkpoint/dlib một lần rồi nhận từng yêu cầu (video, output, signature,
-source_fingerprint) qua stdin.
+nạp một lần rồi nhận từng yêu cầu (video, output, signature, source_fingerprint) qua stdin.
 """
 
 import collections
@@ -21,6 +27,7 @@ import numpy as np
 from vn_av_df.common.runtime import read_json, save_npz, sha, write_json
 
 MOUTH_BOX_SCALE = 1.6  # Hộp vuông quanh landmark 48-67, nới để gồm môi/răng/viền ghép.
+CROP = 88  # ROI môi của AV-HuBERT (image_crop_size); stage full kiểm lại theo task.
 
 
 def runs(mask):
@@ -34,11 +41,24 @@ def runs(mask):
 LANDMARK_CACHE_FRAMES = 20000
 
 
+def load_landmarks(cfg):
+    """Chỉ dlib + mean face (stage landmarks: không torch / fairseq / GPU)."""
+    import dlib
+
+    return dict(
+        cfg=cfg,
+        detector=dlib.get_frontal_face_detector(),
+        predictor=dlib.shape_predictor(cfg["landmarks"]),
+        mean_face=np.load(cfg["mean_face"], allow_pickle=False),
+        landmarks=collections.OrderedDict(),
+    )
+
+
 def load(cfg):
     """Nạp fairseq, checkpoint và dlib một lần."""
-    import dlib
     import torch  # noqa: F401 -- nạp trước fairseq
 
+    state = load_landmarks(cfg)
     upstream = Path(cfg["repo"]).resolve()
     sys.path[:0] = [str(upstream / "avhubert"), str(upstream / "fairseq")]
     # Module AV-HuBERT chọn kiểu import theo len(sys.argv): == 1 → import tuyệt đối (chạy rời);
@@ -67,19 +87,15 @@ def load(cfg):
     # (AVH-Align cũng cố định stack 4, deepfake_feature_extraction.py ở commit 55401de).
     proj = getattr(getattr(model, "feature_extractor_audio", None), "proj", None)
     audio_dim = int(proj.in_features) if proj is not None else 104
+    crop = int(task.cfg.image_crop_size)
+    if crop != CROP or audio_dim != 104:
+        raise ValueError(
+            f"Unsupported AV-HuBERT preprocessing: crop {crop}, audio input {audio_dim} "
+            "(expected crop 88, audio 26 x 4 = 104)"
+        )
     device = cfg.get("device", "cpu")
     model.to(device).eval().requires_grad_(False)
-    return dict(
-        cfg=cfg,
-        model=model,
-        task=task,
-        device=device,
-        audio_dim=audio_dim,
-        detector=dlib.get_frontal_face_detector(),
-        predictor=dlib.shape_predictor(cfg["landmarks"]),
-        mean_face=np.load(cfg["mean_face"], allow_pickle=False),
-        landmarks=collections.OrderedDict(),
-    )
+    return dict(state, model=model, task=task, device=device)
 
 
 def face_landmarks(state, frame):
@@ -103,22 +119,15 @@ def face_landmarks(state, frame):
     return points
 
 
-def extract(state, request):
-    """Giải mã → landmark/ROI môi → filterbank → hai lượt encoder → cache."""
-    import cv2
-    import torch
-    from python_speech_features import logfbank
-    from skimage import transform as tf
-    from torch.nn import functional as F
-
+def decode_clip(cfg, video):
     from vn_av_df.data.media import decode
 
-    cfg, model, task, device = state["cfg"], state["model"], state["task"], state["device"]
-    mean_face = state["mean_face"]
-    decoded = decode(
-        request["video"], cfg.get("max_duration", 60), cfg.get("max_side", 640), sample_rate=16000
-    )
-    frames, pcm = decoded["frames"], decoded["pcm"]
+    return decode(video, cfg.get("max_duration", 60), cfg.get("max_side", 640), sample_rate=16000)
+
+
+def detect(state, decoded):
+    """(landmarks float32 [T, 68, 2], hợp lệ trước khi cắt ROI) — phần chậm, chỉ CPU."""
+    frames = decoded["frames"]
     landmarks = np.zeros((len(frames), 68, 2), np.float32)
     valid = decoded["audio_valid"] & decoded["visual_valid"]
     for i, frame in enumerate(frames):
@@ -127,15 +136,28 @@ def extract(state, request):
             valid[i] = False
             continue
         landmarks[i] = points
-    crop = int(task.cfg.image_crop_size)
-    if crop != 88 or state["audio_dim"] != 104:
-        raise ValueError(
-            f"Unsupported AV-HuBERT preprocessing: crop {crop}, audio input {state['audio_dim']} "
-            "(expected crop 88, audio 26 x 4 = 104)"
-        )
-    # Làm mượt landmarks trong từng đoạn hợp lệ rồi căn chỉnh theo mean face upstream.
-    rois = np.zeros((len(frames), crop, crop), np.float32)
-    # [cx, cy, side] trên frame đã decode; nhánh artifact P2 cắt RGB từ frame gốc.
+    return landmarks, valid
+
+
+def audio_frames(pcm):
+    """Logfbank 26 chiều xếp 4 khung (104) theo lưới 40 ms của video."""
+    from python_speech_features import logfbank
+
+    # 25 ms filterbank, hop10 ms; stack4 khớp grid 40 ms của video.
+    # Upstream đọc PCM int16; giữ cùng thang biên độ trước log-filterbank.
+    audio = logfbank(np.clip(pcm * 32768, -32768, 32767), samplerate=16000).astype(np.float32)
+    return np.pad(audio, ((0, (-len(audio)) % 4), (0, 0))).reshape(-1, 104)
+
+
+def geometry(frames, landmarks, valid, mean_face, n_audio):
+    """Làm mượt landmark trong từng đoạn hợp lệ, căn theo mean face upstream → ROI môi uint8,
+    hộp miệng [cx, cy, side] trên frame đã decode, mặt nạ hợp lệ cuối (thêm điều kiện căn / cắt
+    và độ dài tiếng). Dùng chung cho hai stage nên kết quả giống hệt."""
+    import cv2
+    from skimage import transform as tf
+
+    valid = valid.copy()
+    patches = np.zeros((len(frames), CROP, CROP), np.uint8)
     mouth_boxes = np.zeros((len(frames), 3), np.float32)
     stable = [33, 36, 39, 42, 45]
     for left, right in list(runs(valid)):
@@ -153,16 +175,80 @@ def extract(state, request):
             if x < 0 or y < 0 or x + 96 > 256 or y + 96 > 256:
                 valid[i] = False
                 continue
-            patch = cv2.cvtColor(aligned[y : y + 96, x : x + 96], cv2.COLOR_BGR2GRAY)[4:92, 4:92]
-            rois[i] = (patch / 255.0 - task.cfg.image_mean) / task.cfg.image_std
-    # 25 ms filterbank, hop10 ms; stack4 khớp grid 40 ms của video.
-    # Upstream đọc PCM int16; giữ cùng thang biên độ trước log-filterbank.
-    audio = logfbank(np.clip(pcm * 32768, -32768, 32767), samplerate=16000).astype(np.float32)
-    audio = np.pad(audio, ((0, (-len(audio)) % 4), (0, 0))).reshape(-1, 104)
-    if abs(len(audio) - len(frames)) > 1:
+            patches[i] = cv2.cvtColor(aligned[y : y + 96, x : x + 96], cv2.COLOR_BGR2GRAY)[
+                4:92, 4:92
+            ]
+    # Như bản một-stage cũ: cắt theo độ dài tiếng sau khi làm mượt / cắt ROI.
+    if abs(n_audio - len(frames)) > 1:
         raise ValueError("Audio/video feature timelines differ by more than one frame")
+    valid[n_audio:] = False
+    return patches, mouth_boxes, valid
+
+
+def extract_landmarks(state, request):
+    """Stage landmarks (CPU): file đủ cho mouth / lipinc (hộp miệng, landmark, mặt nạ) và cho
+    stage full (landmark float32 + mặt nạ trước khi cắt ROI)."""
+    cfg = state["cfg"]
+    decoded = decode_clip(cfg, request["video"])
+    frames, pcm = decoded["frames"], decoded["pcm"]
+    landmarks, detected = detect(state, decoded)
+    _, mouth_boxes, valid = geometry(
+        frames, landmarks, detected, state["mean_face"], len(audio_frames(pcm))
+    )
+    output = Path(request["output"])
+    save_npz(
+        output,
+        points=landmarks,
+        detected_valid=detected,
+        times_s=np.arange(len(frames)) / 25,
+        audio_valid=valid,
+        visual_valid=valid,
+        mouth_boxes=mouth_boxes,
+        landmarks=landmarks.astype(np.float16),
+    )
+    write_json(
+        output.with_suffix(".json"),
+        dict(
+            format="avhubert-landmarks-v1",
+            step_s=0.04,
+            frames=len(frames),
+            duration_s=len(frames) / 25,
+            origin_s=decoded["origin_s"],
+            valid_ratio=float(valid.mean()) if len(valid) else 0.0,
+            feature_signature=request["signature"],
+            feature_sha256=sha(output),
+            source_fingerprint=request["source_fingerprint"],
+            preprocessing="dlib frontal (upsample 1) + 68-point predictor; smoothing13; mouth-box1.6",
+        ),
+    )
+
+
+def extract(state, request):
+    """Stage full: (landmark có sẵn hoặc dlib) → ROI môi → filterbank → hai lượt encoder → cache."""
+    import torch
+    from torch.nn import functional as F
+
+    cfg, model, task, device = state["cfg"], state["model"], state["task"], state["device"]
+    decoded = decode_clip(cfg, request["video"])
+    frames, pcm = decoded["frames"], decoded["pcm"]
+    if request.get("landmarks"):
+        with np.load(request["landmarks"], allow_pickle=False) as z:
+            landmarks, detected = z["points"].astype(np.float32), z["detected_valid"].copy()
+        if len(landmarks) != len(frames):
+            raise ValueError("Landmark cache has a different frame count; re-run stage landmarks")
+        detected &= decoded["audio_valid"] & decoded["visual_valid"]
+    else:
+        landmarks, detected = detect(state, decoded)
+    audio = audio_frames(pcm)
+    patches, mouth_boxes, valid = geometry(
+        frames, landmarks, detected, state["mean_face"], len(audio)
+    )
+    rois = np.where(
+        valid[:, None, None],
+        (patches / 255.0 - task.cfg.image_mean) / task.cfg.image_std,
+        0.0,
+    ).astype(np.float32)
     if len(audio) < len(frames):
-        valid[len(audio) :] = False
         audio = np.pad(audio, ((0, len(frames) - len(audio)), (0, 0)))
     audio = torch.from_numpy(audio[: len(frames)])
     if task.cfg.normalize:
@@ -231,20 +317,30 @@ def extract(state, request):
             feature_signature=request["signature"],
             feature_sha256=sha(output),
             source_fingerprint=request["source_fingerprint"],
+            landmarks="cache" if request.get("landmarks") else "dlib",
             preprocessing="68-point stable similarity; per-valid-run smoothing13; ROI96-center88; logfbank-stack4; mouth-box1.6",
         ),
     )
 
 
 def main(request):
-    extract(load(request["config"]), request)
+    cfg = request["config"]
+    if cfg.get("stage") == "landmarks":
+        extract_landmarks(load_landmarks(cfg), request)
+    else:
+        extract(load(cfg), request)
 
 
 if __name__ == "__main__":
     if sys.argv[1] == "--serve":
         from vn_av_df.worker import serve
 
-        loaded = load(json.loads(sys.argv[2]))
-        serve(lambda request: extract(loaded, request))
+        cfg = json.loads(sys.argv[2])
+        if cfg.get("stage") == "landmarks":
+            loaded = load_landmarks(cfg)
+            serve(lambda request: extract_landmarks(loaded, request))
+        else:
+            loaded = load(cfg)
+            serve(lambda request: extract(loaded, request))
     else:
         main(read_json(sys.argv[1]))

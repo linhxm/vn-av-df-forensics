@@ -216,7 +216,7 @@ cost volume C[t, δ] = Φ(v_t, a_t+δ), δ ∈ [−15, 15] ‖ kênh vị trí �
 
 | Hạng mục | Giá trị |
 |---|---|
-| Đặc trưng (bước prepare, Kaggle) | AV-HuBERT Large (25 Hz, kèm landmark dlib và hộp miệng), crop miệng độ phân giải gốc + tư thế đầu, 8 crop LIPINC-V2, XLS-R-300M 3 nhóm lớp, waveform 16 kHz |
+| Đặc trưng (bước prepare, Kaggle) | AV-HuBERT Large (25 Hz, kèm landmark dlib và hộp miệng), crop miệng độ phân giải gốc + tư thế đầu, 8 crop LIPINC-V2, XLS-R-300M 3 nhóm lớp, waveform 16 kHz. Từ 24/10 hai phiên mỗi part: **CPU** (landmark dlib, mouth, lipinc, wave; không tốn quota GPU) rồi **GPU** (AV-HuBERT đọc landmark, XLS-R). Đo part 1: dlib dò mặt 86 % thời gian (7,1 / 8,3 s mỗi mẫu), nên phiên một-stage cũ ~7,2 h GPU gần như chỉ chờ CPU; hai stage cho kết quả trùng từng giá trị (test) |
 | Nhãn | theo từng frame (0,04 s) cho mọi đầu ra; partial cho thấy ranh giới thật / giả trong cùng clip |
 | Cân lớp | `pos_weights` cho từng tác vụ = số mẫu nhãn 0 / số mẫu nhãn 1 (kẹp trong 0,2-5) cho model dùng loss mặc định |
 | Công thức train | **mỗi baseline dùng đúng công thức của code gốc** (`model.train_options`, §4.1); M1, M2: AdamW lr 3e-4, weight decay 1e-4, batch 16, 30 epoch, patience 5 (M2: Φ học với lr 1e-5) |
@@ -319,7 +319,8 @@ Giờ phiên là thời gian chạy của phiên (Kaggle T4 × 2 chạy song son
 | 23/10 | Prepare P1 lần 2 | Kaggle T4 × 2 | 0,16 | **hỏng**: key đúng nhưng ghi vào team mặc định không có quyền | log Kaggle |
 | 23/10 | Prepare P1 lần 3 (entity `vn-av-df-capstone`) | Kaggle T4 × 2 | ~0,3 | **hỏng**: worker AV-HuBERT không nạp được checkpoint fine-tune (`Could not infer model type av_hubert_seq2seq`; thiếu `import hubert_asr`), checkpoint cũng là bản nhầm `large_vox_433h` | log Kaggle |
 | 23-24/10 | Prepare P1 lần 4 (sửa import + `self_large_vox_433h` + worker nạp lần lượt) | Kaggle T4 × 2 | ~0,3 | **hỏng**: nạp model được (2,6 GB / GPU), nhưng bước kiểm của mình đọc `stack_order_audio = 1` từ task của checkpoint VSR (fine-tune chỉ trên hình) thay vì kích thước đầu vào tiếng của encoder (104 = 26 × 4) | log Kaggle |
-| 24/10 | Prepare P1 lần 5 (kiểm theo đầu vào tiếng của encoder, như AVH-Align cố định stack 4) | Kaggle T4 × 2 | … | chưa chạy | `extraction.json` |
+| 24/10 | Prepare P1 lần 5 (kiểm theo đầu vào tiếng của encoder, như AVH-Align cố định stack 4) | Kaggle T4 × 2 | ~9 | **dừng ở 7.592 / 7.622 mẫu avhubert**: RAM trống tụt ~6 GB/giờ (rò trong worker AV-HuBERT), worker bị giết (-9) và treo 2 × 30 phút (mất ~2 h); tốc độ khi không đứng 17-18 mẫu/phút (CPU: dlib dò mặt mỗi frame); lỗi ở mẫu đầu tiên bỏ cả nhóm clip; lipinc, wave chưa chạy | notebook tải về |
+| 24/10 | Sửa: worker mở lại sau 300 mẫu và mở lần lượt, mẫu lỗi thử lại ở cuối (không bỏ cả nhóm), log RAM tiến trình chính / con | – | – | 66 test qua | pytest |
 
 ## 12. Hạn chế và việc mở (phần model)
 
@@ -362,6 +363,7 @@ Giờ phiên là thời gian chạy của phiên (Kaggle T4 × 2 chạy song son
 | 23/10 | Sao BL-M chỉ học real, sao không học full? | paper chọn real-only để tránh lối tắt; nhưng so với M1 (có giám sát) thì cần bản học full → chạy **cả hai** (`avh_align`, `avh_align_sup`) |
 | 23/10 | "Khớp tiếng–môi" là gì khi generator vẽ đúng từng frame? | khớp **khẩu hình ↔ âm**, không phải thời gian; thời gian đã sửa bằng SyncNet, augment −1…+2 làm thời gian vô dụng với model |
 | 23/10 | Chốt: 9 cấu hình × 3 seed | cài đặt đầy đủ (§4-§5); 50 test qua |
+| 24/10 | Prepare chậm (~9 h) và rò RAM; tách CPU / GPU? | đo: dlib dò mặt 86 % thời gian, GPU phần lớn rảnh → tách stage `landmarks` (CPU, phiên Kaggle không GPU) khỏi stage model (GPU); mouth / lipinc / wave cũng chỉ CPU nên chạy cùng phiên CPU, xlsr ở phiên GPU. Worker mở lại sau 300 mẫu, mẫu lỗi thử lại ở cuối. Output: weight / repo upstream ở /kaggle/temp, chỉ giữ cache / runs / dataset |
 | 24/10 | Prepare lỗi `expected crop88/stack4` | checkpoint VSR ghi `stack_order_audio = 1` trong task; encoder vẫn nhận tiếng 104 chiều. Kiểm theo `feature_extractor_audio.proj.in_features`; AVH-Align cũng cố định stack 4 |
 | 23/10 | Prepare lỗi `av_hubert_seq2seq` | đối chiếu code AVH-Align (commit 55401de): thêm `import hubert_asr`, đổi checkpoint sang `self_large_vox_433h.pt` (đúng bản AVH-Align dùng; trước tải nhầm `large_vox_433h`), 4 worker nạp model lần lượt để không vượt RAM Kaggle |
 | 23/10 | Log đủ làm bằng chứng chưa (research) | đối chiếu checklist NeurIPS, Pineau v2.0, Model Cards: thêm môi trường, tỉ lệ dự phòng LIPINC, AUC theo giới, mục "Cách đọc" trong report, lý do dừng trong `generation.json`, benchmark lên W&B, W&B lỗi không dừng phiên, nhật ký compute §11.1 (§9) |

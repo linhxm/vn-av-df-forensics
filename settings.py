@@ -161,6 +161,7 @@ def config():
             "max_duration": 60,
             "max_side": 640,
             "workers_per_device": 2,
+            "restart_every": 300,  # mở lại worker sau 300 mẫu: tránh RAM tụt dần (part 1, 24/10)
         },
         "xlsr": {
             "kind": "xlsr",
@@ -171,9 +172,12 @@ def config():
             "layer_groups": [[1, 4], [5, 8], [9, 12]],
             "device": DEVICE,
         },
-        "mouth": {"kind": "mouth", "crop": 96, "box_max_side": 640},
-        "lipinc": {"kind": "lipinc", "box_max_side": 640},
-        "wave": {"kind": "wave"},
+        # Chỉ CPU (`cpu_only`): chạy trên phiên Kaggle không GPU, số worker = số nhân CPU.
+        # landmarks = stage dò mặt dlib của AV-HuBERT (cùng env / model landmark với "avhubert").
+        "landmarks": {"kind": "landmarks", "cpu_only": True, "restart_every": 1000},
+        "mouth": {"kind": "mouth", "crop": 96, "box_max_side": 640, "cpu_only": True},
+        "lipinc": {"kind": "lipinc", "box_max_side": 640, "cpu_only": True},
+        "wave": {"kind": "wave", "cpu_only": True},
     }
     # Tài sản dựng model: XLS-R gốc cho BL-A fine-tune; checkpoint AVH-Align công bố (train trên
     # 45 k video real AV-1M, commit đã pin) để khởi tạo BL-M và Φ của M2.

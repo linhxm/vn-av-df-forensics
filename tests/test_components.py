@@ -744,6 +744,101 @@ def test_merge_parallel_train_outputs(tmp_path):
     assert missing_runs(cfg) == ["trihead_v2_seed42"]
 
 
+def test_cache_lookup_across_part_folders(tmp_path):
+    """Mỗi part một dataset cache: mẫu được tìm ở mọi gốc, không chỉ gốc đầu tiên có encoder."""
+    from vn_av_df.training.data import cache_file, cache_index
+
+    one, two = tmp_path / "part1", tmp_path / "part2"
+    for folder, sid in ((one, "a_real"), (two, "b_real")):
+        (folder / "avhubert").mkdir(parents=True)
+        (folder / "avhubert" / f"{sid}.npz").write_bytes(b"x")
+    cfg = {"cache": [str(one), str(two)]}
+    assert cache_file(cfg, "avhubert", "b_real") == two / "avhubert" / "b_real.npz"
+    index = cache_index(cfg, "avhubert", ["a_real", "b_real", "c_real"])
+    assert index["a_real"].parent.parent == one and index["b_real"].parent.parent == two
+    assert index["c_real"] == one / "avhubert" / "c_real.npz"  # thiếu: chỉ về gốc đầu
+
+
+def test_avhubert_two_stages_match_single_stage(tmp_path):
+    """Stage landmarks (CPU) rồi stage full đọc landmark = chạy một mạch như trước: cùng đặc trưng,
+    cùng mặt nạ, cùng hộp miệng (dlib và model giả, video tổng hợp)."""
+    import collections
+    from types import SimpleNamespace
+
+    from vn_av_df.common.runtime import run
+    from vn_av_df.features import avhubert_worker as W
+
+    video = tmp_path / "clip.mp4"
+    lavfi = ("-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i")
+    run(
+        [
+            ffmpeg(),
+            *lavfi,
+            "testsrc2=s=320x240:r=25:d=1.2",
+            *("-f", "lavfi", "-i", "sine=frequency=300:sample_rate=16000:duration=1.2"),
+            *("-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", video),
+        ]
+    )
+    mean_face = np.array([[80 + (i % 10) * 10, 80 + (i // 10) * 12] for i in range(68)], np.float32)
+    points = mean_face * 0.6 + np.float32([40, 20])
+
+    class Shape:
+        def part(self, j):
+            return SimpleNamespace(x=float(points[j, 0]), y=float(points[j, 1]))
+
+    class Model:
+        encoder_embed_dim = 4
+
+        def extract_finetune(self, source, padding_mask=None, output_layer=None):
+            if source["audio"] is not None:
+                x = source["audio"][0].T  # [T, 104]
+                return x[:, :4].sum(-1, keepdim=True).repeat(1, 4)[None], None
+            v = source["video"][0, 0]  # [T, 88, 88]
+            return v.mean((-1, -2))[:, None].repeat(1, 4)[None], None
+
+    def state():
+        return dict(
+            cfg={"max_side": 320},
+            detector=lambda gray, up: [object()],
+            predictor=lambda gray, box: Shape(),
+            mean_face=mean_face,
+            landmarks=collections.OrderedDict(),
+            model=Model(),
+            task=SimpleNamespace(
+                cfg=SimpleNamespace(image_mean=0.421, image_std=0.165, normalize=True)
+            ),
+            device="cpu",
+        )
+
+    request = {"video": str(video), "signature": "s", "source_fingerprint": "f"}
+    W.extract_landmarks(state(), {**request, "output": str(tmp_path / "lm.npz")})
+    W.extract(
+        state(),
+        {**request, "output": str(tmp_path / "two.npz"), "landmarks": str(tmp_path / "lm.npz")},
+    )
+    W.extract(state(), {**request, "output": str(tmp_path / "one.npz")})
+    with np.load(tmp_path / "two.npz") as two, np.load(tmp_path / "one.npz") as one:
+        assert two.files == one.files and two["visual_valid"].any()
+        for key in one.files:
+            np.testing.assert_array_equal(two[key], one[key], err_msg=key)
+    with np.load(tmp_path / "lm.npz") as lm, np.load(tmp_path / "one.npz") as one:
+        # mouth / lipinc đọc hộp miệng, landmark, mặt nạ từ file landmark: trùng với cache avhubert.
+        for key in ("mouth_boxes", "landmarks", "visual_valid"):
+            np.testing.assert_array_equal(lm[key], one[key], err_msg=key)
+
+
+def test_landmark_file_prefers_landmark_stage(tmp_path):
+    from vn_av_df.training.prepare import landmark_file
+
+    cfg = {"cache": [str(tmp_path / "a"), str(tmp_path / "b")]}
+    (tmp_path / "b/avhubert").mkdir(parents=True)
+    (tmp_path / "b/avhubert/x.npz").write_bytes(b"x")
+    assert landmark_file(cfg, "x") == tmp_path / "b/avhubert/x.npz"  # chưa có stage landmarks
+    (tmp_path / "a/landmarks").mkdir(parents=True)
+    (tmp_path / "a/landmarks/x.npz").write_bytes(b"x")
+    assert landmark_file(cfg, "x") == tmp_path / "a/landmarks/x.npz"
+
+
 def test_env_recipes_cover_every_worker():
     import sys
     from pathlib import Path

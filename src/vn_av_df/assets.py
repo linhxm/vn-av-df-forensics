@@ -64,22 +64,23 @@ def pinned_snapshot(repo_id, target, patterns):
     )
 
 
-def setup_avhubert(encoder):
-    """Chuẩn bị AV-HuBERT (Base mặc định, hoặc checkpoint_url) và landmark; fairseq chỉ ở worker."""
+def setup_avhubert(encoder, checkpoint=True):
+    """Chuẩn bị AV-HuBERT (Base mặc định, hoặc checkpoint_url) và landmark; fairseq chỉ ở worker.
+    checkpoint=False: chỉ source + landmark model (stage landmarks chạy CPU)."""
     import bz2
 
     pinned_repository(
         "https://github.com/facebookresearch/av_hubert.git", encoder["repo"], recursive=True
     )
-    result = {
-        "checkpoint": fetch_file(
+    result = {}
+    if checkpoint:
+        result["checkpoint"] = fetch_file(
             encoder.get(
                 "checkpoint_url",
                 "https://dl.fbaipublicfiles.com/avhubert/model/lrs3/clean-pretrain/base_lrs3_iter4.pt",
             ),
             encoder["checkpoint"],
         )
-    }
     landmark = Path(encoder["landmarks"])
     compressed = landmark.with_suffix(".dat.bz2")
     fetch_file("https://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2", compressed)

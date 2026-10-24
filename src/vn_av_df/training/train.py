@@ -27,13 +27,20 @@ from vn_av_df import tracking
 from vn_av_df.common.runtime import atomic_bytes, environment, read_json, write_json
 from vn_av_df.dataset import training_dataset
 from vn_av_df.progress import Progress, duration, system_status
-from vn_av_df.training.data import BenchData, cache_dir, collate, speaker_index, to_device
+from vn_av_df.training.data import (
+    BenchData,
+    cache_file,
+    cache_roots,
+    collate,
+    speaker_index,
+    to_device,
+)
 from vn_av_df.training.models import build
 
 
 def feature_dim(cfg, rows):
     for row in rows:
-        path = cache_dir(cfg, "avhubert") / f"{row['sample_id']}.npz"
+        path = cache_file(cfg, "avhubert", row["sample_id"])
         if path.is_file():
             with np.load(path, allow_pickle=False) as z:
                 return int(z["audio"].shape[1])
@@ -498,19 +505,24 @@ def provenance(cfg, rows, selection):
     ids = {r["sample_id"] for r in rows}
     caches = {}
     for encoder in encoders_for(cfg["models"]):
-        folder = cache_dir(cfg, encoder)
-        signatures, found = Counter(), 0
-        for meta in folder.glob("*.json"):
-            if meta.stem in ids:
-                found += 1
-                signatures[read_json(meta).get("feature_signature")] += 1
-        extraction = folder / "extraction.json"
+        # Mọi gốc cache có encoder này (mỗi part một dataset cache): đếm mẫu và chữ ký trên tất cả.
+        folders = [r / encoder for r in cache_roots(cfg) if (r / encoder).is_dir()]
+        signatures, seen = Counter(), set()
+        for folder in folders:
+            for meta in folder.glob("*.json"):
+                if meta.stem in ids and meta.stem not in seen:
+                    seen.add(meta.stem)
+                    signatures[read_json(meta).get("feature_signature")] += 1
         caches[encoder] = {
-            "folder": str(folder),
-            "samples_found": found,
+            "folders": [str(f) for f in folders],
+            "samples_found": len(seen),
             "samples_needed": len(ids),
             "feature_signatures": dict(signatures),
-            "extraction": read_json(extraction) if extraction.is_file() else None,
+            "extraction": [
+                read_json(f / "extraction.json")
+                for f in folders
+                if (f / "extraction.json").is_file()
+            ],
         }
     here = Path(__file__).resolve()
     code = {p.name: sha(p) for p in sorted(here.parent.glob("*.py"))}

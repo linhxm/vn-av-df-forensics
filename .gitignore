@@ -9,8 +9,8 @@ __pycache__/
 .test-env*/
 .kaggle-tools/
 .env*
-/weights/
-/external/
+/weights
+/external
 /cache/
 /runs/
 /datasets/

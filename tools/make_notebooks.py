@@ -37,6 +37,12 @@ ROOT = Path("/kaggle/working/vn-av-df-forensics")
 WORKERS = Path("/kaggle/temp/vn-av-df-workers")  # Môi trường worker: ngoài Output 20 GB.
 if not ROOT.exists():
     subprocess.run(["git", "clone", REPO_URL, str(ROOT)], check=True)
+# Weight và repo upstream (vài GB) ở /kaggle/temp: Output (giới hạn 20 GB) không bao giờ chứa
+# chúng, kể cả khi phiên lỗi giữa chừng (bước dọn Output cuối không chạy).
+for name in ("weights", "external"):
+    (Path("/kaggle/temp/vn-av-df-heavy") / name).mkdir(parents=True, exist_ok=True)
+    if not (ROOT / name).exists():
+        (ROOT / name).symlink_to(Path("/kaggle/temp/vn-av-df-heavy") / name, target_is_directory=True)
 sys.path.insert(0, str(ROOT))
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(ROOT / "data_pipeline"),
                 "-e", str(ROOT) + "[EXTRA]"], check=True)
@@ -215,7 +221,11 @@ prepare = nb(
 
 Đầu vào: dataset đã finalize của các part (`datasets/vn-av-df-data/<part>`). Đầu ra: `cache/vn-av-df-data/{avhubert,mouth,lipinc,xlsr,wave}` (chỉ encoder mà `MODELS` cần).
 Hết giờ phiên thì Save Version, phiên sau attach `PREVIOUS_CACHE` để trích tiếp (cache đã có được bỏ qua).
-Cache một part cỡ vài chục GB: nếu vượt giới hạn Output một phiên, mỗi phiên chỉ trích 1-2 encoder (`ENCODERS`) rồi Save Version thành **dataset riêng**. Phiên trích `mouth` / `lipinc` cần landmark của `avhubert`: attach dataset đó vào `OTHER_CACHES`. Notebook train nhận danh sách các dataset cache.
+Mỗi part chạy **hai phiên**, Output mỗi phiên dưới 20 GB:
+1. **Phiên CPU** (Accelerator: None, không tốn quota GPU): `landmarks` (dlib dò mặt, phần chậm nhất), `mouth`, `lipinc`, `wave`.
+2. **Phiên GPU** (T4 ×2), sau phiên 1: `avhubert` (model, đọc landmark của phiên 1), `xlsr`. Attach Output phiên 1 vào `OTHER_CACHES`.
+
+`ENCODERS` tự chọn theo máy (có GPU hay không); notebook train nhận danh sách mọi dataset cache (`CACHES`).
 """,
         ),
         ("code", setup_cell("training")),
@@ -230,9 +240,12 @@ MODELS = settings.MODELS + settings.ABLATIONS
 import torch
 from vn_av_df.dataset import part_selection
 from vn_av_df.training.prepare import encoders_for
-ENCODERS = encoders_for(MODELS)  # hoặc chọn tay, ví dụ ["avhubert", "mouth"]
-settings.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+GPU = torch.cuda.is_available()
+settings.DEVICE = "cuda" if GPU else "cpu"
 cfg = settings.config()
+# Phiên CPU: landmarks, mouth, lipinc, wave · phiên GPU: avhubert, xlsr (hoặc chọn tay).
+ENCODERS = [e for e in encoders_for(MODELS) if bool(cfg["encoders"][e].get("cpu_only")) != GPU]
+print("Phiên", "GPU" if GPU else "CPU", "→ ENCODERS =", ENCODERS)
 root, parts = part_selection(DATASET_PARTS)
 cfg["dataset"], cfg["dataset_parts"] = str(root), parts
 cfg["prepare_devices"] = [f"cuda:{i}" for i in range(torch.cuda.device_count())] or [None]
@@ -247,10 +260,12 @@ cfg["cache"] = [str(OUTPUT_CACHE), *map(str, OTHER_CACHES)]
             "code",
             """
 from vn_av_df.cli import setup
-print(setup(cfg, generators=[], encoders=True))  # AV-HuBERT Large + XLS-R + checkpoint AVH-Align
-if "avhubert" in ENCODERS:
+print(setup(cfg, generators=[], encoders=ENCODERS))  # chỉ tải thứ ENCODERS cần
+if {"landmarks", "avhubert"} & set(ENCODERS):
+    # Cùng env cho cả hai stage; phiên CPU cài không cần GPU (stage landmarks chỉ dùng dlib).
     subprocess.run([sys.executable, str(ROOT / "environments/bootstrap_worker.py"), "avhubert",
-                    "--root", str(ROOT), "--env-root", str(WORKERS)], check=True)
+                    "--root", str(ROOT), "--env-root", str(WORKERS)] + ([] if GPU else ["--allow-cpu"]),
+                   check=True)
     cfg["encoders"]["avhubert"]["python"] = str(WORKERS / ".venv-avhubert/bin/python")
 """,
         ),
@@ -258,9 +273,11 @@ if "avhubert" in ENCODERS:
             "code",
             """
 from vn_av_df.training.prepare import prepare
-print(prepare(cfg, ENCODERS))
 from vn_av_data.common.runtime import prune_output
-print("Đã xoá khỏi Output:", len(prune_output(ROOT, [str(OUTPUT_CACHE.relative_to(ROOT))])), "mục")
+try:
+    print(prepare(cfg, ENCODERS))
+finally:  # Output chỉ giữ cache, kể cả khi lỗi giữa chừng (phiên sau dùng PREVIOUS_CACHE)
+    print("Đã xoá khỏi Output:", len(prune_output(ROOT, [str(OUTPUT_CACHE.relative_to(ROOT))])), "mục")
 """,
         ),
     ],
