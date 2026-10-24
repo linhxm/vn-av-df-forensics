@@ -221,11 +221,13 @@ prepare = nb(
 
 Đầu vào: dataset đã finalize của các part (`datasets/vn-av-df-data/<part>`). Đầu ra: `cache/vn-av-df-data/{avhubert,mouth,lipinc,xlsr,wave}` (chỉ encoder mà `MODELS` cần).
 Hết giờ phiên thì Save Version, phiên sau attach `PREVIOUS_CACHE` để trích tiếp (cache đã có được bỏ qua).
-Mỗi part chạy **hai phiên**, Output mỗi phiên dưới 20 GB:
-1. **Phiên CPU** (Accelerator: None, không tốn quota GPU): `landmarks` (dlib dò mặt, phần chậm nhất), `mouth`, `lipinc`, `wave`.
-2. **Phiên GPU** (T4 ×2), sau phiên 1: `avhubert` (model, đọc landmark của phiên 1), `xlsr`. Attach Output phiên 1 vào `OTHER_CACHES`.
+Mỗi part chạy **ba phiên** (đặt `SESSION`), mỗi phiên dưới 12 giờ và Output dưới 20 GB:
+1. `SESSION = "landmarks"` (Accelerator: None, không tốn quota GPU): dlib dò mặt, phần chậm nhất (part 1: ~13 mẫu/phút trên 4 nhân, ~10 giờ).
+2. Sau phiên 1, chạy **song song** hai phiên, cả hai attach Output phiên 1 vào `OTHER_CACHES`:
+   - `SESSION = "cpu"` (Accelerator: None): `mouth`, `lipinc`, `wave`.
+   - `SESSION = "gpu"` (T4 ×2): `avhubert` (model, đọc landmark của phiên 1), `xlsr`.
 
-`ENCODERS` tự chọn theo máy (có GPU hay không); notebook train nhận danh sách mọi dataset cache (`CACHES`).
+Notebook train nhận danh sách mọi dataset cache (`CACHES` = Output của cả ba phiên).
 """,
         ),
         ("code", setup_cell("training")),
@@ -233,9 +235,12 @@ Mỗi part chạy **hai phiên**, Output mỗi phiên dưới 20 GB:
         (
             "code",
             """
-DATASET_PARTS = [Path("/kaggle/input/datasets/YOUR_USER/vn-av-df-data-part1")]
-PREVIOUS_CACHE = None  # Path("/kaggle/input/<phiên trước>/vn-av-df-forensics/cache/vn-av-df-data")
-OTHER_CACHES = []      # dataset cache khác chỉ để đọc, vd. [Path(".../vn-av-df-features-part1-avhubert")]
+SESSION = "landmarks"  # "landmarks" (CPU) → rồi song song "cpu" (CPU) và "gpu" (T4 ×2)
+DATASET_PARTS = [Path("/kaggle/input/datasets/linhxm/vn-av-df-data-part1-trim04-fake")]
+# Hết giờ giữa chừng: chạy lại cùng SESSION, attach Output phiên dở vào đây (mẫu đã có được bỏ qua).
+PREVIOUS_CACHE = None  # Path("/kaggle/input/<Output phiên dở>/vn-av-df-forensics/cache/vn-av-df-data")
+# Phiên "cpu" / "gpu": Output phiên "landmarks" (chép đường dẫn ở panel Input, tới .../cache/vn-av-df-data).
+OTHER_CACHES = []      # vd. [Path("/kaggle/input/<Output phiên landmarks>/vn-av-df-forensics/cache/vn-av-df-data")]
 MODELS = settings.MODELS + settings.ABLATIONS
 import torch
 from vn_av_df.dataset import part_selection
@@ -243,9 +248,19 @@ from vn_av_df.training.prepare import encoders_for
 GPU = torch.cuda.is_available()
 settings.DEVICE = "cuda" if GPU else "cpu"
 cfg = settings.config()
-# Phiên CPU: landmarks, mouth, lipinc, wave · phiên GPU: avhubert, xlsr (hoặc chọn tay).
-ENCODERS = [e for e in encoders_for(MODELS) if bool(cfg["encoders"][e].get("cpu_only")) != GPU]
-print("Phiên", "GPU" if GPU else "CPU", "→ ENCODERS =", ENCODERS)
+CHOOSE = {
+    "landmarks": lambda e: e == "landmarks",
+    "cpu": lambda e: e != "landmarks" and cfg["encoders"][e].get("cpu_only"),
+    "gpu": lambda e: not cfg["encoders"][e].get("cpu_only"),
+}
+ENCODERS = [e for e in encoders_for(MODELS) if CHOOSE[SESSION](e)]  # hoặc chọn tay
+if SESSION == "gpu" and not GPU:
+    raise RuntimeError('SESSION = "gpu" cần Accelerator GPU (T4 ×2)')
+if SESSION != "gpu" and GPU:
+    print(f"CẢNH BÁO: phiên {SESSION} chỉ cần CPU, chọn Accelerator None để không tốn quota GPU")
+if SESSION != "landmarks" and not OTHER_CACHES:
+    print("CẢNH BÁO: OTHER_CACHES rỗng, worker sẽ tự dò landmark bằng dlib (chậm)")
+print("Phiên", SESSION, "→ ENCODERS =", ENCODERS)
 root, parts = part_selection(DATASET_PARTS)
 cfg["dataset"], cfg["dataset_parts"] = str(root), parts
 cfg["prepare_devices"] = [f"cuda:{i}" for i in range(torch.cuda.device_count())] or [None]

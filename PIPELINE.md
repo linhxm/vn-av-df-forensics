@@ -3,7 +3,7 @@
 ```
 data_pipeline (real, local) ─► part sạch vn-av-df-data-partN (600-800 clip, 20 nam + 20 nữ × 15-20 clip, split sẵn)
   └─► notebooks/generate.ipynb   phiên "voice" → các phiên "lipsync" → finalize      (generation/0x_*.py)
-  └─► notebooks/prepare.ipynb    phiên CPU: landmark dlib → crop miệng / khung LIPINC → waveform; phiên GPU: AV-HuBERT Large → XLS-R (training/01_prepare.py)
+  └─► notebooks/prepare.ipynb    phiên "landmarks" (CPU, dlib) → song song phiên "cpu" (crop miệng, khung LIPINC, waveform) và "gpu" (AV-HuBERT Large, XLS-R) (training/01_prepare.py)
   └─► notebooks/train.ipynb      train 4 baseline + M1, M2 + 3 ablation → test một lần → report.md  (training/02-04)
 ```
 
@@ -148,12 +148,15 @@ Chạy ở phiên tương tác có GPU, mở link `gradio.live` in ra ở cell c
 
 - **Một part** (600-800 clip): 1.350-1.800 lần chạy generator và 600-800 job giọng; khoảng 5.850-7.800 file.
 - **GPU cho sinh fake:** khoảng 55-100 giờ cho mỗi part (gần 2-4 tuần quota Kaggle). Chia phiên theo generator để chạy song song trên nhiều notebook, ghép bằng `PREVIOUS_OUTPUT`.
-- **Trích feature (đo trên part 1, 24/10):** dlib dò mặt chiếm 86 % thời gian CPU của AV-HuBERT (7,1 / 8,3 s mỗi mẫu một luồng); phiên một-stage cũ mất ~7,2 h GPU / part (17-18 mẫu/phút, GPU phần lớn rảnh). Giờ mỗi part hai phiên, Output mỗi phiên < 20 GB:
+- **Trích feature (đo trên part 1, 24/10):** dlib dò mặt chiếm 86 % thời gian CPU của AV-HuBERT (7,1 / 8,3 s mỗi mẫu một luồng); phiên một-stage cũ mất ~9 h GPU / part (trung bình ~14 mẫu/phút, GPU phần lớn rảnh). Phiên CPU riêng cho dlib không nhanh hơn (đo 24/10: ~13 mẫu/phút trên 4 nhân, ~10 h) nên tách ba phiên (`SESSION`), mỗi phiên < 12 h, Output < 20 GB:
 
-  | Phiên | Accelerator | `ENCODERS` (tự chọn theo máy) | Ước tính / part (○) | Cache |
+  | `SESSION` | Accelerator | `ENCODERS` (tự chọn) | Ước tính / part | Cache |
   |---|---|---|---|---|
-  | 1 | **None** (không tốn quota GPU) | `landmarks`, `mouth`, `lipinc`, `wave` | ~8-9 h (landmark ~6 h trên 4 nhân); hết giờ thì chạy lại với `PREVIOUS_CACHE` | ~11 GB |
-  | 2 (sau phiên 1) | T4 ×2 | `avhubert` (đọc landmark), `xlsr`; `OTHER_CACHES` = Output phiên 1 | ~1,5-2 h | ~14 GB |
+  | 1 · `"landmarks"` | **None** (không tốn quota GPU) | `landmarks` | ~10 h (đo part 1) | phiên 1 + 2a ~11 GB (○) |
+  | 2a · `"cpu"` (sau 1, song song 2b) | None | `mouth`, `lipinc`, `wave`; `OTHER_CACHES` = Output phiên 1 | ~1-2,5 h (○) | |
+  | 2b · `"gpu"` (sau 1, song song 2a) | T4 ×2 | `avhubert` (đọc landmark), `xlsr`; `OTHER_CACHES` = Output phiên 1 | ~1,5-2 h (○) | ~14 GB (○) |
+
+  Hết giờ giữa chừng: chạy lại cùng `SESSION` với `PREVIOUS_CACHE` = Output phiên dở. Worker dlib rò ~1 GB/giờ mỗi worker nên mở lại sau 300 mẫu (`restart_every`).
 
   Hai stage AV-HuBERT cho kết quả trùng từng giá trị với chạy một mạch (test `test_avhubert_two_stages_match_single_stage`). Nhiều part: mỗi part prepare riêng; notebook train nhận danh sách mọi part (`DATASET_PARTS`) và mọi cache (`CACHES`), mỗi mẫu được tìm ở mọi thư mục cache.
 - **Output Kaggle:** weight và repo upstream nằm ở `/kaggle/temp` (liên kết từ `weights/`, `external/`), worker env ở `/kaggle/temp/vn-av-df-workers`; cuối phiên chỉ giữ phần cần (prepare: cache; train: `runs/`; generate: dataset + plan), kể cả khi prepare lỗi giữa chừng.

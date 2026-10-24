@@ -216,7 +216,7 @@ cost volume C[t, δ] = Φ(v_t, a_t+δ), δ ∈ [−15, 15] ‖ kênh vị trí �
 
 | Hạng mục | Giá trị |
 |---|---|
-| Đặc trưng (bước prepare, Kaggle) | AV-HuBERT Large (25 Hz, kèm landmark dlib và hộp miệng), crop miệng độ phân giải gốc + tư thế đầu, 8 crop LIPINC-V2, XLS-R-300M 3 nhóm lớp, waveform 16 kHz. Từ 24/10 hai phiên mỗi part: **CPU** (landmark dlib, mouth, lipinc, wave; không tốn quota GPU) rồi **GPU** (AV-HuBERT đọc landmark, XLS-R). Đo part 1: dlib dò mặt 86 % thời gian (7,1 / 8,3 s mỗi mẫu), nên phiên một-stage cũ ~7,2 h GPU gần như chỉ chờ CPU; hai stage cho kết quả trùng từng giá trị (test) |
+| Đặc trưng (bước prepare, Kaggle) | AV-HuBERT Large (25 Hz, kèm landmark dlib và hộp miệng), crop miệng độ phân giải gốc + tư thế đầu, 8 crop LIPINC-V2, XLS-R-300M 3 nhóm lớp, waveform 16 kHz. Từ 24/10 ba phiên mỗi part: **landmarks** (dlib, CPU, ~10 h, không tốn quota GPU) rồi song song **cpu** (mouth, lipinc, wave) và **gpu** (AV-HuBERT đọc landmark, XLS-R). Đo part 1: dlib dò mặt 86 % thời gian (7,1 / 8,3 s mỗi mẫu), nên phiên một-stage cũ ~9 h GPU gần như chỉ chờ CPU; hai stage cho kết quả trùng từng giá trị (test) |
 | Nhãn | theo từng frame (0,04 s) cho mọi đầu ra; partial cho thấy ranh giới thật / giả trong cùng clip |
 | Cân lớp | `pos_weights` cho từng tác vụ = số mẫu nhãn 0 / số mẫu nhãn 1 (kẹp trong 0,2-5) cho model dùng loss mặc định |
 | Công thức train | **mỗi baseline dùng đúng công thức của code gốc** (`model.train_options`, §4.1); M1, M2: AdamW lr 3e-4, weight decay 1e-4, batch 16, 30 epoch, patience 5 (M2: Φ học với lr 1e-5) |
@@ -321,6 +321,8 @@ Giờ phiên là thời gian chạy của phiên (Kaggle T4 × 2 chạy song son
 | 23-24/10 | Prepare P1 lần 4 (sửa import + `self_large_vox_433h` + worker nạp lần lượt) | Kaggle T4 × 2 | ~0,3 | **hỏng**: nạp model được (2,6 GB / GPU), nhưng bước kiểm của mình đọc `stack_order_audio = 1` từ task của checkpoint VSR (fine-tune chỉ trên hình) thay vì kích thước đầu vào tiếng của encoder (104 = 26 × 4) | log Kaggle |
 | 24/10 | Prepare P1 lần 5 (kiểm theo đầu vào tiếng của encoder, như AVH-Align cố định stack 4) | Kaggle T4 × 2 | ~9 | **dừng ở 7.592 / 7.622 mẫu avhubert**: RAM trống tụt ~6 GB/giờ (rò trong worker AV-HuBERT), worker bị giết (-9) và treo 2 × 30 phút (mất ~2 h); tốc độ khi không đứng 17-18 mẫu/phút (CPU: dlib dò mặt mỗi frame); lỗi ở mẫu đầu tiên bỏ cả nhóm clip; lipinc, wave chưa chạy | notebook tải về |
 | 24/10 | Sửa: worker mở lại sau 300 mẫu và mở lần lượt, mẫu lỗi thử lại ở cuối (không bỏ cả nhóm), log RAM tiến trình chính / con | – | – | 66 test qua | pytest |
+| 24/10 | Tách prepare: stage `landmarks` (dlib, CPU) riêng khỏi stage model AV-HuBERT (GPU) | Local CPU | – | 69 test qua (hai stage trùng từng giá trị với một stage) | pytest |
+| 24/10 | Prepare P1 lần 6 · phiên CPU (`landmarks`, `mouth`, `lipinc`, `wave` trong một phiên) | Kaggle CPU 4 nhân | ~0,8 | **dừng chủ động** ở ~600 / 7.622 mẫu landmarks: ~13 mẫu/phút, bằng lần 5 (lần 5 trung bình cả phiên ~14 mẫu/phút, 17-18 chỉ là lúc đầu), nên riêng landmarks ~10 h, cả phiên ~11-12,5 h dễ vượt giới hạn 12 h; worker dlib rò ~1 GB/giờ mỗi worker (mở lại sau 1.000 mẫu thì RAM trống còn ~5 GB). Đổi thành ba phiên (`SESSION`), `restart_every` landmarks 300. Đo trên part 1: dlib dò 56 % số frame (sham, voice dùng lại frame của real; source, donor, both kể cả partial phải dò lại) | log Kaggle |
 
 ## 12. Hạn chế và việc mở (phần model)
 

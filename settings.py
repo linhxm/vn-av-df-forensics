@@ -174,7 +174,9 @@ def config():
         },
         # Chỉ CPU (`cpu_only`): chạy trên phiên Kaggle không GPU, số worker = số nhân CPU.
         # landmarks = stage dò mặt dlib của AV-HuBERT (cùng env / model landmark với "avhubert").
-        "landmarks": {"kind": "landmarks", "cpu_only": True, "restart_every": 1000},
+        # Part 1 (24/10): worker dlib rò ~1 GB/giờ mỗi worker; mở lại sau 300 mẫu (~1,5 giờ) giữ
+        # RAM tiến trình con dưới ~9 GB. Kết quả không đổi (dò lại cùng frame cho cùng landmark).
+        "landmarks": {"kind": "landmarks", "cpu_only": True, "restart_every": 300},
         "mouth": {"kind": "mouth", "crop": 96, "box_max_side": 640, "cpu_only": True},
         "lipinc": {"kind": "lipinc", "box_max_side": 640, "cpu_only": True},
         "wave": {"kind": "wave", "cpu_only": True},
