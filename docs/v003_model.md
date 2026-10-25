@@ -323,6 +323,7 @@ Giờ phiên là thời gian chạy của phiên (Kaggle T4 × 2 chạy song son
 | 24/10 | Sửa: worker mở lại sau 300 mẫu và mở lần lượt, mẫu lỗi thử lại ở cuối (không bỏ cả nhóm), log RAM tiến trình chính / con | – | – | 66 test qua | pytest |
 | 24/10 | Tách prepare: stage `landmarks` (dlib, CPU) riêng khỏi stage model AV-HuBERT (GPU) | Local CPU | – | 69 test qua (hai stage trùng từng giá trị với một stage) | pytest |
 | 24/10 | Prepare P1 lần 6 · phiên CPU (`landmarks`, `mouth`, `lipinc`, `wave` trong một phiên) | Kaggle CPU 4 nhân | ~0,8 | **dừng chủ động** ở ~600 / 7.622 mẫu landmarks: ~13 mẫu/phút, bằng lần 5 (lần 5 trung bình cả phiên ~14 mẫu/phút, 17-18 chỉ là lúc đầu), nên riêng landmarks ~10 h, cả phiên ~11-12,5 h dễ vượt giới hạn 12 h; worker dlib rò ~1 GB/giờ mỗi worker (mở lại sau 1.000 mẫu thì RAM trống còn ~5 GB). Đổi thành ba phiên (`SESSION`), `restart_every` landmarks 300. Đo trên part 1: dlib dò 56 % số frame (sham, voice dùng lại frame của real; source, donor, both kể cả partial phải dò lại) | log Kaggle |
+| 25/10 | Train P1 T-A lần 1 (`ssl_aasist`, seed 42) | Kaggle T4 (1 GPU) | ~0,26 | **hỏng** sau epoch 1: grad norm NaN (AMP tràn số ở bước đầu, bước đó scaler đã bỏ qua) làm ghi `history.json` lỗi. Đo được: ~11 phút / epoch (train 303 batch 8,0 phút, val 76 batch 2,8 phút), tối đa 100 epoch ≈ 18 h > 12 h; GPU 12,8-13,7 / 15 GB; RAM trống giảm ~5 GB trong epoch 1 (theo dõi). Sửa: chỉ lấy norm hữu hạn + đếm bước tràn, `MAX_HOURS` 11 dừng sạch sau epoch rồi phiên sau train tiếp | log Kaggle |
 
 ## 12. Hạn chế và việc mở (phần model)
 

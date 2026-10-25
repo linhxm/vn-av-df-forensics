@@ -3,6 +3,7 @@
 import copy
 import json
 import re
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -751,6 +752,46 @@ def test_resume_after_interruption_and_provenance(world, tmp_path, monkeypatch):
         and "train.py" in records[-1]["code_sha256"]
     )
     assert records[-1]["environment"]["python"] and "hyperparameter_search" in records[-1]
+
+
+def test_max_hours_stops_cleanly_then_resumes(world, tmp_path, monkeypatch):
+    """Hết MAX_HOURS: dừng sau epoch (last.pt đã lưu, chưa xong), model sau không bắt đầu; phiên
+    sau train tiếp đúng epoch. Grad norm NaN (AMP tràn số) không làm hỏng history.json."""
+    from vn_av_df.dataset import training_dataset
+    from vn_av_df.training import train as T
+
+    cfg = copy.deepcopy(world["cfg"])
+    cfg["runs"] = str(tmp_path / "runs")
+    cfg["models"], cfg["seeds"] = ["avh_align_plus", "avh_align_sup"], [7]
+    cfg["training"] = {**cfg["training"], "epochs": 3, "max_epochs": 3, "patience": 9}
+    for name in ("avhubert", "mouth", "lipinc", "xlsr", "wave"):
+        (Path(cfg["cache"]) / name).mkdir(parents=True, exist_ok=True)
+    rows, _ = training_dataset(cfg)
+    write_fake_caches(cfg, rows)
+    clip = torch.nn.utils.clip_grad_norm_
+    monkeypatch.setattr(
+        torch.nn.utils,
+        "clip_grad_norm_",
+        lambda *a, **k: (clip(*a, **k), torch.tensor(float("nan")))[1],
+    )
+    cfg["deadline"] = time.time() + 1  # epoch sau chắc chắn không kịp
+    report = T.train_all(cfg)
+    out = Path(cfg["runs"]) / "avh_align_plus_seed7"
+    history = json.loads((out / "history.json").read_text(encoding="utf-8"))
+    assert not history["complete"] and history["stop"] == "time_limit"
+    assert [e["epoch"] for e in history["epochs"]] == [1] and (out / "last.pt").is_file()
+    parts = history["epochs"][0]["train_parts"]
+    assert "grad_norm" not in parts and parts["grad_nonfinite_steps"] > 0
+    assert report["avh_align_sup_seed7"]["stop"] == "time_limit"
+    assert not (Path(cfg["runs"]) / "avh_align_sup_seed7").exists()
+    assert T.missing_runs(cfg) == ["avh_align_plus_seed7", "avh_align_sup_seed7"]
+    monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", clip)
+    cfg["deadline"] = None
+    T.train_all(cfg)
+    history = json.loads((out / "history.json").read_text(encoding="utf-8"))
+    assert history["complete"] and history["resumed_at"] == [2]
+    assert [e["epoch"] for e in history["epochs"]] == [1, 2, 3]
+    assert T.missing_runs(cfg) == []
 
 
 def test_prepare_retries_failed_samples(world, tmp_path, capsys):

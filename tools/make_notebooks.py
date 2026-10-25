@@ -308,7 +308,7 @@ train = nb(
 
 Cần: dataset đã finalize + cache feature (notebook prepare). Model: `settings.MODELS` (4 baseline + M1, M2) + `settings.ABLATIONS` (3 ablation M1); BL-Ens tính ở bước test.
 Đầu ra: `runs/<RUN_NAME>/` (checkpoint, history, metrics, report.md, gates.json, test-lock.json, provenance.json).
-Hết giờ phiên giữa chừng: Save Version, phiên sau attach Output vào `PREVIOUS_RUN`; model xong được bỏ qua, model đang dở train tiếp từ epoch sau `last.pt`.
+Sau `MAX_HOURS` (mặc định 11) train dừng sạch sau epoch đang chạy (đã lưu `last.pt`), phiên kết thúc bình thường nên Output được lưu. Phiên sau là **notebook khác** (Copy & Edit) attach Output đó vào `PREVIOUS_RUN`; model xong được bỏ qua, model đang dở train tiếp từ epoch sau `last.pt`.
 Chạy song song nhiều notebook: mỗi notebook một nhóm `MODELS`, `RUN_TEST = False`. Notebook cuối đặt `PREVIOUS_RUN` = danh sách Output các notebook đó, `MODELS` đủ: model đã xong được gộp và bỏ qua, test + report chỉ chạy khi đủ mọi model.
 `RUN_BENCHMARK = True`: đo thời gian / bộ nhớ từng model trên cache thật trước (ghi `benchmark.json`), để chia phiên.
 """,
@@ -318,18 +318,37 @@ Chạy song song nhiều notebook: mỗi notebook một nhóm `MODELS`, `RUN_TES
         (
             "code",
             """
-DATASET_PARTS = [Path("/kaggle/input/datasets/YOUR_USER/vn-av-df-data-part1")]
-# Một hoặc nhiều dataset cache (gộp lại phải đủ avhubert/ mouth/ lipinc/ xlsr/ wave/)
-CACHES = [Path("/kaggle/input/datasets/YOUR_USER/vn-av-df-features-part1")]
-PREVIOUS_RUN = None   # Path(".../runs/train_part1_v003") hoặc danh sách nhiều Output để gộp
-MODELS = settings.MODELS + settings.ABLATIONS
+# Part 1: 3 notebook train song song (T-A, T-B, T-C) rồi 1 notebook cuối (final).
+# Các dòng đánh dấu [T-A] / [T-B] / [T-C] / [final] khác nhau giữa các notebook: bỏ comment đúng dòng.
+DATASET_PARTS = [Path("/kaggle/input/datasets/linhxm/vn-av-df-data-part1-trim04-fake")]
+# Output của 3 phiên prepare (landmarks, cpu, gpu); mọi notebook train đều attach đủ 3
+CACHES = [
+    Path("/kaggle/input/notebooks/linhxm/vn-av-df-prepare-part1-landmarks/vn-av-df-forensics/cache/vn-av-df-data"),
+    Path("/kaggle/input/notebooks/linhxm/vn-av-df-prepare-part1-cpu/vn-av-df-forensics/cache/vn-av-df-data"),
+    Path("/kaggle/input/notebooks/linhxm/vn-av-df-prepare-part1-gpu/vn-av-df-forensics/cache/vn-av-df-data"),
+]
+for c in CACHES:
+    assert c.is_dir(), f"Sai đường dẫn: {c}"
+RUNS = "/kaggle/input/notebooks/linhxm/{}/vn-av-df-forensics/runs/train_part1_v003"
+PREVIOUS_RUN = None                                                          # [T-A] [T-B] [T-C]
+# PREVIOUS_RUN = Path(RUNS.format("vn-av-df-train-part1-ta"))               # [T-A-2] train tiếp T-A sau khi hết MAX_HOURS
+# PREVIOUS_RUN = [Path(RUNS.format(n)) for n in (                           # [final] gộp 3 notebook (nhóm nào chạy
+#     "vn-av-df-train-part1-ta", "vn-av-df-train-part1-tb", "vn-av-df-train-part1-tc")]  # lại thì thay tên -2)
+MODELS = ["ssl_aasist"]                                                      # [T-A] BL-A, nặng nhất (~11 phút / epoch)
+# MODELS = ["trihead_v2", "trihead_v2_no_sync", "trihead_v2_no_trace", "trihead_v2_no_ref"]  # [T-B] M1 + 3 ablation
+# MODELS = ["lipinc_v2", "avh_align", "avh_align_sup", "avh_align_plus"]  # [T-C] BL-V, BL-M, BL-M sup, M2
+# MODELS = settings.MODELS + settings.ABLATIONS                            # [final] đủ 10 model, đã train → chỉ gộp
 SEEDS = [42]          # đánh giá part 1: một seed; chốt thiết kế rồi chạy [42, 43, 44]
-RUN_TEST = True
+RUN_TEST = False      # [T-A] [T-B] [T-C]
+# RUN_TEST = True     # [final] test một lần duy nhất + BL-Ens + report.md
 RUN_BENCHMARK = False
+MAX_HOURS = 11        # tính từ cell này; dừng sạch (lưu last.pt) trước giới hạn 12 giờ của Kaggle
+import time
 import torch
 from vn_av_df.dataset import part_selection
 settings.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 cfg = settings.config()
+cfg["deadline"] = time.time() + MAX_HOURS * 3600
 root, parts = part_selection(DATASET_PARTS)
 cfg["dataset"], cfg["dataset_parts"] = str(root), parts
 cfg["cache"] = [str(p) for p in CACHES]
@@ -337,8 +356,12 @@ cfg["models"], cfg["seeds"] = list(MODELS), list(SEEDS)
 cfg["wandb"] = WANDB
 from vn_av_df.training.train import merge_runs, missing_runs
 previous = [PREVIOUS_RUN] if isinstance(PREVIOUS_RUN, (str, Path)) else list(PREVIOUS_RUN or [])
+for p in previous:
+    assert Path(p).is_dir(), f"Sai đường dẫn: {p}"
 if previous:
     print("Gộp từ phiên trước:", merge_runs(cfg["runs"], previous))
+if RUN_TEST:  # [final]: thiếu model thì dừng ở đây, không train lại trong phiên test
+    assert not missing_runs(cfg), f"Chưa đủ model, dừng trước khi test: {missing_runs(cfg)}"
 """,
         ),
         (

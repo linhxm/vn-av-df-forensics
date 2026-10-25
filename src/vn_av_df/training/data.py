@@ -175,8 +175,19 @@ def cache_file(cfg, encoder, sample_id):
 
 
 def cache_index(cfg, encoder, sample_ids):
-    """{sample_id: file} cho cả tập, tìm một lần lúc dựng dataset (khỏi dò từng gốc mỗi lần nạp)."""
-    return {sid: cache_file(cfg, encoder, sid) for sid in sample_ids}
+    """{sample_id: file} cho cả tập, tìm một lần lúc dựng dataset (khỏi dò từng gốc mỗi lần nạp).
+    Liệt kê mỗi thư mục một lần thay vì is_file từng mẫu × từng gốc (chậm trên /kaggle/input)."""
+    roots = cache_roots(cfg)
+    found = {}
+    for root in roots:
+        folder = root / encoder
+        if not folder.is_dir():
+            continue
+        names = {p.name for p in folder.iterdir()}
+        for sid in sample_ids:
+            if sid not in found and f"{sid}.npz" in names:
+                found[sid] = folder / f"{sid}.npz"
+    return {sid: found.get(sid, roots[0] / encoder / f"{sid}.npz") for sid in sample_ids}
 
 
 def speaker_index(rows):

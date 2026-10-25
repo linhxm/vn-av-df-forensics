@@ -15,6 +15,7 @@
 """
 
 import io
+import math
 import random
 import time
 from collections import Counter, defaultdict
@@ -128,7 +129,7 @@ def run_epoch(
     """Loss trung bình; `stats` (dict) nhận thêm trung bình từng thành phần loss + grad norm.
     `label`: in tiến độ theo batch (batch đầu, rồi mỗi 60 s) kèm loss trung bình tới lúc đó."""
     total, count = 0.0, 0
-    parts, norms = Counter(), []
+    parts, norms, skipped = Counter(), [], 0
     model.train(optimizer is not None)
     amp = scaler is not None and str(device).startswith("cuda")
     progress = (
@@ -149,8 +150,13 @@ def run_epoch(
             else:
                 loss.backward()
             params = [p for p in model.parameters() if p.grad is not None]
-            norm = torch.nn.utils.clip_grad_norm_(params, clip if clip else float("inf"))
-            norms.append(float(norm))
+            norm = float(torch.nn.utils.clip_grad_norm_(params, clip if clip else float("inf")))
+            # AMP: gradient tràn số (inf / NaN) ở vài bước đầu khi GradScaler dò hệ số; scaler bỏ
+            # qua bước đó. Chỉ lấy trung bình norm hữu hạn, đếm riêng số bước tràn (BL-A, 25/10).
+            if math.isfinite(norm):
+                norms.append(norm)
+            else:
+                skipped += 1
             if amp:
                 scaler.step(optimizer)
                 scaler.update()
@@ -167,6 +173,8 @@ def run_epoch(
         stats.update({k: v / max(1, count) for k, v in parts.items()})
         if norms:
             stats["grad_norm"] = float(np.mean(norms))
+        if skipped:
+            stats["grad_nonfinite_steps"] = skipped
     return total / max(1, count)
 
 
@@ -347,6 +355,11 @@ def train_one(cfg, name, seed, rows, out):
         val_loss = run_epoch(
             model, val_loader, None, device, weights, val_stats, label=f"{tag} val"
         )
+        if not (math.isfinite(train_loss) and math.isfinite(val_loss)):
+            raise RuntimeError(
+                f"{tag}: loss không hữu hạn (train {train_loss}, val {val_loss}); last.pt giữ "
+                "epoch trước"
+            )
         if scheduler is not None:
             scheduler.step(val_loss)
         metrics = validation_metrics(model, cfg, val_rows, device)
@@ -436,6 +449,23 @@ def train_one(cfg, name, seed, rows, out):
                 },
             },
         )
+        # Dừng sạch trước giới hạn phiên (Kaggle cắt ở 12 giờ, có thể mất Output): epoch sau không
+        # kịp thì dừng sau khi đã lưu last.pt; phiên sau (PREVIOUS_RUN) train tiếp từ epoch sau.
+        deadline = cfg.get("deadline")
+        if deadline and time.time() + per_epoch > deadline:
+            stop = "time_limit"
+            break
+    if stop == "time_limit":
+        history["stop"] = stop
+        write_json(out / "history.json", history)
+        print(
+            f"{name} seed{seed} TẠM DỪNG (hết MAX_HOURS) sau epoch {epoch}: last.pt đã lưu, phiên "
+            f"sau đặt PREVIOUS_RUN = Output phiên này để train tiếp | {system_status()}",
+            flush=True,
+        )
+        run.summary({"stop": stop, "epochs_run": len(history["epochs"])})
+        run.finish()
+        return history
     history["complete"] = True
     history["best_val_loss"] = best
     history["stop"] = stop
@@ -499,23 +529,37 @@ def git_state(root):
 
 def provenance(cfg, rows, selection):
     """Nguồn gốc của lần train (thay cho ledger): dữ liệu, chữ ký từng cache, code, tài sản."""
+    from concurrent.futures import ThreadPoolExecutor
+
     from vn_av_df.common.runtime import sha
     from vn_av_df.training.prepare import encoders_for
+
+    def signature(meta):
+        return read_json(meta).get("feature_signature")
 
     ids = {r["sample_id"] for r in rows}
     caches = {}
     for encoder in encoders_for(cfg["models"]):
+        tick = time.monotonic()
         # Mọi gốc cache có encoder này (mỗi part một dataset cache): đếm mẫu và chữ ký trên tất cả.
         folders = [r / encoder for r in cache_roots(cfg) if (r / encoder).is_dir()]
-        signatures, seen = Counter(), set()
+        metas = {}
         for folder in folders:
             for meta in folder.glob("*.json"):
-                if meta.stem in ids and meta.stem not in seen:
-                    seen.add(meta.stem)
-                    signatures[read_json(meta).get("feature_signature")] += 1
+                if meta.stem in ids and meta.stem not in metas:
+                    metas[meta.stem] = meta
+        # Đọc song song: /kaggle/input đọc từng file nhỏ có độ trễ; T-B (4 encoder × 7.622 file)
+        # đứng >17 phút không in gì ở bước này (25/10).
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            signatures = Counter(pool.map(signature, metas.values()))
+        print(
+            f"provenance: {encoder} {len(metas)}/{len(ids)} mẫu, {len(signatures)} chữ ký"
+            f" | {duration(time.monotonic() - tick)}",
+            flush=True,
+        )
         caches[encoder] = {
             "folders": [str(f) for f in folders],
-            "samples_found": len(seen),
+            "samples_found": len(metas),
             "samples_needed": len(ids),
             "feature_signatures": dict(signatures),
             "extraction": [
@@ -609,7 +653,9 @@ def missing_runs(cfg):
 
 
 def train_all(cfg):
+    tick = time.monotonic()
     rows, selection = training_dataset(cfg)
+    print(f"train: đọc dataset {len(rows)} mẫu | {duration(time.monotonic() - tick)}", flush=True)
     runs = Path(cfg["runs"])
     write_json(
         runs / "training.json",
@@ -637,11 +683,19 @@ def train_all(cfg):
         flush=True,
     )
     began = time.monotonic()
+    deadline = cfg.get("deadline")
     for index, (name, seed) in enumerate(jobs, 1):
         folder = runs / f"{name}_seed{seed}"
         done = (folder / "history.json").is_file() and read_json(folder / "history.json").get(
             "complete"
         )
+        if not done and deadline and time.time() > deadline:
+            print(
+                f"=== [{index}/{len(jobs)}] {name} seed{seed}: hết MAX_HOURS, để phiên sau",
+                flush=True,
+            )
+            report[f"{name}_seed{seed}"] = {"stop": "time_limit", "epochs": run_state(folder)[1]}
+            continue
         print(
             f"=== [{index}/{len(jobs)}] {name} seed{seed}"
             f"{': đã xong, bỏ qua' if done else ''} | đã chạy {duration(time.monotonic() - began)}",
@@ -651,6 +705,7 @@ def train_all(cfg):
         report[f"{name}_seed{seed}"] = {
             "epochs": len(history["epochs"]),
             "best_val_loss": history.get("best_val_loss"),
+            "stop": history.get("stop"),
         }
     print(f"train xong {len(jobs)} lượt trong {duration(time.monotonic() - began)}", flush=True)
     return report
