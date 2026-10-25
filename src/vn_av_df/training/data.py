@@ -15,9 +15,12 @@ Pseudo-fake thay đoạn tiếng (chỉ khi train, model bật `pseudo_fake`): v
 thay đặc trưng tiếng của một đoạn 0,3-3 s bằng đoạn cùng chỗ của một clip real khác cùng người
 (như ô ② sham nhưng sinh vô hạn khi nạp); nhãn mismatch = 1 trên đoạn, AI / audio / visual = 0.
 Căn cứ: Astrid et al. 2025 (thay đoạn: AUC chéo bộ 61 → 80 %), docs/v003_model.md §5.
-Tham chiếu người (enrollment): R clip real của cùng speaker trong cùng split. Khi train lấy ngẫu
-nhiên (bỏ clip gốc của chính sample); khi đánh giá cố định R clip real đầu tiên theo sample_id
-và các clip đó không được tính điểm ở chế độ "ref".
+Tham chiếu người (enrollment): R clip real của cùng speaker trong cùng split, luôn bỏ clip gốc
+(source_clip_id) của chính sample. Khi train lấy ngẫu nhiên; khi đánh giá cố định: R clip real đầu
+tiên theo sample_id trừ clip gốc của sample (`fixed_references`). Trước 25/10 bản đánh giá không
+bỏ clip gốc: 15 % mẫu val / test được so với chính bản gốc (real và fake cùng nguồn) — rò.
+Chế độ "ref" của báo cáo (`evaluate.ref_norm`) vẫn dùng R clip đầu tiên làm thống kê và không tính
+điểm các nhóm clip đó.
 """
 
 import random
@@ -131,8 +134,14 @@ def augment_mouth(mouth, rng):
     return out
 
 
+def fixed_references(pool, row, count):
+    """Tham chiếu cố định khi đánh giá: `count` clip đầu của pool (đã xếp theo sample_id) trừ clip
+    gốc của chính sample, để real và fake cùng nguồn không bao giờ được so với chính bản gốc."""
+    return [r for r in pool if r["source_clip_id"] != row["source_clip_id"]][:count]
+
+
 def enrollment(rows, count):
-    """Mỗi (split, speaker): `count` clip real đầu tiên theo sample_id."""
+    """Mỗi (split, speaker): `count` clip real đầu tiên theo sample_id (None: tất cả, đã xếp)."""
     reals = defaultdict(list)
     for r in rows:
         if r.get("cell") == "real" and r.get("speaker_id"):
@@ -226,7 +235,7 @@ class BenchData(torch.utils.data.Dataset):
         self.crop_frames = crop_frames  # train: cắt ngẫu nhiên một đoạn (bộ nhớ, cửa sổ 4 s)
         self.pseudo_fake, self.rawboost = pseudo_fake, rawboost
         self.speakers = speakers or {}
-        self.fixed = enrollment(self.rows, references) if fixed_references else None
+        self.fixed = enrollment(self.rows, None) if fixed_references else None
         pools = defaultdict(list)
         for r in self.rows:
             if r.get("cell") == "real" and r.get("speaker_id"):
@@ -330,7 +339,7 @@ class BenchData(torch.utils.data.Dataset):
         if self.references:
             key = (row["split"], row.get("speaker_id"))
             if self.fixed is not None:
-                refs = self.fixed.get(key, [])
+                refs = fixed_references(self.fixed.get(key, []), row, self.references)
             else:
                 pool = [
                     r

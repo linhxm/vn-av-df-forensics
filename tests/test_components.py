@@ -872,6 +872,46 @@ def test_ssl_aasist_class_weight_paper_or_balanced():
     )
 
 
+def test_fixed_references_never_include_own_source_clip():
+    """Đánh giá: tham chiếu cố định = R clip real đầu theo sample_id của cùng người / split, trừ clip
+    gốc của chính mẫu (real và mọi fake cùng nguồn). Trước 25/10 thiếu điều kiện này: 15 % mẫu."""
+    from vn_av_df.training.data import enrollment, fixed_references
+
+    rows = []
+    for speaker in ("a", "b"):
+        for clip in range(5):
+            source = f"{speaker}{clip}"
+            for cell in ("real", "voice", "source"):
+                rows.append(
+                    {
+                        "sample_id": f"{source}_{cell}",
+                        "source_clip_id": source,
+                        "speaker_id": speaker,
+                        "split": "test",
+                        "cell": cell,
+                    }
+                )
+    pools = enrollment(rows, None)
+    assert [r["source_clip_id"] for r in pools[("test", "a")]] == ["a0", "a1", "a2", "a3", "a4"]
+    for row in rows:
+        refs = fixed_references(pools[("test", row["speaker_id"])], row, 3)
+        assert len(refs) == 3 and all(r["cell"] == "real" for r in refs)
+        assert row["source_clip_id"] not in {r["source_clip_id"] for r in refs}
+        assert {r["speaker_id"] for r in refs} == {row["speaker_id"]}
+    first = next(r for r in rows if r["sample_id"] == "a0_voice")
+    assert [r["source_clip_id"] for r in fixed_references(pools[("test", "a")], first, 3)] == [
+        "a1",
+        "a2",
+        "a3",
+    ]
+    later = next(r for r in rows if r["sample_id"] == "a4_real")
+    assert [r["source_clip_id"] for r in fixed_references(pools[("test", "a")], later, 3)] == [
+        "a0",
+        "a1",
+        "a2",
+    ]
+
+
 def test_cache_lookup_across_part_folders(tmp_path):
     """Mỗi part một dataset cache: mẫu được tìm ở mọi gốc, không chỉ gốc đầu tiên có encoder."""
     from vn_av_df.training.data import cache_file, cache_index
