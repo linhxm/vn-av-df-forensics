@@ -14,9 +14,10 @@
   các model chưa xong; model đang dở train lại từ đầu).
 """
 
-import io
 import math
+import os
 import random
+import tempfile
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -25,7 +26,7 @@ import numpy as np
 import torch
 
 from vn_av_df import tracking
-from vn_av_df.common.runtime import atomic_bytes, environment, read_json, write_json
+from vn_av_df.common.runtime import environment, read_json, write_json
 from vn_av_df.dataset import training_dataset
 from vn_av_df.progress import Progress, duration, system_status
 from vn_av_df.training.data import (
@@ -75,9 +76,17 @@ def speaker_weights(rows):
 
 
 def save(path, state):
-    stream = io.BytesIO()
-    torch.save(state, stream)
-    atomic_bytes(path, stream.getvalue())
+    """Ghi thẳng ra file tạm cùng thư mục rồi đổi tên (nguyên tử). Không dựng trong RAM: last.pt
+    của BL-A ~3,8 GB, qua BytesIO + getvalue() thành ~7,6 GB RAM mỗi epoch."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            torch.save(state, stream)
+        os.replace(tmp, path)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
 
 
 def recipe(cfg, model):
