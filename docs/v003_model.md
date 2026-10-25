@@ -118,6 +118,8 @@ Bỏ khỏi đội hình: `biolip` (không có code gốc, bản cài khác pape
 **BL-A · XLS-R + AASIST** ✔ (code, MIT):
 - Back-end AASIST đúng `model.py` gốc (LL 1024 → 128, max-pool 3 × 3, 6 residual block kiểu RawNet2, đồ thị phổ 42 nút + đồ thị thời gian, 4 HS-GAL có nút master, MGO 2 nhánh, readout). 0,45 M tham số + XLS-R 300M fine-tune toàn bộ.
 - Train đúng script DF: cửa sổ 64.600 mẫu (~4 s, ngắn hơn thì lặp), RawBoost algo 3 (chép `RawBoost.py`, MIT), Adam lr 1e-6, weight decay 1e-4, batch 14, cross-entropy trọng số [0,1 giả; 0,9 thật], 100 epoch; tiếng không chuẩn hoá; không che thời gian (fairseq `mask=False`).
+- **Lệch có lý do (25/10):** trọng số lớp lấy theo nguyên tắc của gốc, *trọng số lớp = 1 − tỉ lệ lớp trong train* (`class_weight: balanced`, mặc định). Con số 0,1 / 0,9 của gốc chính là nguyên tắc này trên ASVspoof 2019 LA (~90 % giả); part 1 chỉ 37 % mẫu có tiếng giả nên giữ 0,1 / 0,9 làm lớp giả còn ~6 % tín hiệu (1 : 15): đo part 1, AUC val ~0,44-0,57 sau 8 epoch, val loss (cũng có trọng số) giảm vì lệch về "thật" chứ không vì phân biệt, nên chọn checkpoint sai. Part 1 → 0,63 / 0,37. `class_weight: paper` giữ đúng 0,1 / 0,9.
+- XLS-R + AASIST chạy cả batch một lượt như gốc (BatchNorm của AASIST thống kê trên batch 14); bản cài đầu tiên gọi từng mẫu (batch 1) — lỗi cài đặt, đã sửa 25/10.
 - Khác gốc: XLS-R qua `transformers` (cùng trọng số `facebook/wav2vec2-xls-r-300m`, tắt SpecAugment); clip 4-7 s nên khi đánh giá trượt cửa sổ 4 s bước 1 s, điểm frame = max các cửa sổ phủ nó, điểm video = max; nhãn cửa sổ = có frame tiếng giả; AMP fp16 trên GPU; checkpoint chọn theo val loss.
 
 **BL-Ens**: hai model chuyên trách chạy riêng rồi lấy max sau khi chuẩn hoá theo real validation. Đây là cách gộp người đọc sẽ hỏi "sao không làm vậy cho đơn giản"; M1 phải thắng nó thì mới có lý do để gộp trong một model. Căn cứ: Khalid et al. 2021 ✔ dùng đúng loại baseline này (một model tiếng MFCC + một model hình, soft / hard voting) và thấy nó hơn cả detector đơn kênh lẫn đa kênh trên FakeAVCeleb. Khác: lấy **max** thay vì trung bình, vì nhãn AI? của v003 = max(visual, audio) và ③ / ④ chỉ giả một kênh (trung bình làm loãng điểm của kênh giả); z-score theo real validation để hai thang điểm so được với nhau (○, lựa chọn của mình).
@@ -138,7 +140,7 @@ Kết luận trước: **từng khối của M1 / M2 đều đã có trong liter
 | Lệch tiếng thật như một loại riêng | Deshmukh et al. arXiv 2026 ✔: thêm lớp RARV-SMM (tiếng thật + hình thật lệch nội dung) làm phép thử | ② sham có mặt cả lúc train và test, có đầu mismatch riêng; báo nhầm trên sham báo riêng |
 | NPR (nhánh trace) | Tan et al. CVPR 2024 ✔ (ảnh toàn khung) | áp ở vùng miệng, độ phân giải gốc, kèm residual thời gian |
 | Trộn nhóm lớp SSL có trọng số học được | SUPERB (weighted sum) ✔; Lee et al. 2022 ✔ (lớp 5 XLS-R tốt nhất cho spoof) | dùng nguyên, không nhận mới |
-| Gradient reversal lên phân loại người | Ganin & Lempitsky ICML 2015 ✔; Dao et al. 2026 ◐ (ảnh hưởng danh tính trong spoof) | dùng nguyên, không nhận mới |
+| Xoá thông tin người nói (ban đầu gradient reversal; từ 25/10 loss gây nhầm lẫn bị chặn) | Ganin & Lempitsky ICML 2015 ✔; Tzeng et al. ICCV 2015 ✔ (domain confusion); Alvi et al. ECCV-W 2018 ✔ (confusion loss); Dao et al. 2026 ◐ (ảnh hưởng danh tính trong spoof) | ý tưởng có sẵn; biến thể entropy bị chặn là chi tiết cài đặt, không nhận mới |
 | Gộp hai detector đơn kênh | Khalid et al. 2021 ✔ | là baseline (BL-Ens), không phải đề xuất |
 
 Những gì báo cáo **được** khẳng định (khi có số): (1) tách 3 câu hỏi visual / audio / mismatch cộng sham giảm báo nhầm "lệch thật = AI" so với BL-M / BL-M/sup (cổng 4, 7, `fpr_by_cell`); (2) M1 hơn gộp muộn BL-Ens (cổng 1), tức gộp trong một model có lợi; (3) đóng góp của từng nhánh (cổng 5, 6). Trượt cổng nào thì phần tương ứng không được nhận là đóng góp.
@@ -165,9 +167,9 @@ So với TriHead cũ, gộp 6 sửa nhóm P1 trên board kiến trúc:
 3. **Trọng số học được trên nhóm lớp XLS-R** (Lee et al. 2022 ✔: lớp 5 tốt nhất; SLS ◐). Cache `ssl` giờ là [T, 3, 1024].
 4. **Gộp điểm top-5 frame** (`pool = "topk5"`): đoạn giả ngắn nhất 0,3 s ≈ 7 frame, top-10 % của 175 frame = 18 frame làm loãng ●.
 5. **Pseudo-fake thay đoạn tiếng** khi nạp clip real (p = 0,25): đoạn 0,3-3 s lấy từ clip real khác cùng người; nhãn mismatch = 1, AI = 0 (Astrid et al. 2025 ✔: AUC chéo bộ 61 → 80 %).
-6. **Gradient reversal lên đầu phân loại người** của nhánh audio và trace (Dao et al. 2026 ◐: EER −17 %); λ tăng 0 → 0,3 theo lịch DANN.
+6. **Xoá thông tin người nói** ở nhánh audio và trace (Dao et al. 2026 ◐: EER −17 %); λ tăng 0 → 0,3 theo lịch DANN. Ban đầu dùng gradient reversal; **25/10 đổi** sang: đầu người nói `LayerNorm → Linear` học nhận diện trên feature tách graph, phần mã hoá chịu λ·(ln K − entropy) qua đầu đó với trọng số đóng băng (bị chặn trong [0, ln K]). Lý do (part 1, epoch 1-3): CE người nói nhánh trace 10,5 → 28 (ln K ≈ 3,3), grad norm 89 → 900 bị cắt về 5 nên tác vụ chính gần như không học, val loss 1,63 → 11,1, AUC ai 0,953 → 0,876; nhánh audio vẫn ở mức ngẫu nhiên (3,3) như mong muốn.
 
-- Giải: X1, X4, X11 (trace + tư thế đầu), X6 (pseudo-fake, đầu mismatch riêng), X7 (top-5), X8 (nhóm lớp), X9 (tham chiếu + GRL).
+- Giải: X1, X4, X11 (trace + tư thế đầu), X6 (pseudo-fake, đầu mismatch riêng), X7 (top-5), X8 (nhóm lớp), X9 (tham chiếu + xoá người nói).
 - Ablation: `trihead_v2_no_sync`, `trihead_v2_no_trace`, `trihead_v2_no_ref`. Không bỏ nhánh audio vì nó là nhánh duy nhất nuôi đầu audio.
 
 ### M2 · AVH-Align+ (`avh_align_plus`, 1,92 M tham số)
@@ -326,6 +328,7 @@ Giờ phiên là thời gian chạy của phiên (Kaggle T4 × 2 chạy song son
 | 25/10 | Train P1 T-A lần 1 (`ssl_aasist`, seed 42) | Kaggle T4 (1 GPU) | ~0,26 | **hỏng** sau epoch 1: grad norm NaN (AMP tràn số ở bước đầu, bước đó scaler đã bỏ qua) làm ghi `history.json` lỗi. Đo được: ~11 phút / epoch (train 303 batch 8,0 phút, val 76 batch 2,8 phút), tối đa 100 epoch ≈ 18 h > 12 h; GPU 12,8-13,7 / 15 GB; RAM trống giảm ~5 GB trong epoch 1 (theo dõi). Sửa: chỉ lấy norm hữu hạn + đếm bước tràn, `MAX_HOURS` 11 dừng sạch sau epoch rồi phiên sau train tiếp | log Kaggle |
 | 25/10 | Train P1 T-A lần 2 (`ssl_aasist`) | Kaggle T4 (1 GPU) | ~0,5 | **hỏng** giữa epoch 2: CUDA hết bộ nhớ (14,56 GB). Epoch 1: 15,1 phút (train 9,6, val 2,7, chấm AUC ~2,8), AUC val ai 0,453; RAM chính tăng đều ~0,6 GB/phút (2,3 → 10,8 GB), GPU 7,4 → 14,5 GB. Nguyên nhân (tái hiện local, ~16 MB / bước): điểm frame ghi đè bằng `max` vào tensor còn gắn graph không bao giờ backward → vòng tham chiếu trong autograd giữ bộ nhớ. Thêm: model gọi XLS-R + AASIST **từng mẫu (batch 1)** nên BatchNorm của AASIST chỉ thống kê trên 1 mẫu, khác gốc (batch 14). Sửa: detach điểm frame (rò hết, đo local), gom mọi cửa sổ của batch một lượt (đúng gốc; khi chấm trùng cách cũ, test), `empty_cache` sau lượt chấm, `expandable_segments`; 2 GPU chạy 2 lane song song (`LANES`) | log Kaggle + script local |
 | 25/10 | T-B lần 1 (M1 + 3 ablation) | Kaggle T4 | ~0,3 | **dừng tay**: >17 phút không in gì sau khi tải model (đọc ~30 nghìn file chữ ký cache tuần tự); sửa đọc song song + in tiến độ | log Kaggle |
+| 25/10 | Train P1 phiên lane đầu (1 notebook, T4 × 2: GPU0 BL-A, GPU1 8 model) | Kaggle T4 × 2 | ~1,4 | **dừng chủ động**. Ổn định: RAM / VRAM đứng yên (BL-A 2,2 GB / 10,3 GB, M1 2,0 / 3,2 GB). BL-A 9,5 phút / epoch (train nhanh ×1,7 nhờ gom batch), AUC audio 0,44 → 0,57 sau 8 epoch (trọng số lớp 0,1 / 0,9). M1 15-31 phút / epoch; epoch 2 tốt nhất (AUC ai 0,953, visual 0,982, audio 0,964, mismatch 0,988), epoch 3 vỡ do đối kháng người nói nhánh trace (xem §5 mục 6). Sửa: BL-A `balanced`, M1 loss gây nhầm lẫn bị chặn; chia 2 notebook `-ta` / `-tb` | log Kaggle + W&B |
 
 ## 12. Hạn chế và việc mở (phần model)
 
@@ -397,6 +400,7 @@ Mã arXiv, tên và tác giả đầu kiểm lại bằng arXiv API ngày 23/10/
 - Cost volume + soft-argmin: GC-Net, Kendall et al., [arXiv 1703.04309](https://arxiv.org/abs/1703.04309) · PSMNet, [arXiv 1803.08669](https://arxiv.org/abs/1803.08669) · RAFT, [arXiv 2003.12039](https://arxiv.org/abs/2003.12039)
 - Trộn lớp SSL: SUPERB, [arXiv 2105.01051](https://arxiv.org/abs/2105.01051) · Lee et al. 2022, [arXiv 2204.02639](https://arxiv.org/abs/2204.02639) · Pasad et al. 2021, [arXiv 2107.04734](https://arxiv.org/abs/2107.04734)
 - Gradient reversal: Ganin & Lempitsky, ICML 2015, [arXiv 1409.7495](https://arxiv.org/abs/1409.7495) · DANN, [arXiv 1505.07818](https://arxiv.org/abs/1505.07818) · Dao et al. 2026, [arXiv 2602.20805](https://arxiv.org/abs/2602.20805)
+- Loss gây nhầm lẫn: Tzeng et al., ICCV 2015, [arXiv 1510.02192](https://arxiv.org/abs/1510.02192) · Alvi et al., ECCV Workshops 2018, [arXiv 1809.02169](https://arxiv.org/abs/1809.02169) (đã kiểm arXiv API 25/10)
 - FiLM: Perez et al., AAAI 2018, [arXiv 1709.07871](https://arxiv.org/abs/1709.07871)
 - LipDA (ICML 2026 poster, chưa có link kiểm được) · Chandrasekaran et al. 2009 (PLoS Comput Biol)
 

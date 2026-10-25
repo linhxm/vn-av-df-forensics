@@ -92,6 +92,9 @@ def save(path, state):
 def recipe(cfg, model):
     """Tuỳ chọn train của model: mặc định chung, ghi đè bởi công thức gốc của từng paper."""
     options = {**cfg["training"], **model.train_options}
+    # Ghi đè có chủ đích cho từng model (vd. {"ssl_aasist": {"class_weight": "balanced"}}); ghi
+    # trong provenance / W&B config cùng mọi tuỳ chọn khác, train tiếp với tuỳ chọn khác thì báo lỗi.
+    options.update((cfg.get("recipe_overrides") or {}).get(getattr(model, "name", None), {}))
     cap = cfg["training"].get("max_epochs")
     if cap:
         options["epochs"] = min(options["epochs"], cap)
@@ -246,6 +249,8 @@ def train_one(cfg, name, seed, rows, out):
     if model.real_only:  # avh_align: chỉ học từ real (đúng paper)
         train_rows = [r for r in train_rows if r["label"] == 0 and r.get("cell") == "real"]
         val_rows = [r for r in val_rows if r["label"] == 0 and r.get("cell") == "real"]
+    if hasattr(model, "balance"):
+        model.balance(train_rows, options)
     history = {
         "model": name,
         "seed": seed,

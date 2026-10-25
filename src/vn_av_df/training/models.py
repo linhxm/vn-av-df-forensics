@@ -98,17 +98,12 @@ def shift(x, delta):
     return out
 
 
-class GradReverse(torch.autograd.Function):
-    """Đi tới giữ nguyên; đi lùi nhân −λ (Ganin & Lempitsky 2015, DANN)."""
-
-    @staticmethod
-    def forward(ctx, x, scale):
-        ctx.scale = scale
-        return x.view_as(x)
-
-    @staticmethod
-    def backward(ctx, grad):
-        return -ctx.scale * grad, None
+def confusion(logits):
+    """ln K − entropy(softmax): 0 khi dự đoán đều trên K lớp, tối đa ln K. Bị chặn, khác GRL
+    (−CE, không chặn trên) và CE về phân bố đều (vô hạn khi có xác suất → 0)."""
+    logp = logits.float().log_softmax(-1)
+    entropy = -(logp.exp() * logp).sum(-1)
+    return (math.log(logits.shape[-1]) - entropy).mean()
 
 
 def masked_mean(h, mask):
@@ -719,8 +714,13 @@ class SSLAASIST(Model):
         "patience": 10,
         "clip": None,
         "amp": True,
+        "class_weight": "balanced",  # 25/10: "paper" = 0,1 / 0,9 như gốc (xem balance)
     }
     hop = 16000
+    class_weights = (
+        0.1,
+        0.9,
+    )  # (giả, thật) như gốc; `balance` đặt lại theo class_weight trước khi train
     eval_windows = 32  # số cửa sổ 4 s mỗi lượt khi chấm (không giữ graph)
 
     def __init__(self, assets=None, **_):
@@ -784,11 +784,22 @@ class SSLAASIST(Model):
             out[i, :n] = torch.where(out[i, :n] <= -1e4, fake.max(), out[i, :n])
         return {"audio": out, "_logits": logits_all}
 
+    def balance(self, rows, options):
+        """Trọng số cross-entropy (giả, thật). "paper": 0,1 / 0,9 đúng code gốc; con số này cân
+        bằng ASVspoof 2019 LA (~90 % giả). "balanced": cùng nguyên tắc, trọng số lớp = 1 − tỉ lệ
+        lớp trong train (LA cho lại 0,1 / 0,9; part 1 có 37 % tiếng giả → 0,63 / 0,37). Giữ 0,1 / 0,9
+        trên part 1 thì lớp giả chỉ còn ~6 % tín hiệu học (1 : 15): AUC val ~0,46 sau 4 epoch (25/10)."""
+        if options.get("class_weight", "balanced") == "balanced":
+            fake = sum(bool(r.get("synthetic_audio")) for r in rows) / max(1, len(rows))
+            self.class_weights = (1.0 - fake, fake)
+        else:
+            self.class_weights = (0.1, 0.9)
+
     def loss(self, batch, out, pos_weight=None):
         mask = batch["mask"]
         spoof = ((batch["y_audio"] * mask).amax(1) > 0).long()
         logits = torch.cat([chunk[:1] for chunk in out["_logits"]])
-        weight = torch.tensor([0.1, 0.9], device=logits.device)
+        weight = torch.tensor(self.class_weights, device=logits.device)
         value = F.cross_entropy(logits.float(), 1 - spoof, weight=weight)
         self.loss_parts = {"wce": float(value.detach())}
         return value
@@ -936,13 +947,20 @@ class TriHeadV2(Model):
     So với TriHead cũ, gộp các sửa P1 trên board kiến trúc (docs/v003_model.md §5):
     NPR đúng paper; luồng tư thế đầu; trọng số học được trên nhóm lớp XLS-R; gộp điểm top-5 frame
     (đoạn giả ngắn nhất 0,3 s ≈ 7 frame); pseudo-fake thay đoạn tiếng khi nạp (p = 0,25);
-    gradient reversal lên đầu phân loại người của nhánh audio và trace (λ tăng 0 → 0,3).
+    xoá thông tin người nói ở nhánh audio và trace bằng loss gây nhầm lẫn bị chặn (λ tăng 0 → 0,3).
+
+    Người nói (25/10, thay gradient reversal): mỗi nhánh một đầu LayerNorm → Linear. Đầu học nhận
+    diện người trên feature đã tách graph (CE); phần mã hoá chịu λ·(ln K − entropy) qua chính đầu
+    đó nhưng trọng số đóng băng, nên chỉ bị đẩy về "không đoán được ai", loss trong [0, ln K].
+    GRL cũ: CE người nói của nhánh trace 10 → 28 (gấp 3-8 lần ln K), grad norm 900 bị cắt về 5 làm
+    tác vụ chính gần như không học, val loss 1,63 → 11,1 ở epoch 3 (part 1). Ý tưởng gây nhầm
+    lẫn: Tzeng et al., ICCV 2015; Alvi et al., ECCV-W 2018 (bản ở đây dùng entropy để bị chặn).
     """
 
     pool = "topk5"
     crop_frames = 75
     pseudo_fake = 0.25
-    grl_max = 0.3
+    adversary_max = 0.3
 
     def __init__(
         self,
@@ -961,7 +979,7 @@ class TriHeadV2(Model):
         self.needs = {"ssl"} | ({"av"} if use_sync else set()) | ({"mouth"} if use_trace else set())
         self.references = 3 if use_ref else 0
         self.n_speakers = int(assets.get("n_speakers") or 0)
-        self.grl = 0.0
+        self.adversary = 0.0
         self.heads = {}
         if use_sync:
             self.sync = SyncTrunk(dim, hidden, dropout)
@@ -984,8 +1002,13 @@ class TriHeadV2(Model):
         )
         self.heads = {"visual": "visual", "audio": "audio", "mismatch": "mismatch"}
         if self.n_speakers:
+            # LayerNorm: feature trace có độ lớn lớn → logit người nói cực đoan (CE 10 ngay epoch 1).
             self.speaker_heads = nn.ModuleDict(
-                {k: nn.Linear(hidden, self.n_speakers) for k in ("audio", "trace") if self.use[k]}
+                {
+                    k: nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, self.n_speakers))
+                    for k in ("audio", "trace")
+                    if self.use[k]
+                }
             )
 
     def rebuild_assets(self):
@@ -993,7 +1016,7 @@ class TriHeadV2(Model):
 
     def on_epoch(self, epoch, total):
         p = epoch / max(1, total)
-        self.grl = self.grl_max * (2 / (1 + math.exp(-10 * p)) - 1)
+        self.adversary = self.adversary_max * (2 / (1 + math.exp(-10 * p)) - 1)
 
     def branches(self, batch):
         mask = batch["mask"]
@@ -1026,7 +1049,9 @@ class TriHeadV2(Model):
         if self.n_speakers and self.training:
             for k, head in self.speaker_heads.items():
                 pooled = masked_mean(feats[k], batch["mask"])
-                out[f"_speaker_{k}"] = head(GradReverse.apply(pooled, self.grl))
+                out[f"_speaker_{k}"] = head(pooled.detach())  # đầu học nhận diện người
+                frozen = {n: p.detach() for n, p in head.named_parameters()}
+                out[f"_confuse_{k}"] = torch.func.functional_call(head, frozen, (pooled,))
         if self.use["ref"]:
             if "refs" in batch and batch["ref_count"].max() > 0:
                 refs = self.reference(batch)
@@ -1050,8 +1075,10 @@ class TriHeadV2(Model):
             for k in ("audio", "trace"):
                 if f"_speaker_{k}" in out:
                     ce = F.cross_entropy(out[f"_speaker_{k}"][keep], speaker[keep])
+                    confuse = confusion(out[f"_confuse_{k}"][keep])
                     self.loss_parts[f"speaker_{k}"] = float(ce.detach())
-                    total = total + ce
+                    self.loss_parts[f"confuse_{k}"] = float(confuse.detach())
+                    total = total + ce + self.adversary * confuse
         return total
 
 

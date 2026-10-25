@@ -89,7 +89,7 @@ Chi tiết ở [docs/v003_model.md](docs/v003_model.md).
 | avh_align | **BL-M** (CVPR 2025) | Φ(v, a) MLP, InfoNCE ±15 chỉ trên real; khởi tạo từ checkpoint công bố |
 | avh_align_sup | **BL-M/sup** | cùng Φ, cross-entropy trên log-sum-exp với nhãn AI |
 | bl_ens | **BL-Ens** | max(BL-V, BL-A) sau chuẩn hoá theo real validation; không train |
-| trihead_v2 | **M1** | 3 nhánh (sync, trace, audio) → 3 đầu + tham chiếu người; NPR đúng paper, tư thế đầu, trọng số nhóm lớp XLS-R, top-5 frame, pseudo-fake, gradient reversal người |
+| trihead_v2 | **M1** | 3 nhánh (sync, trace, audio) → 3 đầu + tham chiếu người; NPR đúng paper, tư thế đầu, trọng số nhóm lớp XLS-R, top-5 frame, pseudo-fake, xoá thông tin người nói (loss gây nhầm lẫn bị chặn) |
 | avh_align_plus | **M2** | Φ của AVH-Align trên cả dải độ trễ ±15 + CNN 2D, môi–đầu, pseudo-fake |
 | trihead_v2_no_sync / _no_trace / _no_ref | ablation M1 | bỏ một nhánh / bỏ tham chiếu |
 
@@ -160,7 +160,7 @@ Chạy ở phiên tương tác có GPU, mở link `gradio.live` in ra ở cell c
 
   Hai stage AV-HuBERT cho kết quả trùng từng giá trị với chạy một mạch (test `test_avhubert_two_stages_match_single_stage`). Nhiều part: mỗi part prepare riêng; notebook train nhận danh sách mọi part (`DATASET_PARTS`) và mọi cache (`CACHES`), mỗi mẫu được tìm ở mọi thư mục cache.
 - **Output Kaggle:** weight và repo upstream nằm ở `/kaggle/temp` (liên kết từ `weights/`, `external/`), worker env ở `/kaggle/temp/vn-av-df-workers`; cuối phiên chỉ giữ phần cần (prepare: cache; train: `runs/`; generate: dataset + plan), kể cả khi prepare lỗi giữa chừng.
-- **Train:** một notebook, 2 GPU chạy song song (`LANES`, `training/lanes.py`): GPU0 BL-A (fine-tune XLS-R; đo part 1 bản cũ 15 phút / epoch, tối đa 100 epoch), GPU1 8 model nhỏ lần lượt. Hết `MAX_HOURS` (11) thì dừng sạch, notebook -2, -3 (Copy & Edit, `PREVIOUS_RUN` = Output phiên trước) train tiếp; test + report tự chạy một lần ở phiên đầu tiên đủ mọi model. Ước lượng cả đội hình (○): part 1 · 1 seed ~10-25 giờ phiên; 3 part · 3 seed ~80-300 giờ GPU. Đo thật bằng `training/05_benchmark.py`.
+- **Train:** 2 notebook song song, mỗi notebook 2 GPU (`LANES`, `training/lanes.py`): `-ta` = BL-A | M1, M2, BL-V (test khi đủ cả 10 model); `-tb` = BL-M, BL-M/sup, `no_trace` | `no_sync`, `no_ref` (`RUN_TEST = False`). Đo part 1: BL-A 9,5 phút / epoch, M1 ~15 phút / epoch. Hết `MAX_HOURS` (11) thì dừng sạch, `-ta-2` / `-tb-2` (Copy & Edit, `PREVIOUS_RUN` = Output phiên trước; `-ta-2` gộp cả `-tb`) train tiếp; test + report tự chạy một lần ở phiên `-ta` đầu tiên đủ cả 10 model. Ước lượng cả đội hình (○): part 1 · 1 seed ~10-25 giờ phiên; 3 part · 3 seed ~80-300 giờ GPU. Đo thật bằng `training/05_benchmark.py`.
 
 ## Kiểm thử
 

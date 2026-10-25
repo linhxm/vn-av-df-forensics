@@ -254,12 +254,30 @@ def test_npr_matches_reference_pixel_definition():
     assert torch.allclose(npr, expected[0]) and torch.all(npr[..., ::2, ::2] == 0)
 
 
-def test_gradient_reversal_flips_gradient():
-    from vn_av_df.training.models import GradReverse
+def test_speaker_confusion_bounded_head_learns_encoder_confused():
+    """M1: loss gây nhầm lẫn trong [0, ln K] kể cả logit cực đoan; đầu người nói học trên feature
+    tách graph (không đẩy ngược vào phần mã hoá); phần mã hoá chỉ nhận gradient gây nhầm lẫn,
+    không cập nhật trọng số đầu."""
+    import math
 
-    x = torch.ones(3, requires_grad=True)
-    GradReverse.apply(x, 0.5).sum().backward()
-    assert torch.allclose(x.grad, torch.full((3,), -0.5))
+    from vn_av_df.training.models import confusion
+
+    assert confusion(torch.zeros(4, 7)).item() == pytest.approx(0.0, abs=1e-6)
+    extreme = torch.tensor([[1e4, -1e4, -1e4, -1e4]])
+    assert confusion(extreme).item() == pytest.approx(math.log(4), rel=1e-4)
+
+    head = torch.nn.Sequential(torch.nn.LayerNorm(8), torch.nn.Linear(8, 5))
+    x = torch.randn(6, 8, requires_grad=True)
+    speaker = torch.arange(6) % 5
+    ce = torch.nn.functional.cross_entropy(head(x.detach()), speaker)
+    frozen = {n: p.detach() for n, p in head.named_parameters()}
+    confuse = confusion(torch.func.functional_call(head, frozen, (x,)))
+    (ce + 0.3 * confuse).backward()
+    assert all(p.grad is not None and p.grad.abs().sum() > 0 for p in head.parameters())
+    # Gradient vào feature chỉ từ loss gây nhầm lẫn: khớp khi tính riêng.
+    y = x.detach().clone().requires_grad_()
+    (0.3 * confusion(torch.func.functional_call(head, frozen, (y,)))).backward()
+    assert torch.allclose(x.grad, y.grad, atol=1e-6)
 
 
 def test_pseudo_fake_replaces_audio_segment_only():
@@ -815,6 +833,43 @@ def test_ssl_aasist_batches_windows_and_keeps_no_graph_in_scores():
     loss = model.loss(batch, out)
     loss.backward()
     assert all(len(x) == 1 for x in out["_logits"])
+
+
+def test_ssl_aasist_class_weight_paper_or_balanced():
+    """BL-A: mặc định "balanced" = 1 − tỉ lệ lớp trong train, cùng nguyên tắc với gốc nên ASVspoof
+    (~90 % giả) cho lại đúng 0,1 / 0,9; "paper" (qua recipe_overrides) = đúng 0,1 / 0,9."""
+    from vn_av_df.training import models as zoo
+    from vn_av_df.training.train import recipe
+
+    tiny = dict(
+        hidden_size=32,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        intermediate_size=64,
+        conv_dim=(16,) * 7,
+        conv_stride=(5, 2, 2, 2, 2, 2, 2),
+        conv_kernel=(10, 3, 3, 3, 3, 2, 2),
+        num_conv_pos_embeddings=16,
+        num_conv_pos_embedding_groups=2,
+    )
+    model = zoo.build("ssl_aasist", dim=8, hidden=16, assets={"xlsr": tiny})
+    base = {"training": {"epochs": 3, "batch_size": 2}}
+    asvspoof = [{"synthetic_audio": True}] * 9 + [{"synthetic_audio": False}]
+    part1 = [{"synthetic_audio": True}] * 37 + [{"synthetic_audio": False}] * 63
+    options = recipe({**base, "recipe_overrides": {"ssl_aasist": {"class_weight": "paper"}}}, model)
+    assert options["class_weight"] == "paper" and options["lr"] == 1e-6
+    model.balance(part1, options)
+    assert model.class_weights == (0.1, 0.9)
+    options = recipe(base, model)
+    assert options["class_weight"] == "balanced"
+    model.balance(asvspoof, options)
+    assert model.class_weights == pytest.approx((0.1, 0.9))
+    model.balance(part1, options)
+    assert model.class_weights == pytest.approx((0.63, 0.37))
+    other = zoo.build("lipinc_v2", dim=8, hidden=16)
+    assert "class_weight" not in recipe(
+        {**base, "recipe_overrides": {"ssl_aasist": {"class_weight": "balanced"}}}, other
+    )
 
 
 def test_cache_lookup_across_part_folders(tmp_path):
