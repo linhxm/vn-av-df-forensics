@@ -794,6 +794,31 @@ def test_max_hours_stops_cleanly_then_resumes(world, tmp_path, monkeypatch):
     assert T.missing_runs(cfg) == []
 
 
+def test_run_lanes_trains_in_subprocesses_and_merges(world, tmp_path, capsys):
+    """Hai lane (mỗi lane một tiến trình train_all, GPU riêng trên Kaggle): xong gộp về runs, tên
+    nhóm W&B không đổi, thư mục lane được xoá."""
+    from vn_av_df.dataset import training_dataset
+    from vn_av_df.training.lanes import lane_dirs, run_lanes
+    from vn_av_df.training.train import missing_runs
+
+    cfg = copy.deepcopy(world["cfg"])
+    cfg["runs"] = str(tmp_path / "runs" / "train_part1_v003")
+    cfg["models"], cfg["seeds"] = ["avh_align_plus", "avh_align_sup"], [7]
+    cfg["training"] = {**cfg["training"], "epochs": 1, "max_epochs": 1, "patience": 9}
+    cfg["wandb"] = None
+    for name in ("avhubert", "mouth", "lipinc", "xlsr", "wave"):
+        (Path(cfg["cache"]) / name).mkdir(parents=True, exist_ok=True)
+    rows, _ = training_dataset(cfg)
+    write_fake_caches(cfg, rows)
+    assert run_lanes(cfg, [["avh_align_plus"], ["avh_align_sup"]]) == [0, 0]
+    out = capsys.readouterr().out
+    assert "[GPU0]" in out and "[GPU1]" in out and "XONG" in out
+    assert missing_runs(cfg) == []
+    assert not any(d.exists() for d in lane_dirs(cfg, 2))
+    records = json.loads((Path(cfg["runs"]) / "provenance.json").read_text(encoding="utf-8"))
+    assert sorted(r["models"][0] for r in records) == ["avh_align_plus", "avh_align_sup"]
+
+
 def test_prepare_retries_failed_samples(world, tmp_path, capsys):
     """Một mẫu lỗi (worker bị giết) không bỏ cả nhóm clip: thử lại ở cuối; vẫn lỗi thì báo rõ."""
     from vn_av_df.common.runtime import write_json

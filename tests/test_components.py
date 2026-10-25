@@ -744,6 +744,79 @@ def test_merge_parallel_train_outputs(tmp_path):
     assert missing_runs(cfg) == ["trihead_v2_seed42"]
 
 
+def test_lanes_move_runs_and_merge_back(tmp_path):
+    """Lane: model dở từ phiên trước chuyển sang lane của nó; xong chuyển về (không chép), nối
+    provenance, xoá thư mục lane."""
+    from vn_av_df.common.runtime import read_json, write_json
+    from vn_av_df.training.lanes import lane_dirs, merge_runs_from_lanes
+
+    runs = tmp_path / "runs" / "train_part1_v003"
+    write_json(runs / "ssl_aasist_seed42/history.json", {"complete": False, "epochs": [{}] * 3})
+    (runs / "ssl_aasist_seed42/last.pt").write_bytes(b"ckpt")
+    cfg = {"runs": str(runs), "seeds": [42]}
+    gpu0, gpu1 = lane_dirs(cfg, 2)
+    assert gpu0.name == "train_part1_v003-gpu0" and gpu0.parent == runs.parent
+    # Lane làm việc: GPU0 train tiếp ssl_aasist (5 epoch, xong), GPU1 train lipinc_v2.
+    gpu0.mkdir()
+    (runs / "ssl_aasist_seed42").rename(gpu0 / "ssl_aasist_seed42")
+    write_json(gpu0 / "ssl_aasist_seed42/history.json", {"complete": True, "epochs": [{}] * 5})
+    write_json(gpu1 / "lipinc_v2_seed42/history.json", {"complete": True, "epochs": [{}] * 2})
+    write_json(gpu0 / "provenance.json", [{"lane": 0}])
+    write_json(gpu1 / "provenance.json", [{"lane": 1}])
+    merge_runs_from_lanes(runs, [gpu0, gpu1])
+    assert not gpu0.exists() and not gpu1.exists()
+    assert read_json(runs / "ssl_aasist_seed42/history.json")["complete"]
+    assert (runs / "ssl_aasist_seed42/last.pt").read_bytes() == b"ckpt"
+    assert read_json(runs / "lipinc_v2_seed42/history.json")["complete"]
+    assert read_json(runs / "provenance.json") == [{"lane": 0}, {"lane": 1}]
+
+
+def test_ssl_aasist_batches_windows_and_keeps_no_graph_in_scores():
+    """BL-A: mọi cửa sổ qua XLS-R + AASIST một lượt (BatchNorm thấy cả batch như gốc). Khi chấm
+    (eval) kết quả trùng cách cũ gọi từng mẫu; điểm frame không giữ graph (rò ~16 MB / bước)."""
+    from vn_av_df.training import models as zoo
+
+    tiny = dict(
+        hidden_size=32,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        intermediate_size=64,
+        conv_dim=(16,) * 7,
+        conv_stride=(5, 2, 2, 2, 2, 2, 2),
+        conv_kernel=(10, 3, 3, 3, 3, 2, 2),
+        num_conv_pos_embeddings=16,
+        num_conv_pos_embedding_groups=2,
+    )
+    torch.manual_seed(0)
+    model = zoo.build("ssl_aasist", dim=8, hidden=16, assets={"xlsr": tiny})
+    lengths, T, step = [180, 101, 60], 180, 640
+    mask = torch.zeros(3, T, dtype=torch.bool)
+    for i, n in enumerate(lengths):
+        mask[i, :n] = True
+    batch = {
+        "wave": torch.randn(3, T, step) * mask[..., None],
+        "mask": mask,
+        "y_audio": torch.tensor([[1.0] * T, [0.0] * T, [1.0] * T]),
+    }
+    model.eval()
+    model.eval_windows = 2  # ép chia khúc
+    with torch.no_grad():
+        out = model(batch)
+        for i, n in enumerate(lengths):
+            flat = batch["wave"][i, :n].reshape(1, -1)
+            last = flat.shape[1] - zoo.SSL_SAMPLES
+            starts = sorted(set(list(range(0, last + 1, model.hop)) + [last])) if last > 0 else [0]
+            windows = torch.cat([model.tile(flat[:, s:], zoo.SSL_SAMPLES) for s in starts])
+            assert torch.allclose(out["_logits"][i], model.score_windows(windows), atol=1e-5)
+    assert len(out["_logits"][0]) > 1  # clip 7,2 s: nhiều cửa sổ
+    model.train()
+    out = model(batch)
+    assert not out["audio"].requires_grad
+    loss = model.loss(batch, out)
+    loss.backward()
+    assert all(len(x) == 1 for x in out["_logits"])
+
+
 def test_cache_lookup_across_part_folders(tmp_path):
     """Mỗi part một dataset cache: mẫu được tìm ở mọi gốc, không chỉ gốc đầu tiên có encoder."""
     from vn_av_df.training.data import cache_file, cache_index

@@ -721,6 +721,7 @@ class SSLAASIST(Model):
         "amp": True,
     }
     hop = 16000
+    eval_windows = 32  # số cửa sổ 4 s mỗi lượt khi chấm (không giữ graph)
 
     def __init__(self, assets=None, **_):
         super().__init__()
@@ -748,8 +749,7 @@ class SSLAASIST(Model):
     def forward(self, batch):
         wave, mask = batch["wave"], batch["mask"]
         B, T, step = wave.shape
-        out = torch.full((B, T), -1e4, device=wave.device)
-        logits_all = []
+        windows, spans = [], []
         for i in range(B):
             n = int(mask[i].nonzero().max()) + 1 if mask[i].any() else T
             flat = wave[i, :n].reshape(1, -1)
@@ -758,10 +758,26 @@ class SSLAASIST(Model):
             else:
                 last = flat.shape[1] - SSL_SAMPLES
                 starts = sorted(set(list(range(0, last + 1, self.hop)) + [last]))
-            windows = torch.cat([self.tile(flat[:, s:], SSL_SAMPLES) for s in starts])
-            logits = self.score_windows(windows)
-            logits_all.append(logits)
-            fake = logits[:, 0] - logits[:, 1]
+            windows += [self.tile(flat[:, s:], SSL_SAMPLES) for s in starts]
+            spans.append((n, starts))
+        # Mọi cửa sổ của batch qua XLS-R + AASIST một lượt, như gốc (model(batch_x) với batch 14):
+        # BatchNorm của AASIST thống kê trên cả batch. Bản cũ gọi từng mẫu (batch 1, 25/10) nên
+        # BatchNorm chỉ thấy một mẫu và GPU chạy kém. Khi chấm: chia khúc `eval_windows` cửa sổ.
+        windows = torch.cat(windows)
+        size = len(windows) if self.training else self.eval_windows
+        logits = torch.cat(
+            [self.score_windows(windows[k : k + size]) for k in range(0, len(windows), size)]
+        )
+        out = torch.full((B, T), -1e4, device=wave.device)
+        logits_all, k = [], 0
+        for i, (n, starts) in enumerate(spans):
+            mine = logits[k : k + len(starts)]
+            k += len(starts)
+            logits_all.append(mine)
+            # Điểm frame chỉ để chấm (loss dùng _logits): detach. Không detach thì phép max ghi
+            # đè vào `out` tạo vòng tham chiếu trong graph autograd không bao giờ backward, giữ
+            # lại ~16 MB mỗi bước (Kaggle 25/10: RAM chính +5 GB / epoch, GPU tràn ở epoch 2).
+            fake = (mine[:, 0] - mine[:, 1]).detach()
             for s, value in zip(starts, fake):
                 a, b = s // step, min(n, math.ceil((s + SSL_SAMPLES) / step))
                 out[i, a:b] = torch.maximum(out[i, a:b], value)

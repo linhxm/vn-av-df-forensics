@@ -249,7 +249,7 @@ def train_one(cfg, name, seed, rows, out):
         cfg,
         "train",
         f"{name}_seed{seed}",
-        group=Path(cfg["runs"]).name,
+        group=cfg.get("run_group") or Path(cfg["runs"]).name,
         config={
             "model": name,
             "seed": seed,
@@ -363,6 +363,9 @@ def train_one(cfg, name, seed, rows, out):
         if scheduler is not None:
             scheduler.step(val_loss)
         metrics = validation_metrics(model, cfg, val_rows, device)
+        if torch.cuda.is_available():
+            # Trả bộ nhớ đệm của lượt chấm (cửa sổ dài, không graph) trước epoch train sau.
+            torch.cuda.empty_cache()
         history["epochs"].append(
             {
                 "epoch": epoch,
@@ -494,7 +497,7 @@ def train_one(cfg, name, seed, rows, out):
         }
     )
     run.artifact(
-        f"model-{Path(cfg['runs']).name}-{name}-seed{seed}",
+        f"model-{cfg.get('run_group') or Path(cfg['runs']).name}-{name}-seed{seed}",
         "model",
         [out / "best.pt", out / "history.json"],
         {"model": name, "seed": seed, "best_epoch": best_epoch, "best_val_loss": best},
@@ -610,12 +613,13 @@ def run_state(folder):
     return (bool(data.get("complete")), len(data.get("epochs", [])))
 
 
-def merge_runs(target, sources):
+def merge_runs(target, sources, move=False):
     """Gộp output train của nhiều notebook (chạy song song, mỗi notebook vài model) vào `target`.
 
     Mỗi <model>_seed<seed>: giữ bản xong, hoặc bản nhiều epoch hơn (kèm last.pt để train tiếp).
     provenance.json nối danh sách (không mất lần chạy nào). Không chép kết quả test
     (test-lock / evaluation / report / gates): test chỉ chạy một lần khi đủ mọi model.
+    move=True: chuyển thay vì chép (lane cùng ổ đĩa; checkpoint BL-A vài GB không bị nhân đôi).
     """
     import shutil
 
@@ -630,7 +634,10 @@ def merge_runs(target, sources):
             mine = target / folder.name
             if run_state(folder) > run_state(mine):
                 shutil.rmtree(mine, ignore_errors=True)
-                shutil.copytree(folder, mine)
+                if move:
+                    shutil.move(str(folder), str(mine))
+                else:
+                    shutil.copytree(folder, mine)
                 taken[folder.name] = source.name
         if (source / "provenance.json").is_file():
             records += [r for r in read_json(source / "provenance.json") if r not in records]

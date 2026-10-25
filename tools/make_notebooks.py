@@ -308,8 +308,9 @@ train = nb(
 
 Cần: dataset đã finalize + cache feature (notebook prepare). Model: `settings.MODELS` (4 baseline + M1, M2) + `settings.ABLATIONS` (3 ablation M1); BL-Ens tính ở bước test.
 Đầu ra: `runs/<RUN_NAME>/` (checkpoint, history, metrics, report.md, gates.json, test-lock.json, provenance.json).
+**Hai GPU (T4 ×2):** `LANES` chia model thành 2 nhóm, mỗi nhóm một GPU, chạy song song trong tiến trình riêng (log có tiền tố `[GPU0]` / `[GPU1]`); xong gộp về `runs/<RUN_NAME>/`. Một GPU thì chạy lần lượt.
 Sau `MAX_HOURS` (mặc định 11) train dừng sạch sau epoch đang chạy (đã lưu `last.pt`), phiên kết thúc bình thường nên Output được lưu. Phiên sau là **notebook khác** (Copy & Edit) attach Output đó vào `PREVIOUS_RUN`; model xong được bỏ qua, model đang dở train tiếp từ epoch sau `last.pt`.
-Chạy song song nhiều notebook: mỗi notebook một nhóm `MODELS`, `RUN_TEST = False`. Notebook cuối đặt `PREVIOUS_RUN` = danh sách Output các notebook đó, `MODELS` đủ: model đã xong được gộp và bỏ qua, test + report chỉ chạy khi đủ mọi model.
+Test + report tự chạy **một lần** ở phiên đầu tiên có đủ mọi model.
 `RUN_BENCHMARK = True`: đo thời gian / bộ nhớ từng model trên cache thật trước (ghi `benchmark.json`), để chia phiên.
 """,
         ),
@@ -318,10 +319,10 @@ Chạy song song nhiều notebook: mỗi notebook một nhóm `MODELS`, `RUN_TES
         (
             "code",
             """
-# Part 1: 3 notebook train song song (T-A, T-B, T-C) rồi 1 notebook cuối (final).
-# Các dòng đánh dấu [T-A] / [T-B] / [T-C] / [final] khác nhau giữa các notebook: bỏ comment đúng dòng.
+# Part 1: một notebook train cả 10 model trên 2 GPU; hết MAX_HOURS thì Copy & Edit thành -2, -3...
+# (attach Output phiên trước) để train tiếp. Các dòng đánh dấu [phiên N] khác nhau giữa các phiên.
 DATASET_PARTS = [Path("/kaggle/input/datasets/linhxm/vn-av-df-data-part1-trim04-fake")]
-# Output của 3 phiên prepare (landmarks, cpu, gpu); mọi notebook train đều attach đủ 3
+# Output của 3 phiên prepare (landmarks, cpu, gpu)
 CACHES = [
     Path("/kaggle/input/notebooks/linhxm/vn-av-df-prepare-part1-landmarks/vn-av-df-forensics/cache/vn-av-df-data"),
     Path("/kaggle/input/notebooks/linhxm/vn-av-df-prepare-part1-cpu/vn-av-df-forensics/cache/vn-av-df-data"),
@@ -330,19 +331,23 @@ CACHES = [
 for c in CACHES:
     assert c.is_dir(), f"Sai đường dẫn: {c}"
 RUNS = "/kaggle/input/notebooks/linhxm/{}/vn-av-df-forensics/runs/train_part1_v003"
-PREVIOUS_RUN = None                                                          # [T-A] [T-B] [T-C]
-# PREVIOUS_RUN = Path(RUNS.format("vn-av-df-train-part1-ta"))               # [T-A-2] train tiếp T-A sau khi hết MAX_HOURS
-# PREVIOUS_RUN = [Path(RUNS.format(n)) for n in (                           # [final] gộp 3 notebook (nhóm nào chạy
-#     "vn-av-df-train-part1-ta", "vn-av-df-train-part1-tb", "vn-av-df-train-part1-tc")]  # lại thì thay tên -2)
-MODELS = ["ssl_aasist"]                                                      # [T-A] BL-A, nặng nhất (~11 phút / epoch)
-# MODELS = ["trihead_v2", "trihead_v2_no_sync", "trihead_v2_no_trace", "trihead_v2_no_ref"]  # [T-B] M1 + 3 ablation
-# MODELS = ["lipinc_v2", "avh_align", "avh_align_sup", "avh_align_plus"]  # [T-C] BL-V, BL-M, BL-M sup, M2
-# MODELS = settings.MODELS + settings.ABLATIONS                            # [final] đủ 10 model, đã train → chỉ gộp
+PREVIOUS_RUN = None                                                  # [phiên 1]
+# PREVIOUS_RUN = Path(RUNS.format("vn-av-df-train-part1"))           # [phiên 2] Output phiên 1
+# PREVIOUS_RUN = Path(RUNS.format("vn-av-df-train-part1-2"))         # [phiên 3] Output phiên 2
+# Danh sách nhiều Output cũng được (gộp), vd. thêm Output một notebook T-C cũ đã train xong.
+# Mỗi lane một GPU, song song: BL-A (nặng nhất, fine-tune XLS-R) một mình GPU0; 8 model nhỏ lần
+# lượt ở GPU1 (model chính trước, ablation sau).
+LANES = [
+    ["ssl_aasist"],
+    ["trihead_v2", "avh_align_plus", "lipinc_v2", "avh_align", "avh_align_sup",
+     "trihead_v2_no_sync", "trihead_v2_no_trace", "trihead_v2_no_ref"],
+]
+MODELS = [m for lane in LANES for m in lane]
 SEEDS = [42]          # đánh giá part 1: một seed; chốt thiết kế rồi chạy [42, 43, 44]
-RUN_TEST = False      # [T-A] [T-B] [T-C]
-# RUN_TEST = True     # [final] test một lần duy nhất + BL-Ens + report.md
+RUN_TEST = True       # test + BL-Ens + report.md một lần, ở phiên đầu tiên đủ mọi model
 RUN_BENCHMARK = False
 MAX_HOURS = 11        # tính từ cell này; dừng sạch (lưu last.pt) trước giới hạn 12 giờ của Kaggle
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # trước lần dùng GPU đầu
 import time
 import torch
 from vn_av_df.dataset import part_selection
@@ -360,8 +365,7 @@ for p in previous:
     assert Path(p).is_dir(), f"Sai đường dẫn: {p}"
 if previous:
     print("Gộp từ phiên trước:", merge_runs(cfg["runs"], previous))
-if RUN_TEST:  # [final]: thiếu model thì dừng ở đây, không train lại trong phiên test
-    assert not missing_runs(cfg), f"Chưa đủ model, dừng trước khi test: {missing_runs(cfg)}"
+print("Còn phải train:", missing_runs(cfg))
 """,
         ),
         (
@@ -372,8 +376,12 @@ print(model_assets(cfg))  # XLS-R gốc (BL-A fine-tune) + checkpoint AVH-Align 
 if RUN_BENCHMARK:
     from vn_av_df.training.benchmark import benchmark
     print(json.dumps(benchmark(cfg, MODELS, steps=10), indent=2))
-from vn_av_df.training.train import train_all
-print(json.dumps(train_all(cfg), indent=2, ensure_ascii=False))
+if torch.cuda.device_count() >= len(LANES) > 1:
+    from vn_av_df.training.lanes import run_lanes
+    run_lanes(cfg, LANES)
+else:
+    from vn_av_df.training.train import train_all
+    print(json.dumps(train_all(cfg), indent=2, ensure_ascii=False))
 """,
         ),
         (

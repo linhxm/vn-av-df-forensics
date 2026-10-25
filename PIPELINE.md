@@ -160,7 +160,7 @@ Chạy ở phiên tương tác có GPU, mở link `gradio.live` in ra ở cell c
 
   Hai stage AV-HuBERT cho kết quả trùng từng giá trị với chạy một mạch (test `test_avhubert_two_stages_match_single_stage`). Nhiều part: mỗi part prepare riêng; notebook train nhận danh sách mọi part (`DATASET_PARTS`) và mọi cache (`CACHES`), mỗi mẫu được tìm ở mọi thư mục cache.
 - **Output Kaggle:** weight và repo upstream nằm ở `/kaggle/temp` (liên kết từ `weights/`, `external/`), worker env ở `/kaggle/temp/vn-av-df-workers`; cuối phiên chỉ giữ phần cần (prepare: cache; train: `runs/`; generate: dataset + plan), kể cả khi prepare lỗi giữa chừng.
-- **Train (○, chưa đo):** cả đội hình 3 seed ~40-90 giờ T4 hoặc ~12-25 giờ RTX 4090; nặng nhất BL-A (fine-tune XLS-R, ~5-15 giờ T4 / seed) và nhóm M1. Đo thật bằng `training/05_benchmark.py` (trên cache) trước khi chia phiên.
+- **Train:** một notebook, 2 GPU chạy song song (`LANES`, `training/lanes.py`): GPU0 BL-A (fine-tune XLS-R; đo part 1 bản cũ 15 phút / epoch, tối đa 100 epoch), GPU1 8 model nhỏ lần lượt. Hết `MAX_HOURS` (11) thì dừng sạch, notebook -2, -3 (Copy & Edit, `PREVIOUS_RUN` = Output phiên trước) train tiếp; test + report tự chạy một lần ở phiên đầu tiên đủ mọi model. Ước lượng cả đội hình (○): part 1 · 1 seed ~10-25 giờ phiên; 3 part · 3 seed ~80-300 giờ GPU. Đo thật bằng `training/05_benchmark.py`.
 
 ## Kiểm thử
 
