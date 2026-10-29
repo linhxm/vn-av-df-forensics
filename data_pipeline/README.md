@@ -11,7 +11,7 @@ Chỉ dùng video của chính mình hoặc đã được phép. Raw, clip và p
 
 ```powershell
 conda activate vn-av-df
-python 00_install.py                     # từ thư mục gốc repo: cài data_pipeline + package chính
+python 00_install.py                     # từ thư mục gốc repo: cài package chính kèm extra [data]
 python data_pipeline/steps/00_setup.py   # tải YuNet, Silero VAD, SFace, WeSpeaker, SyncNet v2
 ```
 
@@ -73,10 +73,10 @@ python steps/09_clean.py pool                 # sau cùng: clip thừa của ng�
 
 Part export nằm ngoài `data/`: `exports/vn-av-df-data/vn-av-df-data-partN/`, xoá bằng `09_clean part N`.
 
-Cấu hình: [configs/data.yaml](configs/data.yaml). Đổi luật cắt sau khi đã có clip sẽ bị chặn (luật cắt phải thống nhất); thử luật mới trên workspace riêng: `$env:VNAV_DATA="data_trial"`.
+Code: [src/vn_av_data/](../src/vn_av_data/) (cùng `src/` với `vn_av_df`); thư mục `data_pipeline/` chỉ còn script bước, cấu hình, checkpoint và dữ liệu. Cấu hình: [configs/data.yaml](configs/data.yaml). Đổi luật cắt sau khi đã có clip sẽ bị chặn (luật cắt phải thống nhất); thử luật mới trên workspace riêng: `$env:VNAV_DATA="data_trial"`.
 
 ## Kiểm thử
 
 ```powershell
-python -m pytest data_pipeline/tests
+python -m pytest tests/data_pipeline
 ```

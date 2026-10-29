@@ -44,8 +44,8 @@ for name in ("weights", "external"):
     if not (ROOT / name).exists():
         (ROOT / name).symlink_to(Path("/kaggle/temp/vn-av-df-heavy") / name, target_is_directory=True)
 sys.path.insert(0, str(ROOT))
-subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(ROOT / "data_pipeline"),
-                "-e", str(ROOT) + "[EXTRA]"], check=True)
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(ROOT) + "[data,EXTRA]"],
+               check=True)
 import settings
 settings.bootstrap()
 """

@@ -23,7 +23,6 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from vn_av_data.contract import validate_bundle
-
 from vn_av_df.common.runtime import fingerprint, write_json
 from vn_av_df.data.media import probe
 from vn_av_df.generation.cells import LIPSYNC_CELLS

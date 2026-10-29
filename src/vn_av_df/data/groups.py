@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 from vn_av_data.data.split import SPLITS, connected_groups, identity_list, identity_nodes
-
 from vn_av_df.common.runtime import atomic_bytes
 
 __all__ = [

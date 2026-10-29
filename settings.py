@@ -195,4 +195,4 @@ def config():
 def bootstrap():
     sys.dont_write_bytecode = True
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
-    sys.path[:0] = [str(ROOT / "src"), str(ROOT / "data_pipeline/src")]
+    sys.path[:0] = [str(ROOT / "src")]

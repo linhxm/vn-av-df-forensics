@@ -165,7 +165,7 @@ Chạy ở phiên tương tác có GPU, mở link `gradio.live` in ra ở cell c
 ## Kiểm thử
 
 ```bash
-python -m pytest            # tests/ (pipeline tổng hợp end-to-end) + data_pipeline/tests
+python -m pytest            # tests/ (pipeline tổng hợp end-to-end) + tests/data_pipeline
 python -m ruff check .
 ```
 

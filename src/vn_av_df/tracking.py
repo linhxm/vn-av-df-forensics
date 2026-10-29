@@ -11,6 +11,7 @@ phiên sau mở lại đúng run (resume) khi chạy tiếp sau khi bị ngắt.
 
 import math
 import os
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -71,10 +72,15 @@ class Run:
         if not self.active:
             return
         art = self.wandb.Artifact(name, type=kind, metadata=metadata or {})
+        paths = [Path(p) for p in paths]
+        # Nhiều model cùng tên file (metrics.json): mọi file trùng tên đặt dưới thư mục model.
+        # Thiếu điều này W&B báo "Cannot add the same path twice" (test part 1, 26/10).
+        names = Counter(p.name for p in paths if p.is_file())
         added = False
-        for path in map(Path, paths):
+        for path in paths:
             if path.is_file():
-                art.add_file(str(path))
+                key = path.name if names[path.name] == 1 else f"{path.parent.name}/{path.name}"
+                art.add_file(str(path), name=key)
                 added = True
             elif path.is_dir():
                 art.add_dir(str(path), name=path.name)

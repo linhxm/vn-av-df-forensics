@@ -11,7 +11,7 @@ from vn_av_data.data.media import ffmpeg
 from vn_av_data.ledger import Ledger
 from vn_av_data.workspace import Workspace
 
-CONFIG = Path(__file__).resolve().parents[1] / "configs/data.yaml"
+CONFIG = Path(__file__).resolve().parents[2] / "data_pipeline/configs/data.yaml"
 
 
 @pytest.fixture

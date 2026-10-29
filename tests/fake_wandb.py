@@ -29,8 +29,14 @@ class Plot:
 class Artifact:
     def __init__(self, name, type, metadata=None):
         self.name, self.type, self.metadata, self.files = name, type, metadata, []
+        self.names = set()
 
-    def add_file(self, path):
+    def add_file(self, path, name=None):
+        # Như wandb thật: hai file cùng tên trong artifact thì lỗi (test part 1, 26/10).
+        name = name or path.replace("\\", "/").rsplit("/", 1)[-1]
+        if name in self.names:
+            raise ValueError(f"Cannot add the same path twice: {name!r}")
+        self.names.add(name)
         self.files.append(path)
 
     def add_dir(self, path, name=None):

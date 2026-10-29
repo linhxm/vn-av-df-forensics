@@ -38,14 +38,15 @@ Evaluation covers four tasks (ai / visual / audio / mismatch), per-cell, per-gen
 
 | Folder | Contents |
 |---|---|
-| `data_pipeline/` | Real data: plan → download → cut → identify → review → parts → export → archive |
+| `data_pipeline/` | Real data workspace: step scripts (plan → download → cut → identify → review → parts → export → archive), `configs/`, `checkpoints/`, `data/` (ledger, raw, pool), `exports/` |
 | `generation/` | Steps 00-04: setup, plan, voice session, lip-sync sessions, finalize |
 | `training/` | Steps 00-04: encoder setup, feature extraction, train, evaluate, report |
 | `notebooks/` | `generate`, `prepare`, `train`, `demo` (Kaggle; W&B logging in `prepare` and `train`) |
 | `src/vn_av_df/` | `generation/` (cells, plan, voice, generator adapters), `training/` (data, models, train, evaluate, report), `features/`, `demo/` (make a fake from a real video, analyze a video; Gradio), `tracking.py` (W&B) |
+| `src/vn_av_data/` | Real data pipeline code (ledger, cut, face / VAD / SyncNet / voice, review page, split, export), run by `data_pipeline/steps/` |
 | `docs/` | Vietnamese design notes with rationale and sources: `v003_data.md` (real data pipeline, people and clip counts, audio-visual offset), `v003_generation.md` (six cells, generators and voices, counts per part), `v003_model.md` (methods, baselines, proposed models, evaluation) |
 | `environments/` | Isolated worker environments for generators, TTS and AV-HuBERT |
-| `tests/` | Synthetic end-to-end and component tests |
+| `tests/` | Synthetic end-to-end and component tests; `tests/data_pipeline/` for the real data pipeline |
 
 How to run each step is described in **[PIPELINE.md](PIPELINE.md)** (written in Vietnamese).
 

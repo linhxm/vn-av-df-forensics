@@ -6,7 +6,7 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 from settings import DATA, DATASET_NAME, EXPORTS, ROOT
 
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT.parent / "src"))
 from vn_av_data.cli import entrypoint
 
 
