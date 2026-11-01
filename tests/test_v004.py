@@ -480,3 +480,44 @@ def test_log_setup_records_session_to_wandb_and_disk(tmp_path, monkeypatch):
     target = tmp_path / "merged"
     merge_runs(target, [runs])
     assert (target / "setup" / "train-G1-x" / "setup.json").is_file()
+
+
+def test_mismatch_intervals_follow_labels():
+    from vn_av_df.training.evaluate import intervals, localization
+
+    sham = {"cell": "sham", "kind": "partial", "av_mismatch_intervals": [[1.0, 2.0]]}
+    assert intervals(sham, "mismatch") == [(1.0, 2.0)]
+    real = {"cell": "real", "kind": "full", "av_mismatch_intervals": []}
+    assert intervals(real, "mismatch") == []
+
+    def lipsync(state):
+        info = {"mode": "measured", "gen_intervals": [[0.4, 1.2]]}
+        return {
+            "cell": "donor",
+            "kind": "partial",
+            "av_mismatch_intervals": [],
+            "_mismatch": info,
+        }, state
+
+    import vn_av_df.training.sync_labels as SLmod
+
+    original = SLmod.generated_state
+    try:
+        for state, expected in ((1, [(0.4, 1.2)]), (0, []), (None, None)):
+            row, _ = lipsync(state)
+            SLmod.generated_state = lambda info, k, s=state: s
+            assert intervals(row, "mismatch") == expected
+    finally:
+        SLmod.generated_state = original
+
+    class OneHead:
+        heads = {"mismatch": "mismatch"}
+
+    n = 100
+    score = np.zeros(n)
+    score[25:50] = 1.0  # đúng đoạn 1,0-2,0 s
+    predictions = {"s": {"frames": {"mismatch": score}}}
+    row = {**sham, "sample_id": "s"}
+    out = localization(OneHead(), [row], predictions, "mismatch")
+    assert out["clips"] == 1 and out["auc_inside_vs_outside"] == pytest.approx(1.0)
+    assert out["by_cell"]["sham"]["clips"] == 1

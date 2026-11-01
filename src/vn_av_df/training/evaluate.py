@@ -201,27 +201,55 @@ def frame_head(model, prediction, task):
     return None
 
 
+INTERVAL_KEY = {
+    "visual": "visual_fake_intervals",
+    "audio": "audio_fake_intervals",
+    "ai": "fake_intervals",
+}
+
+
+def intervals(row, task):
+    """Đoạn (giây) mang nhãn 1 của tác vụ; None = không xác định (bỏ khỏi phép đo định vị).
+
+    mismatch: đoạn lệch theo cách tạo (av_mismatch_intervals: sham, voice, tiếng thay) + đoạn môi
+    do generator vẽ nếu số đo tại lag 0 nói lệch (nhãn v004, training/sync_labels.py); số đo không
+    chắc (mask) → None. Ngoài các đoạn đó là 0 (real ở độ trượt 0)."""
+    if task != "mismatch":
+        return list(row.get(INTERVAL_KEY[task]) or [])
+    spans = [tuple(s) for s in row.get("av_mismatch_intervals") or []]
+    info = row.get("_mismatch")
+    gen = (info or {}).get("gen_intervals") or []
+    if info is not None and gen:
+        from vn_av_df.training.sync_labels import generated_state
+
+        state = generated_state(info, 0)
+        if state is None:
+            return None
+        if state:
+            spans += [tuple(s) for s in gen]
+    return spans
+
+
 def localization(model, rows, predictions, task):
-    """Partial: AUC frame trong / ngoài đoạn (cùng clip) và ô sát chỗ nối vs ô giữa đoạn."""
-    key = {
-        "visual": "visual_fake_intervals",
-        "audio": "audio_fake_intervals",
-        "ai": "fake_intervals",
-    }[task]
+    """Partial: AUC frame trong / ngoài đoạn (cùng clip) và ô sát chỗ nối vs ô giữa đoạn; thêm
+    AUC trong / ngoài theo ô (sham, voice, source, donor, both)."""
     inside_auc, top_inside, edge, middle = [], [], [], []
+    by_cell = defaultdict(list)
     for row in rows:
-        if row.get("kind") != "partial" or not row.get(key):
+        spans = intervals(row, task) if row.get("kind") == "partial" else None
+        if not spans:
             continue
         scores = frame_head(model, predictions[row["sample_id"]], task)
         if scores is None:
             continue
         n = len(scores)
         truth = np.zeros(n, bool)
-        for a, b in row[key]:
+        for a, b in spans:
             truth[int(round(a * 25)) : int(round(b * 25))] = True
         if truth.all() or not truth.any():
             continue
         inside_auc.append(roc_auc_score(truth, scores))
+        by_cell[row.get("cell")].append(inside_auc[-1])
         top_inside.append(bool(truth[int(np.argmax(scores))]))
         idx = np.flatnonzero(truth)
         near = np.zeros(n, bool)
@@ -238,6 +266,10 @@ def localization(model, rows, predictions, task):
         "top_frame_inside": float(np.mean(top_inside)),
         "mean_score_edge": float(np.mean(edge)),
         "mean_score_middle": float(np.mean(middle)) if middle else None,
+        "by_cell": {
+            cell: {"clips": len(v), "auc_inside_vs_outside": float(np.mean(v))}
+            for cell, v in sorted(by_cell.items(), key=lambda kv: str(kv[0]))
+        },
     }
 
 
@@ -275,18 +307,17 @@ def proposals(scores, step=0.04, levels=(50, 60, 70, 80, 90, 95), keep=10):
 
 def temporal_metrics(model, rows, predictions, task):
     """Định vị kiểu LAV-DF / AV-Deepfake1M: AP theo IoU (0,5 / 0,75 / 0,95) trên mọi video test
-    (video real chỉ góp báo nhầm) và AR@N (recall với N đoạn đầu, trung bình IoU 0,5-0,95)."""
-    key = {
-        "visual": "visual_fake_intervals",
-        "audio": "audio_fake_intervals",
-        "ai": "fake_intervals",
-    }[task]
+    (video real chỉ góp báo nhầm) và AR@N (recall với N đoạn đầu, trung bình IoU 0,5-0,95).
+    mismatch: video có nhãn không xác định (mask) bị bỏ."""
     pool, truth = [], {}
     for row in rows:
         scores = frame_head(model, predictions[row["sample_id"]], task)
         if scores is None:
             return None
-        truth[row["sample_id"]] = [tuple(span) for span in row.get(key) or []]
+        spans = intervals(row, task)
+        if spans is None:
+            continue
+        truth[row["sample_id"]] = [tuple(span) for span in spans]
         for score, a, b in proposals(scores):
             pool.append((score, row["sample_id"], a, b))
     total = sum(len(v) for v in truth.values())
@@ -557,7 +588,7 @@ def evaluate_model(cfg, model_dir, rows, device, seen):
         result = task_metrics(cfg, val_rows, test_rows, val_scores, test_scores, task, seen)
         if result is None:
             continue
-        if model.frame_level and task != "mismatch":
+        if model.frame_level:  # v004: cả mismatch (đoạn lệch tiếng-môi)
             result["localization"] = localization(model, test_rows, test_pred, task)
             result["temporal"] = temporal_metrics(model, test_rows, test_pred, task)
         metrics["tasks"][task] = result

@@ -168,8 +168,8 @@ def build_report(cfg):
         "## AUC test (mean ± std theo seed)",
         "",
         "| Model | ai | ai (cân theo người) | visual | audio | mismatch | ai (ref-norm) "
-        "| định vị visual: ô cao nhất trong đoạn |",
-        "|---|---|---|---|---|---|---|---|",
+        "| định vị visual: ô cao nhất trong đoạn | định vị mismatch: AUC trong / ngoài đoạn |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for name, items in sorted(by_model.items()):
 
@@ -179,17 +179,20 @@ def build_report(cfg):
         ref = fmt(
             [m["tasks"].get("ai", {}).get("ref_norm", {}).get("auc_ref_norm") for _, m in items]
         )
-        loc = fmt(
-            [
-                ((m["tasks"].get("visual", {}) or {}).get("localization") or {}).get(
-                    "top_frame_inside"
-                )
-                for _, m in items
-            ]
-        )
+
+        def located(task, key):
+            return fmt(
+                [
+                    ((m["tasks"].get(task, {}) or {}).get("localization") or {}).get(key)
+                    for _, m in items
+                ]
+            )
+
+        loc = located("visual", "top_frame_inside")
+        loc_mismatch = located("mismatch", "auc_inside_vs_outside")
         lines.append(
             f"| {name} | {col('ai')} | {col('ai', 'auc_speaker_balanced')} | {col('visual')} "
-            f"| {col('audio')} | {col('mismatch')} | {ref} | {loc} |"
+            f"| {col('audio')} | {col('mismatch')} | {ref} | {loc} | {loc_mismatch} |"
         )
     rows, _ = training_dataset(cfg)
     test_rows = [r for r in rows if r["split"] == "test"]
