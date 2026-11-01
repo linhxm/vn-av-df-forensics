@@ -585,6 +585,8 @@ def test_every_model_forward_backward():
         "lips": torch.randn(B, T, 20, 2) * 0.1,
         "pose": torch.randn(B, T, 3) * 0.1,
         "wave": torch.randn(B, T, 640) * 0.1,
+        "prosody": torch.randn(B, T, 5),
+        "head": torch.randn(B, T, 5),
         "lipinc": torch.randint(0, 255, (B, 8, 64, 144, 3), dtype=torch.uint8),
         "speaker": torch.tensor([0, 1]),
         "mask": mask,
@@ -604,7 +606,7 @@ def test_every_model_forward_backward():
         batch[key][1, 10:30] = 1
     batch["refs"] = {
         k: batch[k][:, None].repeat(1, 1, *([1] * (batch[k].dim() - 1)))[:, :, :40]
-        for k in ("a", "v", "ssl", "mouth", "lips", "pose")
+        for k in ("a", "v", "ssl", "mouth", "lips", "pose", "prosody", "head")  # như data.collate
     }
     batch["refs"]["valid"] = torch.ones(B, 1, 40, dtype=torch.bool)
     batch["ref_count"] = torch.tensor([1, 1])
@@ -672,9 +674,13 @@ def test_train_evaluate_report_smoke(world):
     assert 0 <= point["tpr"] <= 1 and set(point["base_rates"]) == {"0.5", "0.1", "0.01"}
     assert "real" in ai["fpr_by_cell"]
     assert set(ai["temporal"]) >= {"ap@0.5", "ap@0.75", "ap@0.95", "ar@1", "ar@5", "ar@10"}
-    with pytest.raises(ValueError, match="already run"):
-        torch.save({"x": 1}, Path(cfg["runs"]) / "avh_align_plus_seed42/best.pt")
-        evaluate_all(cfg)
+    # v004: mỗi checkpoint chấm một lần; gọi lại (cả lượt một model) thì đọc lại, không chấm thêm
+    log = json.loads((Path(cfg["runs"]) / "test-log.json").read_text(encoding="utf-8"))
+    assert {e["model"] for e in log} == {f"{m}_seed42" for m in cfg["models"]}
+    assert all(e["test_use"] == 1 for e in log)
+    again = evaluate_all(cfg, models=["trihead_v2"])
+    assert again["trihead_v2_seed42"] == results["trihead_v2_seed42"]
+    assert json.loads((Path(cfg["runs"]) / "test-log.json").read_text(encoding="utf-8")) == log
     built = build_report(cfg)
     text = Path(built["report"]).read_text(encoding="utf-8")
     assert "| trihead_v2 |" in text and "| bl_ens |" in text and "Cổng" in text
@@ -706,6 +712,82 @@ def test_train_evaluate_report_smoke(world):
     evaluation = fake.by_type("evaluate")[-1]
     assert {"test/summary", "test/breakdown", "test/roc_ai"} <= evaluation.keys()
     assert {"report/gates", "report/auc_mean_std"} <= fake.by_type("report")[0].keys()
+
+
+def test_measured_mismatch_labels_train_evaluate_report(world, tmp_path):
+    """v004 đầu-cuối: đường cong AV-HuBERT từ cache + SyncNet (file) → nhãn 0 / 1 / mask →
+    train M3, M2, BL-M/sup, BL-A2 → evaluate (BL-Ens-AV, phép thử trễ) → report."""
+    from vn_av_df.dataset import selected_parts, training_dataset
+    from vn_av_df.training.evaluate import evaluate_all
+    from vn_av_df.training.prepare import ORDER, encoders_for
+    from vn_av_df.training.report import build_report
+    from vn_av_df.training.sync_labels import FILES, avhubert_profiles
+    from vn_av_df.training.train import train_all
+
+    cfg = copy.deepcopy(world["cfg"])
+    cfg["cache"], cfg["runs"] = str(tmp_path / "cache"), str(tmp_path / "runs")
+    cfg["models"] = ["trihead_v4", "avh_align_plus", "avh_align_sup", "xlsr_frozen"]
+    cfg["training"]["audio_lag_aug"] = [-2, 5]
+    assert set(encoders_for(cfg["models"])) == {"landmarks", "avhubert", "mouth", "xlsr", "wave"}
+    for name in ORDER:  # write_fake_caches ghi mọi encoder
+        (Path(cfg["cache"]) / name).mkdir(parents=True, exist_ok=True)
+    rows, _ = training_dataset(cfg, labels=False)
+    write_fake_caches(cfg, rows)
+    assert avhubert_profiles(cfg, rows)["samples"] == len(rows)
+    profile = json.loads(
+        (Path(cfg["cache"]) / "avhubert" / FILES["avhubert"]).read_text(encoding="utf-8")
+    )
+    # SyncNet giả: khoảng cách = 1 − cos AV-HuBERT (đủ để kiểm đường đi của dữ liệu); đặt cạnh
+    # manifest của part như training/01a_syncnet.py.
+    (_, part), *_ = selected_parts(cfg)
+    syncnet = Path(part) / FILES["syncnet"]
+    syncnet.write_text(
+        json.dumps(
+            {
+                "convention": "index i <-> audio lag i - 15",
+                "samples": {
+                    sid: {"dist": [None if c is None else 1 - c for c in entry["cos"]]}
+                    for sid, entry in profile["samples"].items()
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        cfg["mismatch_labels"] = {"mode": "measured", "min_reals": 1}
+        rows, selection = training_dataset(cfg)
+        assert selection["mismatch_labels"]["mode"] == "measured"
+        assert all("_mismatch" in r for r in rows)
+        assert {r["_mismatch_eval"] for r in rows if r["cell"] == "sham"} == {1}
+        report = train_all(cfg)
+        assert set(report) == {f"{m}_seed42" for m in cfg["models"]}
+        labels = json.loads((Path(cfg["runs"]) / "sync_labels.json").read_text(encoding="utf-8"))
+        assert {
+            "counts",
+            "thresholds",
+            "real_train_by_shift",
+            "lag0_audit_avhubert",
+        } <= labels.keys()
+        results = evaluate_all(cfg)
+        assert set(results["bl_ens_av_seed42"]) == {"ai", "visual", "audio"}
+        metrics = json.loads(
+            (Path(cfg["runs"]) / "trihead_v4_seed42/metrics.json").read_text(encoding="utf-8")
+        )
+        shift = metrics["shift_robustness"]
+        assert {"lag_2", "lag_3", "lag_4"} <= shift.keys()
+        assert 0 <= shift["lag_3"]["fpr"] <= 1 and "mismatch_auc_vs_unshifted" in shift["lag_3"]
+        xlsr = json.loads(
+            (Path(cfg["runs"]) / "xlsr_frozen_seed42/metrics.json").read_text(encoding="utf-8")
+        )
+        assert "shift_robustness" not in xlsr  # chỉ tiếng: trượt tiếng không có nghĩa
+        kinds = metrics["manipulation_type"]  # đầu loại thao tác của M3
+        assert kinds["classes"][0] == "real" and 0 <= kinds["accuracy"] <= 1
+        assert sum(map(sum, kinds["confusion"])) == kinds["samples"]
+        text = Path(build_report(cfg)["report"]).read_text(encoding="utf-8")
+        assert "Phép thử trễ" in text and "| trihead_v4 |" in text
+        assert "Đầu loại thao tác: trihead_v4" in text
+    finally:
+        syncnet.unlink(missing_ok=True)  # world dùng chung cho các test khác
 
 
 def test_resume_after_interruption_and_provenance(world, tmp_path, monkeypatch):
@@ -806,6 +888,7 @@ def test_run_lanes_trains_in_subprocesses_and_merges(world, tmp_path, capsys):
     cfg["models"], cfg["seeds"] = ["avh_align_plus", "avh_align_sup"], [7]
     cfg["training"] = {**cfg["training"], "epochs": 1, "max_epochs": 1, "patience": 9}
     cfg["wandb"] = None
+    cfg["test_after_train"] = True  # v004: mỗi lane test ngay model vừa xong
     for name in ("avhubert", "mouth", "lipinc", "xlsr", "wave"):
         (Path(cfg["cache"]) / name).mkdir(parents=True, exist_ok=True)
     rows, _ = training_dataset(cfg)
@@ -813,10 +896,21 @@ def test_run_lanes_trains_in_subprocesses_and_merges(world, tmp_path, capsys):
     assert run_lanes(cfg, [["avh_align_plus"], ["avh_align_sup"]]) == [0, 0]
     out = capsys.readouterr().out
     assert "[GPU0]" in out and "[GPU1]" in out and "XONG" in out
+    assert "[GPU0] === TEST" in out and "[GPU1] === TEST" in out
     assert missing_runs(cfg) == []
     assert not any(d.exists() for d in lane_dirs(cfg, 2))
     records = json.loads((Path(cfg["runs"]) / "provenance.json").read_text(encoding="utf-8"))
     assert sorted(r["models"][0] for r in records) == ["avh_align_plus", "avh_align_sup"]
+    runs = Path(cfg["runs"])
+    log = json.loads((runs / "test-log.json").read_text(encoding="utf-8"))
+    assert sorted(e["model"] for e in log) == ["avh_align_plus_seed7", "avh_align_sup_seed7"]
+    assert all((runs / f"{m}_seed7" / "metrics.json").is_file() for m in cfg["models"])
+    # gộp ở notebook: đọc lại kết quả đã chấm trong lane, không chấm thêm
+    from vn_av_df.training.evaluate import evaluate_all
+
+    cfg["test_after_train"] = False
+    assert set(evaluate_all(cfg)) >= {"avh_align_plus_seed7", "avh_align_sup_seed7"}
+    assert json.loads((runs / "test-log.json").read_text(encoding="utf-8")) == log
 
 
 def test_prepare_retries_failed_samples(world, tmp_path, capsys):

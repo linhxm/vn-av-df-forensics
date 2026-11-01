@@ -1,7 +1,7 @@
-"""Log W&B cho quá trình train v003: trích feature, train, test, báo cáo (bằng chứng cho báo cáo).
+"""Log W&B: setup từng phiên (setup_log.py), trích feature, train, test, báo cáo (bằng chứng).
 
 Bật bằng cfg["wandb"] (notebook prepare / train đặt; project để private):
-    {"project": "vn-av-df-v003", "entity": None, "mode": "online"}
+    {"project": "vn-av-df-v004", "entity": None, "mode": "online"}
 Không đặt cfg["wandb"] thì mọi hàm ở đây không làm gì: local và test không cần cài wandb.
 Không đẩy ảnh / video người thật; chỉ số liệu, bảng, biểu đồ và file kết quả.
 
@@ -19,7 +19,7 @@ import numpy as np
 
 from vn_av_df.common.runtime import read_json, write_json
 
-PROJECT = "vn-av-df-v003"
+PROJECT = "vn-av-df-v004"
 
 
 class Run:
@@ -139,9 +139,9 @@ def open_run(cfg, job_type, name, group=None, config=None, folder=None, tags=())
 
 
 # ---------------------------------------------------------------- nội dung dùng chung
-def lag_profile(a, v, valid, max_lag=15):
-    """Độ lệch tốt nhất giữa đặc trưng tiếng và hình (cos trung bình theo độ lệch, như
-    SpeechForensics); dương = tiếng trễ. Trả (lag, độ nhọn = max − median)."""
+def lag_curve(a, v, valid, max_lag=15):
+    """Cos trung bình giữa tiếng frame t và hình frame t − δ, δ ∈ [−max_lag, max_lag] (như
+    SpeechForensics); chỉ số i ↔ tiếng trễ δ = i − max_lag frame. NaN khi < 10 frame chồng lên."""
     a = a / (np.linalg.norm(a, axis=1, keepdims=True) + 1e-8)
     v = v / (np.linalg.norm(v, axis=1, keepdims=True) + 1e-8)
     n = len(a)
@@ -154,7 +154,13 @@ def lag_profile(a, v, valid, max_lag=15):
         keep = valid[lo:hi] & valid[lo - lag : hi - lag]
         sims = (a[lo:hi] * v[lo - lag : hi - lag]).sum(1)
         scores.append(float(sims[keep].mean()) if keep.any() else np.nan)
-    scores = np.asarray(scores)
+    return np.asarray(scores)
+
+
+def lag_profile(a, v, valid, max_lag=15):
+    """Độ lệch tốt nhất giữa đặc trưng tiếng và hình; dương = tiếng trễ. Trả (lag, độ nhọn =
+    max − median)."""
+    scores = lag_curve(a, v, valid, max_lag)
     if np.all(np.isnan(scores)):
         return None, None
     best = int(np.nanargmax(scores))

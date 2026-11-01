@@ -28,13 +28,41 @@ GATES = [
     ("trihead_v2", "trihead_v2_no_trace", "visual", "nhánh trace giúp visual", None),
     ("avh_align_plus", "avh_align_sup", "mismatch", "M2 hơn BL-M/sup (cùng dữ liệu)", None),
     ("avh_align_plus", "avh_align", "mismatch", "M2 hơn BL-M", None),
+    # v004 (RESEARCH_WORKLOG/v004_model.md §7, đặt trước khi train lại); thiếu model thì bỏ qua.
+    ("trihead_v4", "trihead_v2", "ai", "V1 M3 không kém M1 (≥ −0,01)", None),
+    ("trihead_v4", "bl_ens_av", "ai", "V2 M3 hơn ghép muộn BL-M/sup + BL-A2", None),
+    ("trihead_v4", "avh_align_plus", "ai", "V3 M3 hơn M2", None),
+    ("trihead_v4", "trihead_v4_no_phi", "ai", "V4 kênh Φ giúp (≥ 0,01)", None),
+    ("trihead_v4_ref", "trihead_v4", "ai", "V5 tham chiếu người giúp (≥ 0,01)", None),
+    ("trihead_v4", "xlsr_frozen", "audio", "V6 M3 hơn BL-A2, giọng chưa thấy", "unseen_voice"),
+    ("trihead_v4", "avh_align", "mismatch", "V7 M3 hơn BL-M ở mismatch", None),
+    ("trihead_v4", "trihead_v4_abs", "ai", "V8 tách luồng tương đối không làm kém (≥ −0,01)", None),
+    ("trihead_v4", "trihead_v4_no_prosody", "ai", "V9 nhánh ngữ điệu ↔ đầu giúp (≥ 0,01)", None),
+    (
+        "trihead_v4",
+        "trihead_v4_no_prosody",
+        "visual",
+        "V10 nhánh ngữ điệu ↔ đầu giúp ở ⑤ donor",
+        "cell:donor",
+    ),
+    (
+        "trihead_v4",
+        "trihead_v4_no_prosody",
+        "mismatch",
+        "V11 nhánh ngữ điệu ↔ đầu giúp mismatch",
+        None,
+    ),
 ]
 
 
 def subset(rows, task, kind, seen):
-    """Giữ mẫu âm tính + mẫu dương thuộc generator / giọng chưa thấy khi train."""
+    """Giữ mẫu âm tính + mẫu dương thuộc generator / giọng chưa thấy khi train; "cell:<ô>" giữ mẫu
+    âm tính + mẫu dương của một ô (vd. cell:donor cho nhánh ngữ điệu ↔ đầu của M3)."""
     if kind is None:
         return rows
+    if kind.startswith("cell:"):
+        cell = kind.split(":", 1)[1]
+        return [r for r in rows if not target(r, task) or r.get("cell") == cell]
     key, known = (
         ("generator", seen["generators"])
         if kind == "unseen_generator"
@@ -61,7 +89,8 @@ def paired_delta(rows, first, second, task, replicates=1000, seed=42):
     common = [
         r
         for r in rows
-        if r["sample_id"] in first
+        if target(r, task) is not None  # v004: mismatch mask không vào phép so
+        and r["sample_id"] in first
         and r["sample_id"] in second
         and np.isfinite(first[r["sample_id"]])
         and np.isfinite(second[r["sample_id"]])
@@ -132,7 +161,7 @@ def build_report(cfg):
         "không gồm biến động do khởi tạo / thứ tự dữ liệu"
         + (" (chạy 1 seed)." if seeds == [1] else "."),
         "- Không dò siêu tham số: baseline theo công thức của code gốc, M1 / M2 đặt trước; "
-        "checkpoint và ngưỡng chọn trên validation; test mở một lần (`test-lock.json`).",
+        "checkpoint và ngưỡng chọn trên validation; số lần mỗi model dùng test: `test-log.json`.",
         "- Môi trường, commit, dữ liệu, cache: `provenance.json`; thời gian từng lần train: "
         "`<model>_seed<seed>/history.json`.",
         "",
@@ -231,6 +260,44 @@ def build_report(cfg):
                 temporal.get(k) for k in ("ap@0.5", "ap@0.75", "ap@0.95", "ar@1", "ar@5", "ar@10")
             ]
             lines.append(f"| {name} | " + " | ".join(num(v) for v in values) + " |")
+    shift_rows = []
+    for name, items in sorted(by_model.items()):
+        shift = sorted(items)[0][1].get("shift_robustness")
+        if shift:
+            cells = [num(shift.get("fpr_lag_0"))]
+            for k in (2, 3, 4):
+                entry = shift.get(f"lag_{k}") or {}
+                cells += [num(entry.get("fpr")), num(entry.get("auc_vs_unshifted"))]
+            shift_rows.append(f"| {name} | " + " | ".join(cells) + " |")
+    if shift_rows:
+        lines += [
+            "",
+            "## Phép thử trễ: real test bị trượt tiếng k frame (AI = 0; seed đầu)",
+            "",
+            "Báo nhầm ở ngưỡng FPR 5 % của real validation; AUC real trượt so với real gốc "
+            "(0,5 = không bị lừa bởi độ trễ).",
+            "",
+            "| Model | báo nhầm k=0 | k=2 | AUC k=2 | k=3 | AUC k=3 | k=4 | AUC k=4 |",
+            "|---|---|---|---|---|---|---|---|",
+            *shift_rows,
+        ]
+    for name, items in sorted(by_model.items()):
+        kinds = sorted(items)[0][1].get("manipulation_type")
+        if kinds:
+            recall = ", ".join(f"{c} {v:.2f}" for c, v in kinds["recall"].items())
+            lines += [
+                "",
+                f"## Đầu loại thao tác: {name} (seed đầu, test)",
+                "",
+                f"Độ chính xác {kinds['accuracy']:.3f} trên {kinds['samples']} mẫu; recall {recall}.",
+                "",
+                "| ô thật \\ dự đoán | " + " | ".join(kinds["classes"]) + " |",
+                "|---" * (len(kinds["classes"]) + 1) + "|",
+                *[
+                    f"| {c} | " + " | ".join(str(x) for x in row) + " |"
+                    for c, row in zip(kinds["classes"], kinds["confusion"])
+                ],
+            ]
     lines += ["", "## Phân rã (seed đầu tiên của mỗi model, tác vụ ai)", ""]
     for name, items in sorted(by_model.items()):
         folder, metrics = sorted(items)[0]

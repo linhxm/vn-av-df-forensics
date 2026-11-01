@@ -192,8 +192,9 @@ def selected_parts(cfg):
     return sorted(result, key=lambda item: item[0])
 
 
-def training_dataset(cfg, verify_media=False):
-    """Ghép manifest trong RAM; giữ video ở từng part, kiểm leakage trên toàn lựa chọn."""
+def training_dataset(cfg, verify_media=False, labels=True):
+    """Ghép manifest trong RAM; giữ video ở từng part, kiểm leakage trên toàn lựa chọn.
+    labels=False: bỏ bước gắn nhãn mismatch đo được (prepare chạy trước khi có số đo)."""
     root = Path(cfg["dataset"]).resolve()
     rows, receipts, hashes = [], [], {}
     for name, folder in selected_parts(cfg):
@@ -219,7 +220,15 @@ def training_dataset(cfg, verify_media=False):
     signature = (
         receipts[0]["manifest_sha256"] if receipts[0]["part"] is None else fingerprint(receipts)
     )
-    return rows, {"manifest_sha256": signature, "parts": receipts, "samples": len(rows)}
+    selection = {"manifest_sha256": signature, "parts": receipts, "samples": len(rows)}
+    mode = (cfg.get("mismatch_labels") or {}).get("mode", "construction")
+    if labels and mode != "construction":
+        # v004: nhãn mismatch đo được ở ô lip-sync (training/sync_labels.py); mặc định như v003.
+        from vn_av_df.training.sync_labels import RULE_VERSION, annotate
+
+        rows = annotate(cfg, rows)
+        selection["mismatch_labels"] = {"mode": mode, "rule": RULE_VERSION}
+    return rows, selection
 
 
 def temporal_targets(row, times, step, key="fake_intervals"):

@@ -142,9 +142,19 @@ class Model(nn.Module):
         for head, task in self.heads.items():
             target = batch[f"y_{task}"]
             pw = None if pos_weight is None else pos_weight.get(task)
-            frame = masked_bce(out[head], target, mask, pw)
-            video = ((target * mask).amax(1) > 0).float()
-            clip = F.binary_cross_entropy(self.video_pool(out[head], mask), video)
+            # v004: frame mismatch không xác định (mask, training/sync_labels.py) không tính loss;
+            # video không có frame lệch mà có frame mask thì bỏ khỏi loss video.
+            known = mask
+            if task == "mismatch" and "y_mismatch_valid" in batch:
+                known = mask & batch["y_mismatch_valid"]
+            frame = masked_bce(out[head], target, known, pw)
+            positive = (target * known).amax(1) > 0
+            keep = positive | ~(mask & ~known).any(1)
+            if keep.any():
+                pooled = self.video_pool(out[head], mask)
+                clip = F.binary_cross_entropy(pooled[keep], positive[keep].float())
+            else:
+                clip = out[head].sum() * 0
             self.loss_parts[f"{task}_frame"] = float(frame.detach())
             self.loss_parts[f"{task}_video"] = float(clip.detach())
             total = total + frame + clip
@@ -295,6 +305,7 @@ class AVHAlignSup(AVHAlign):
         "batch_size": 1,
         "epochs": 100,
         "patience": 10,
+        "scheduler": None,  # code gốc không có (không nhận scheduler mặc định của M1-M3)
         "clip": None,
     }
 
@@ -428,6 +439,7 @@ class LipincV2(Model):
         "batch_size": 64,
         "epochs": 100,
         "patience": 10,
+        "scheduler": None,
         "clip": None,
     }
     inconsistency_weight = 5.0
@@ -712,6 +724,7 @@ class SSLAASIST(Model):
         "batch_size": 14,
         "epochs": 100,
         "patience": 10,
+        "scheduler": None,
         "clip": None,
         "amp": True,
         "class_weight": "balanced",  # 25/10: "paper" = 0,1 / 0,9 như gốc (xem balance)
@@ -917,13 +930,19 @@ class AudioTrunk(nn.Module):
 
     def __init__(self, hidden=128, dropout=0.1, groups=3, dim=1024):
         super().__init__()
-        self.layer_logits = nn.Parameter(torch.zeros(groups))
+        self.groups = int(groups)
+        self.layer_logits = nn.Parameter(torch.zeros(self.groups))
         self.proj = nn.Sequential(nn.Linear(dim, hidden), nn.LayerNorm(hidden), nn.GELU())
         layer = nn.TransformerEncoderLayer(hidden, 4, 2 * hidden, dropout, batch_first=True)
         self.attention = nn.TransformerEncoder(layer, 2, enable_nested_tensor=False)
 
     def forward(self, ssl, mask):
         groups = ssl.shape[2]
+        if groups > self.groups:
+            raise ValueError(
+                f"cache XLS-R có {groups} nhóm lớp nhưng model dựng cho {self.groups} "
+                "(assets ssl_groups); dựng lại model theo cache"
+            )
         weights = self.layer_logits[:groups].softmax(0)
         mixed = (ssl * weights[None, None, :, None]).sum(2)
         return self.attention(self.proj(mixed), src_key_padding_mask=~mask)
@@ -985,7 +1004,7 @@ class TriHeadV2(Model):
             self.sync = SyncTrunk(dim, hidden, dropout)
         if use_trace:
             self.trace = TraceTrunk(hidden, dropout)
-        self.audio = AudioTrunk(hidden, dropout)
+        self.audio = AudioTrunk(hidden, dropout, groups=int(assets.get("ssl_groups") or 3))
         width = 2 * hidden if use_ref else hidden
         if use_ref:
             self.film = nn.ModuleDict(
@@ -1012,7 +1031,10 @@ class TriHeadV2(Model):
             )
 
     def rebuild_assets(self):
-        return {"n_speakers": self.n_speakers}
+        out = {"n_speakers": self.n_speakers}
+        if self.audio.groups != 3:  # checkpoint v003 (3 nhóm) không có khoá này
+            out["ssl_groups"] = self.audio.groups
+        return out
 
     def on_epoch(self, epoch, total):
         p = epoch / max(1, total)
@@ -1145,6 +1167,369 @@ class AVHAlignPlus(Model):
         return {"ai": logits[..., 0], "mismatch": logits[..., 1]}
 
 
+# ---------------------------------------------------------------- v004 · BL-A2 (XLS-R đóng băng)
+class AudioExpert(Model):
+    """BL-A2: chuyên gia giọng trên XLS-R **đóng băng** (cache theo nhóm lớp, trộn softmax học được)
+    → 2 lớp attention → đầu audio; tức nhánh audio của M1 / M3 đứng riêng. Theo hướng tài liệu
+    XLS-R đóng băng + lớp giữa tổng quát tốt ngoài miền (Serrano et al. 2025, arXiv 2509.12003);
+    dùng cho cổng "M3 hơn chuyên gia giọng" và cho BL-Ens-AV (ghép muộn với BL-M/sup)."""
+
+    needs = {"ssl"}
+    pool = "topk5"
+    crop_frames = 75
+
+    def __init__(self, dim=1024, hidden=128, dropout=0.1, assets=None, **_):
+        super().__init__()
+        assets = assets or {}
+        self.heads = {"audio": "audio"}
+        self.audio = AudioTrunk(hidden, dropout, groups=int(assets.get("ssl_groups") or 3))
+        self.head = nn.Sequential(nn.Linear(hidden, hidden), nn.GELU(), nn.Linear(hidden, 1))
+
+    def rebuild_assets(self):
+        return {"ssl_groups": self.audio.groups}
+
+    def forward(self, batch):
+        return {"audio": self.head(self.audio(batch["ssl"], batch["mask"]))[..., 0]}
+
+
+# ---------------------------------------------------------------- v004 · M3 · TriHead-v4
+class SyncTrunkV4(nn.Module):
+    """Nhánh sync v004 (RESEARCH_WORKLOG/v004_model.md §6).
+
+    Volume ±15 theo **một** quy ước: chỉ số δ ↔ cặp (hình t, tiếng t + δ), tức tiếng trễ δ frame
+    (cùng quy ước với tracking.lag_curve, data.lag_audio, AlignMLP.lag_volume). Kênh: chiếu học
+    được, cos, và Φ của AVH-Align (tuỳ chọn, checkpoint công bố). Trả hai luồng:
+    - tương đối: gộp theo trục độ trễ (mean, max), lag_t − ĝ, độ nhọn, entropy: không đổi khi cả
+      clip trễ một hằng số (trừ hiệu ứng mép) → cho đầu visual, chặn lối tắt "trễ ⇒ giả";
+    - tuyệt đối: thêm lag_t và ĝ → cho đầu mismatch (real bị trễ nhiều là lệch, A11 / A12);
+    và luồng appearance = đặc trưng hình AV-HuBERT (chỉ v, không có a) cho đầu visual.
+    ĝ = trung bình lag_t trên frame hợp lệ (frame), học có giám sát bằng độ trượt k ở clip real."""
+
+    def __init__(self, dim, hidden=128, dropout=0.1, phi=None):
+        super().__init__()
+        self.pa = nn.Sequential(nn.Linear(dim, 256), nn.LayerNorm(256))
+        self.pv = nn.Sequential(nn.Linear(dim, 256), nn.LayerNorm(256))
+        self.phi = phi
+        channels = 3 if phi is not None else 2
+        self.cost = nn.Sequential(
+            nn.Conv2d(channels, 32, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(32, 32, 3, padding=(2, 1), dilation=(2, 1)),
+            nn.GELU(),
+            nn.Conv2d(32, 32, 3, padding=(4, 1), dilation=(4, 1)),
+            nn.GELU(),
+        )
+        self.lag_score = nn.Conv2d(32, 1, 1)
+        self.register_buffer("lags", torch.arange(-MAX_LAG, MAX_LAG + 1).float())
+        self.n_lags = 2 * MAX_LAG + 1
+        self.relative = nn.Sequential(nn.Linear(64 + 3, hidden), nn.LayerNorm(hidden), nn.GELU())
+        self.absolute = nn.Sequential(nn.Linear(64 + 4, hidden), nn.LayerNorm(hidden), nn.GELU())
+        self.appearance = nn.Sequential(nn.Linear(dim, hidden), nn.LayerNorm(hidden), nn.GELU())
+        self.rel_tcn = TemporalBlock(hidden, dropout=dropout)
+        self.abs_tcn = TemporalBlock(hidden, dropout=dropout)
+        self.app_tcn = TemporalBlock(hidden, dropout=dropout)
+
+    def volume(self, a, v, mask):
+        rng = range(-MAX_LAG, MAX_LAG + 1)
+        pa, pv = self.pa(a), self.pv(v)
+        ca, cv = F.normalize(a, dim=-1), F.normalize(v, dim=-1)
+        channels = [
+            torch.stack([(pv * shift(pa, d)).sum(-1) / 16.0 for d in rng], -1),
+            torch.stack([(cv * shift(ca, d)).sum(-1) for d in rng], -1),
+        ]
+        if self.phi is not None:
+            channels.append(self.phi.lag_volume(unit(v), unit(a)))
+        valid = torch.stack([shift(mask, d) for d in rng], -1) & mask[..., None]
+        return torch.stack(channels, 1) * valid[:, None], valid  # [B, C, T, L]
+
+    def forward(self, a, v, mask):
+        volume, valid = self.volume(a, v, mask)
+        h = self.cost(volume)
+        score = self.lag_score(h)[:, 0].masked_fill(~valid, -1e4)
+        weights = score.softmax(-1)
+        lag = (weights * self.lags).sum(-1, keepdim=True)  # frame, dương = tiếng trễ
+        peak = score.amax(-1, keepdim=True).clamp(-20, 20) / 10
+        entropy = -(weights * weights.clamp(min=1e-8).log()).sum(-1, keepdim=True) / math.log(
+            self.n_lags
+        )
+        m = mask.float()[..., None]
+        glob = (lag * m).sum(1, keepdim=True) / m.sum(1, keepdim=True).clamp(min=1)  # [B, 1, 1]
+        pooled = torch.cat([h.mean(-1), h.amax(-1)], 1).transpose(1, 2)
+        rel = torch.cat([pooled, (lag - glob) / MAX_LAG, peak, entropy], -1)
+        absolute = torch.cat(
+            [pooled, lag / MAX_LAG, glob.expand_as(lag) / MAX_LAG, peak, entropy], -1
+        )
+        mf = mask.float()
+        return {
+            "sync_rel": self.rel_tcn(self.relative(rel), mf),
+            "sync_abs": self.abs_tcn(self.absolute(absolute), mf),
+            "appearance": self.app_tcn(self.appearance(v), mf),
+            "global_lag": glob[:, 0, 0],
+        }
+
+
+class ProsodyTrunk(nn.Module):
+    """Nhánh ngữ điệu ↔ đầu của M3 (training/prosody.py; RESEARCH_WORKLOG/v004_model.md §6).
+
+    Luồng ngữ điệu [T, 5] (F0, hữu thanh, năng lượng và sai phân) và luồng đầu / lông mày [T, 5]
+    qua conv thời gian (9 frame) → cost volume cos theo độ trễ ±12 frame (≈ 0,5 s: đầu chuyển động
+    chậm, có thể đi trước hoặc sau ngữ điệu) → CNN 2D → gộp theo trục lag, độ nhọn, entropy → TCN.
+    Chỉ đưa ra tín hiệu **nhất quán** (không đưa đặc trưng thô của đầu) để đầu ra không học kiểu
+    chuyển động đầu của người / kênh; gộp theo lag nên không đổi khi tiếng trễ một hằng số."""
+
+    max_lag = 12
+
+    def __init__(self, hidden=128, dropout=0.1, channels=5, dim=32):
+        super().__init__()
+
+        def encoder():
+            return nn.Sequential(
+                nn.Conv1d(channels, dim, 9, padding=4),
+                nn.GELU(),
+                nn.Conv1d(dim, dim, 9, padding=4),
+            )
+
+        self.prosody_encoder, self.head_encoder = encoder(), encoder()
+        self.cost = nn.Sequential(
+            nn.Conv2d(1, 16, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(16, 16, 3, padding=(2, 1), dilation=(2, 1)),
+            nn.GELU(),
+        )
+        self.score = nn.Conv2d(16, 1, 1)
+        self.n_lags = 2 * self.max_lag + 1
+        self.mix = nn.Sequential(nn.Linear(32 + 2, hidden), nn.LayerNorm(hidden), nn.GELU())
+        self.temporal = TemporalBlock(hidden, dropout=dropout)
+
+    def forward(self, prosody, head, mask):
+        m = mask.float()[..., None]
+        p = self.prosody_encoder((prosody * m).transpose(1, 2)).transpose(1, 2)
+        h = self.head_encoder((head * m).transpose(1, 2)).transpose(1, 2)
+        p, h = F.normalize(p, dim=-1), F.normalize(h, dim=-1)
+        rng = range(-self.max_lag, self.max_lag + 1)
+        volume = torch.stack([(h * shift(p, d)).sum(-1) for d in rng], -1)  # đầu t ↔ ngữ điệu t+δ
+        valid = torch.stack([shift(mask, d) for d in rng], -1) & mask[..., None]
+        x = self.cost((volume * valid)[:, None])
+        score = self.score(x)[:, 0].masked_fill(~valid, -1e4)
+        weights = score.softmax(-1)
+        peak = score.amax(-1, keepdim=True).clamp(-20, 20) / 10
+        entropy = -(weights * weights.clamp(min=1e-8).log()).sum(-1, keepdim=True) / math.log(
+            self.n_lags
+        )
+        pooled = torch.cat([x.mean(-1), x.amax(-1)], 1).transpose(1, 2)
+        return self.temporal(self.mix(torch.cat([pooled, peak, entropy], -1)), mask.float())
+
+
+CELL_CLASSES = ("real", "sham", "voice", "source", "donor", "both")
+
+
+class TriHeadV4(Model):
+    """M3 (v004) · tam giác nhất quán môi–tiếng–đầu (RESEARCH_WORKLOG/v004_model.md §6).
+
+    Ở người thật môi, giọng và đầu là ba đầu ra của cùng một kế hoạch vận động lời nói nên ba cặp
+    đều khớp; mỗi kiểu giả làm hỏng một tổ hợp cặp riêng (sham / voice: tiếng–môi và tiếng–đầu
+    lệch; ⑤ donor: tiếng–môi khớp nhưng tiếng–đầu lệch → môi đã bị vẽ lại theo tiếng mới).
+    - nhánh sync V4 (tiếng ↔ môi: luồng tương đối / tuyệt đối, kênh Φ của AVH-Align) + luồng
+      appearance (chỉ v); nhánh ngữ điệu ↔ đầu (ProsodyTrunk); nhánh trace (môi ↔ đầu: động học
+      môi + tư thế đầu, như M1);
+    - đầu visual ← trace + sync (tương đối; `route="absolute"` = cách v003, cho ablation)
+      + appearance + ngữ điệu–đầu; đầu audio ← audio; đầu mismatch ← sync tuyệt đối + audio
+      + ngữ điệu–đầu (loss bỏ qua mask);
+    - đầu loại thao tác (6 ô, trọng số 0,2): đầu ra giải thích được cho suy luận loại trừ;
+    - đầu offset: ĝ ≈ độ trượt tiếng k (SmoothL1, trọng số 0,1) chỉ trên clip real nguyên vẹn;
+    - tham chiếu người tắt mặc định (`use_ref=True` cho ablation: cổng 5 v003 trượt, đắt ×3,7);
+    - XLS-R theo số nhóm lớp của cache (assets ssl_groups); xoá thông tin người nói như M1;
+    - `stream_drop`: xác suất bỏ một luồng của đầu visual khi train (DeepfakeBench-MM); mặc định 0.
+    """
+
+    pool = "topk5"
+    crop_frames = 75
+    pseudo_fake = 0.25
+    adversary_max = 0.3
+    offset_weight = 0.1
+    type_weight = 0.2
+    phi_lr = 1e-5
+
+    def __init__(
+        self,
+        dim,
+        hidden=128,
+        dropout=0.1,
+        use_ref=False,
+        use_trace=True,
+        use_phi=True,
+        use_prosody=True,
+        use_type=True,
+        route="relative",
+        stream_drop=0.0,
+        assets=None,
+        **_,
+    ):
+        super().__init__()
+        assets = assets or {}
+        if route not in ("relative", "absolute"):
+            raise ValueError(f"route không hợp lệ: {route}")
+        self.route, self.stream_drop = route, float(stream_drop)
+        self.use = {
+            "ref": use_ref,
+            "trace": use_trace,
+            "phi": use_phi,
+            "prosody": use_prosody,
+            "type": use_type,
+        }
+        self.needs = (
+            {"av", "ssl"}
+            | ({"mouth"} if use_trace else set())
+            | ({"prosody"} if use_prosody else set())
+        )
+        self.references = 3 if use_ref else 0
+        self.n_speakers = int(assets.get("n_speakers") or 0)
+        self.adversary = 0.0
+        phi = None
+        if use_phi:
+            phi = AlignMLP(dim)
+            if assets.get("load_pretrained", True) and assets.get("avh_align_init"):
+                load_official_align(phi, assets["avh_align_init"])
+        self.sync = SyncTrunkV4(dim, hidden, dropout, phi)
+        if use_trace:
+            self.trace = TraceTrunk(hidden, dropout)
+        self.audio = AudioTrunk(hidden, dropout, groups=int(assets.get("ssl_groups") or 3))
+        if use_prosody:
+            self.prosody = ProsodyTrunk(hidden, dropout)
+        sync_visual = "sync_rel" if route == "relative" else "sync_abs"
+        extra = ["prosody"] if use_prosody else []
+        self.visual_streams = (["trace"] if use_trace else []) + [sync_visual, "appearance", *extra]
+        self.mismatch_streams = ["sync_abs", "audio", *extra]
+        self.type_streams = sorted(set(self.visual_streams + self.mismatch_streams))
+        width = 2 * hidden if use_ref else hidden
+        if use_ref:
+            names = sorted(set(self.visual_streams + self.mismatch_streams))
+            self.film = nn.ModuleDict({k: FiLM(hidden) for k in names})
+
+        def head(n):
+            return nn.Sequential(nn.Linear(width * n, hidden), nn.GELU(), nn.Linear(hidden, 1))
+
+        self.visual_head = head(len(self.visual_streams))
+        self.audio_head = head(1)
+        self.mismatch_head = head(len(self.mismatch_streams))
+        self.heads = {"visual": "visual", "audio": "audio", "mismatch": "mismatch"}
+        if use_type:
+            self.cell_classes = CELL_CLASSES
+            self.type_head = nn.Sequential(
+                nn.Linear(width * len(self.type_streams), hidden),
+                nn.GELU(),
+                nn.Linear(hidden, len(CELL_CLASSES)),
+            )
+        if self.n_speakers:
+            self.speaker_heads = nn.ModuleDict(
+                {
+                    k: nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, self.n_speakers))
+                    for k in ("audio", "trace")
+                    if k == "audio" or use_trace
+                }
+            )
+
+    def rebuild_assets(self):
+        return {"n_speakers": self.n_speakers, "ssl_groups": self.audio.groups}
+
+    def on_epoch(self, epoch, total):
+        p = epoch / max(1, total)
+        self.adversary = self.adversary_max * (2 / (1 + math.exp(-10 * p)) - 1)
+
+    def optimizer_groups(self, lr):
+        if self.sync.phi is None:
+            return self.parameters()
+        phi = list(self.sync.phi.parameters())
+        ids = {id(p) for p in phi}
+        rest = [p for p in self.parameters() if id(p) not in ids]
+        return [{"params": phi, "lr": self.phi_lr}, {"params": rest, "lr": lr}]
+
+    def branches(self, batch):
+        mask = batch["mask"]
+        out = {"audio": self.audio(batch["ssl"], mask)}
+        out.update(self.sync(batch["a"], batch["v"], mask))
+        if self.use["trace"]:
+            out["trace"] = self.trace(batch["mouth"], batch["lips"], batch["pose"], mask)
+        if self.use["prosody"]:
+            out["prosody"] = self.prosody(batch["prosody"], batch["head"], mask)
+        return out
+
+    def reference(self, batch):
+        refs = batch["refs"]
+        B, R, _ = refs["valid"].shape
+        flat = {k: v.flatten(0, 1) for k, v in refs.items()}
+        flat["mask"] = flat.pop("valid")
+        with torch.no_grad():
+            feats = self.branches(flat)
+        feats.pop("global_lag")
+        count = batch["ref_count"].clamp(min=1)
+        present = torch.arange(R, device=flat["mask"].device)[None] < batch["ref_count"][:, None]
+        out = {}
+        for name, h in feats.items():
+            per_clip = masked_mean(h, flat["mask"]).view(B, R, -1)
+            out[name] = (per_clip * present[..., None].float()).sum(1) / count[:, None]
+        return out
+
+    def forward(self, batch):
+        feats = self.branches(batch)
+        out = {"_global_lag": feats.pop("global_lag")}
+        if self.n_speakers and self.training:
+            for k, head in self.speaker_heads.items():
+                pooled = masked_mean(feats[k], batch["mask"])
+                out[f"_speaker_{k}"] = head(pooled.detach())
+                frozen = {n: p.detach() for n, p in head.named_parameters()}
+                out[f"_confuse_{k}"] = torch.func.functional_call(head, frozen, (pooled,))
+        if self.use["ref"]:
+            if "refs" in batch and batch["ref_count"].max() > 0:
+                refs = self.reference(batch)
+            else:
+                refs = {k: torch.zeros_like(h[:, 0]) for k, h in feats.items()}
+            feats = {k: self.film[k](h, refs[k]) if k in self.film else h for k, h in feats.items()}
+        visual = [feats[k] for k in self.visual_streams]
+        if self.training and self.stream_drop > 0 and len(visual) > 1:
+            B = visual[0].shape[0]
+            drop = torch.rand(B, device=visual[0].device) < self.stream_drop
+            which = torch.randint(len(visual), (B,), device=visual[0].device)
+            visual = [
+                h * (~(drop & (which == i))).float()[:, None, None] for i, h in enumerate(visual)
+            ]
+        out["visual"] = self.visual_head(torch.cat(visual, -1))[..., 0]
+        out["audio"] = self.audio_head(feats["audio"])[..., 0]
+        out["mismatch"] = self.mismatch_head(
+            torch.cat([feats[k] for k in self.mismatch_streams], -1)
+        )[..., 0]
+        if self.use["type"]:
+            pooled = [masked_mean(feats[k], batch["mask"]) for k in self.type_streams]
+            out["_cell"] = self.type_head(torch.cat(pooled, -1))  # [B, 6] logit theo ô
+        return out
+
+    def loss(self, batch, out, pos_weight=None):
+        total = super().loss(batch, out, pos_weight)
+        cell = batch.get("cell_index")
+        if "_cell" in out and cell is not None and (cell >= 0).any():
+            keep = cell >= 0
+            kind = F.cross_entropy(out["_cell"][keep].float(), cell[keep])
+            self.loss_parts["cell"] = float(kind.detach())
+            total = total + self.type_weight * kind
+        speaker = batch.get("speaker")
+        if speaker is not None and (speaker >= 0).any():
+            keep = speaker >= 0
+            for k in ("audio", "trace"):
+                if f"_speaker_{k}" in out:
+                    ce = F.cross_entropy(out[f"_speaker_{k}"][keep], speaker[keep])
+                    confuse = confusion(out[f"_confuse_{k}"][keep])
+                    self.loss_parts[f"speaker_{k}"] = float(ce.detach())
+                    self.loss_parts[f"confuse_{k}"] = float(confuse.detach())
+                    total = total + ce + self.adversary * confuse
+        valid = batch.get("offset_valid")
+        if valid is not None and valid.any():
+            target = batch["lag_shift"].to(out["_global_lag"].dtype)
+            offset = F.smooth_l1_loss(out["_global_lag"][valid], target[valid])
+            self.loss_parts["offset"] = float(offset.detach())
+            total = total + self.offset_weight * offset
+        return total
+
+
 # ---------------------------------------------------------------- registry
 SPECS = {
     "speechforensics": (SpeechForensics, {}),
@@ -1157,6 +1542,14 @@ SPECS = {
     "trihead_v2_no_trace": (TriHeadV2, {"use_trace": False}),
     "trihead_v2_no_ref": (TriHeadV2, {"use_ref": False}),
     "avh_align_plus": (AVHAlignPlus, {}),
+    # v004 (RESEARCH_WORKLOG/v004_model.md §6-§7)
+    "xlsr_frozen": (AudioExpert, {}),
+    "trihead_v4": (TriHeadV4, {}),
+    "trihead_v4_no_prosody": (TriHeadV4, {"use_prosody": False}),
+    "trihead_v4_no_type": (TriHeadV4, {"use_type": False}),
+    "trihead_v4_no_phi": (TriHeadV4, {"use_phi": False}),
+    "trihead_v4_abs": (TriHeadV4, {"route": "absolute"}),
+    "trihead_v4_ref": (TriHeadV4, {"use_ref": True}),
 }
 
 

@@ -1,4 +1,4 @@
-"""Lệnh của pipeline v003 (gọi qua generation/0x_*.py, training/0x_*.py hoặc notebook).
+"""Lệnh của pipeline (v003, v004) (gọi qua generation/0x_*.py, training/0x_*.py hoặc notebook).
 
 setup [--generators ...] [--encoders] [--models]
                                          tải source / weight generator, encoder, tài sản model
@@ -7,7 +7,15 @@ voice [--batch k/n]                      phiên giọng (①②③ + track B)
 lipsync [--generators ...] [--batch k/n] phiên lip-sync (④⑤⑥) cho các generator chọn
 finalize                                 gom record → manifest
 voice / lipsync / finalize [--previous DIR ...]  gộp output phiên khác (vd. Kaggle) trước khi chạy
-prepare [--encoders ...]                 trích feature (mặc định: encoder các model cần)
+prepare [--encoders ...]                 trích feature (mặc định: encoder các model cần);
+                                         stage avhubert ghi thêm avhubert/sync_profile.json
+syncnet [--workers N] [--threads N] [--limit N] [--parts DIR ...]
+                                         (local, CPU) đo đường cong SyncNet cho real + lip-sync
+                                         full → <part>/sync_syncnet.json (nhãn mismatch v004)
+sync-profile                             đường cong AV-HuBERT từ cache có sẵn (không trích lại)
+sync-labels                              gán nhãn mismatch v004 (bảng đếm 0 / 1 / mask theo
+                                         ô / generator, kiểm lối tắt độ trễ) + kiểm ngữ điệu ↔ đầu
+                                         của M3; chạy trước train
 benchmark [--models ...] [--steps N] [--synthetic]
                                          đo thời gian / bộ nhớ train từng model, ước giờ GPU
 train [--models ...] [--seeds ...]       train model (chạy lại thì tiếp từ epoch đã xong)
@@ -77,6 +85,15 @@ def main(argv=None):
             p.add_argument("--batch", help="k/n: chỉ chạy đợt k trong n đợt clip")
     sub.choices["lipsync"].add_argument("--generators", nargs="*")
     sub.add_parser("prepare").add_argument("--encoders", nargs="*")
+    p = sub.add_parser("syncnet")
+    p.add_argument("--workers", type=int, default=1)
+    p.add_argument("--threads", type=int, default=4)
+    p.add_argument("--limit", type=int)
+    p.add_argument(
+        "--parts", nargs="*", help="thư mục part (có dataset_info.json); mặc định theo settings"
+    )
+    sub.add_parser("sync-profile")
+    sub.add_parser("sync-labels")
     p = sub.add_parser("benchmark")
     p.add_argument("--models", nargs="*")
     p.add_argument("--steps", type=int, default=10)
@@ -117,6 +134,24 @@ def main(argv=None):
         from vn_av_df.training.prepare import encoders_for, prepare
 
         result = prepare(cfg, args.encoders or encoders_for(cfg["models"]))
+    elif args.command == "syncnet":
+        from vn_av_df.dataset import part_selection
+        from vn_av_df.training.syncnet_measure import measure
+
+        if args.parts:
+            root, parts = part_selection(args.parts)
+            cfg = {**cfg, "dataset": str(root), "dataset_parts": parts}
+        result = measure(cfg, args.workers, args.threads, args.limit)
+    elif args.command == "sync-profile":
+        from vn_av_df.dataset import training_dataset
+        from vn_av_df.training.sync_labels import avhubert_profiles
+
+        rows, _ = training_dataset(cfg, labels=False)
+        result = avhubert_profiles(cfg, rows)
+    elif args.command == "sync-labels":
+        from vn_av_df.training.sync_labels import report
+
+        result = report(cfg)
     elif args.command == "benchmark":
         from vn_av_df.training.benchmark import benchmark
 

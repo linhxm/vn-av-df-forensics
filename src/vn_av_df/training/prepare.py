@@ -36,6 +36,7 @@ NEEDS = {
     "lipinc": ("landmarks", "avhubert", "lipinc"),
     "ssl": ("xlsr",),
     "wave": ("wave",),
+    "prosody": ("landmarks", "avhubert", "mouth", "wave"),  # M3: ngữ điệu ↔ đầu (prosody.py)
 }
 
 
@@ -87,14 +88,15 @@ def make(cfg, name, device):
 
 
 def prepare(cfg, encoders=ORDER, factory=None):
-    rows, selection = training_dataset(cfg, verify_media=False)
+    rows, selection = training_dataset(cfg, verify_media=False, labels=False)
     cache = cache_roots(cfg)[0]
     reports = {}
     chosen = [e for e in ORDER if e in encoders]
     run = tracking.open_run(
         cfg,
         "prepare",
-        f"{cache.name}-prepare-{'+'.join(chosen)}",
+        # 3 part cùng encoder: tên theo phiên (prepare-p<N>-<phiên>) để không trùng giữa các part.
+        f"{cfg.get('session') or cache.name + '-prepare'}-{'+'.join(chosen)}",
         group=cache.name,
         config={
             "encoders": {e: cfg["encoders"][e] for e in chosen},
@@ -215,6 +217,12 @@ def prepare(cfg, encoders=ORDER, factory=None):
                 getattr(available.get(), "close", lambda: None)()
         elapsed = time.perf_counter() - began
         quality = {**cache_quality(name, folder, rows), **log_cache(run, name, folder, rows)}
+        if name == "avhubert":
+            # v004: đường cong khớp theo độ trễ cho mọi mẫu (thước AV-HuBERT của nhãn mismatch đo
+            # được, training/sync_labels.py); rẻ, chỉ đọc lại cache vừa trích.
+            from vn_av_df.training.sync_labels import avhubert_profiles
+
+            quality["sync_profile"] = avhubert_profiles(cfg, rows, folder)
         write_json(
             folder / "extraction.json",
             {
