@@ -913,6 +913,48 @@ def test_run_lanes_trains_in_subprocesses_and_merges(world, tmp_path, capsys):
     assert json.loads((runs / "test-log.json").read_text(encoding="utf-8")) == log
 
 
+def test_prepare_and_train_runs_carry_session_setup(world, tmp_path):
+    """Run prepare và run train của phiên có luôn setup; không có run job_type "setup"; các epoch
+    vẫn được ghi (FakeRun báo lỗi nếu log theo step lùi, W&B thật sẽ bỏ dữ liệu)."""
+    from vn_av_df.common.runtime import write_json
+    from vn_av_df.dataset import training_dataset
+    from vn_av_df.setup_log import log_setup
+    from vn_av_df.training.prepare import prepare
+    from vn_av_df.training.train import train_all
+
+    fake = world["wandb"]
+
+    class Fine:
+        def extract(self, request, output):
+            write_json(Path(output).with_suffix(".json"), {"ok": True})
+
+    cfg = copy.deepcopy(world["cfg"])
+    cfg["cache"], cfg["session"] = str(tmp_path / "cache"), "prepare-p1-cpu"
+    cfg["encoders"] = {"wave": {"kind": "wave", "workers_per_device": 1}}
+    cfg["setup"] = log_setup(cfg, "prepare-p1-cpu", tmp_path / "cache" / "setup")
+    prepare(cfg, ["wave"], factory=lambda cfg, name, device: Fine())
+    run = next(r for r in fake.by_type("prepare") if "prepare-p1-cpu" in r.kwargs["name"])
+    assert run.config["setup"]["session"] == "prepare-p1-cpu"
+    assert any(a.type == "setup-log" for a in run.artifacts)
+
+    cfg = copy.deepcopy(world["cfg"])
+    cfg["runs"] = str(tmp_path / "runs" / "x")
+    cfg["models"], cfg["seeds"], cfg["session"] = ["avh_align"], [11], "train-P2-y"
+    cfg["training"] = {**cfg["training"], "epochs": 2, "max_epochs": 2}
+    for name in ("avhubert", "mouth", "lipinc", "xlsr", "wave"):
+        (Path(cfg["cache"]) / name).mkdir(parents=True, exist_ok=True)
+    rows, _ = training_dataset(cfg)
+    write_fake_caches(cfg, rows)
+    cfg["setup"] = log_setup(cfg, "train-P2-y", Path(cfg["runs"]) / "setup")
+    train_all(cfg)
+    run = next(r for r in fake.by_type("train") if "avh_align_seed11" in r.kwargs["name"])
+    assert run.config["session"] == "train-P2-y"
+    assert any(a.type == "setup-log" for a in run.artifacts)
+    assert any(a.type == "model" for a in run.artifacts)
+    assert "architecture/modules" in run.keys() and "loss/train" in run.keys()
+    assert fake.by_type("setup") == []
+
+
 def test_prepare_retries_failed_samples(world, tmp_path, capsys):
     """Một mẫu lỗi (worker bị giết) không bỏ cả nhóm clip: thử lại ở cuối; vẫn lỗi thì báo rõ."""
     from vn_av_df.common.runtime import write_json

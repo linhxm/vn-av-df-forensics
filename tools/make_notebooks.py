@@ -226,13 +226,12 @@ if error:
 )
 
 SETUP_LOG = """
-# Log setup của phiên lên W&B (run job_type "setup") + Output: commit, phần cứng, gói pip của kernel
-# và từng worker, log cài (pip, worker), dữ liệu / cache / tài sản gắn vào. Người đọc W&B biết mỗi
-# phiên (mỗi lượt train) được cài thế nào.
+# Ghi cách cài phiên vào Output: commit, phần cứng, gói pip của kernel và từng worker, log cài (pip,
+# worker), dữ liệu / cache / tài sản gắn vào. Run W&B của phiên (prepare / train / labels / report) tự
+# đính kèm: config `setup`, bảng `setup/*`, artifact `setup-log`. Mở run nào cũng biết nó được cài thế nào.
 from vn_av_df.setup_log import log_setup
-SETUP = log_setup(cfg, SESSION_NAME, SETUP_FOLDER, logs=sorted(LOGS.glob("*.log")), env_root=WORKERS,
-                  info=SETUP_INFO, timings=TIMINGS)
-cfg["setup_run"] = {k: SETUP[k] for k in ("session", "wandb_id")}
+cfg["setup"] = log_setup(cfg, SESSION_NAME, SETUP_FOLDER, logs=sorted(LOGS.glob("*.log")), env_root=WORKERS,
+                         info=SETUP_INFO, timings=TIMINGS)
 """
 
 prepare = nb(
@@ -249,7 +248,7 @@ Mỗi part (`PART` = 1, 2, 3) chạy **ba phiên**, mỗi phiên dưới 12 gi�
    - `SESSION = "cpu"` (None): `mouth`, `lipinc`, `wave`.
    - `SESSION = "gpu"` (T4 ×2): `avhubert` (ghi thêm `avhubert/sync_profile.json` cho nhãn mismatch v004), `xlsr`.
 
-Hết giờ giữa chừng: chạy lại cùng `SESSION`, attach Output phiên dở vào `PREVIOUS_CACHE`. Cell "Log setup" ghi cách cài phiên lên W&B (`setup-prepare-p<PART>-<SESSION>`) và vào `cache/vn-av-df-data/setup/`.
+Hết giờ giữa chừng: chạy lại cùng `SESSION`, attach Output phiên dở vào `PREVIOUS_CACHE`. Cell "Log setup" ghi cách cài phiên vào `cache/vn-av-df-data/setup/`; run W&B `prepare` của phiên đính kèm luôn (config `setup`, bảng `setup/*`, artifact `setup-log`).
 """,
         ),
         ("code", setup_cell("training")),
@@ -361,7 +360,7 @@ Mỗi phiên (`GROUP` = `P1`…`P5`, `settings.TRAIN_SESSIONS`) là **một note
 | `P5` (nếu giữ BL-A; `PREVIOUS_RUN` = P4) | T4 ×2 | BL-A | M3-ref / M1 chạy tiếp nếu còn dở |
 | `report` | None (CPU) | gộp Output mọi phiên (`PREVIOUS_RUN`): ghép muộn BL-Ens / BL-Ens-AV, cổng V1-V11, `report.md` (không chấm lại) | |
 
-Cần: 3 dataset part (có `sync_syncnet.json`, chạy `training/01a_syncnet.py` ở local) + Output 9 phiên prepare. Mỗi phiên ghi run W&B `setup-train-<GROUP>-<giờ>` (cách cài phiên); mỗi run train ghi `architecture.json` + `setup_run`; mỗi lần test ghi `test-log.json` (số lần model dùng test). Model dừng ở `MAX_HOURS` chưa xong thì chưa test; phiên sau train tiếp rồi test.
+Cần: 3 dataset part (có `sync_syncnet.json`, chạy `training/01a_syncnet.py` ở local) + Output 9 phiên prepare. Mỗi run train trên W&B có luôn cách cài phiên (config `setup`, bảng `setup/*`, artifact `setup-log`) và `architecture`; mỗi lần test ghi `test-log.json` (số lần model dùng test). Model dừng ở `MAX_HOURS` chưa xong thì chưa test; phiên sau train tiếp rồi test.
 """,
         ),
         ("code", setup_cell("training")),

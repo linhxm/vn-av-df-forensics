@@ -319,7 +319,9 @@ def build_report(cfg):
 
 def log_report(cfg, runs, by_model, gates):
     """Run "report": bảng mean ± std theo seed, các cổng kèm CI, report.md làm artifact."""
-    run = tracking.open_run(cfg, "report", f"{runs.name}-report", group=runs.name, folder=runs)
+    run = tracking.open_run(
+        cfg, "report", f"{runs.name}-report", group=runs.name, folder=runs, with_setup=True
+    )
     if not run.active:
         return
     rows = []

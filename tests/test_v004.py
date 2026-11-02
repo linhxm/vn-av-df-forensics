@@ -428,7 +428,8 @@ def test_architecture_record_describes_model():
     assert base["recipe"] == "code gốc (train_options)"
 
 
-def test_log_setup_records_session_to_wandb_and_disk(tmp_path, monkeypatch):
+def test_setup_is_attached_to_the_session_run(tmp_path, monkeypatch):
+    """Log setup ghi vào Output và đính kèm vào run của phiên, không có run W&B riêng."""
     import sys
 
     from fake_wandb import FakeWandb
@@ -453,33 +454,40 @@ def test_log_setup_records_session_to_wandb_and_disk(tmp_path, monkeypatch):
         "root": str(tmp_path),
         "runs": str(runs),
         "wandb": {"project": "p"},
-        "train_group": "G1",
+        "train_group": "P1",
         "training": {"lr": 3e-4, "wandb_api_key": "secret"},
     }
-    out = log_setup(
+    cfg["setup"] = log_setup(
         cfg,
-        "train-G1-x",
+        "train-P1-x",
         runs / "setup",
         logs=[logs / "pip-install.log"],
         env_root=tmp_path / "workers",
         info={"lanes": [["trihead_v4"]]},
         timings={"pip-install": 12.0},
     )
-    folder = runs / "setup" / "train-G1-x"
+    assert fake.runs == []  # không mở run riêng
+    folder = runs / "setup" / "train-P1-x"
     record = json.loads((folder / "setup.json").read_text(encoding="utf-8"))
     assert record["workers"]["avhubert"]["receipt"]["status"] == "ready"
     assert record["training"]["wandb_api_key"] == "***"  # không ghi giá trị secret
     assert (folder / "worker-avhubert-setup.log").stat().st_size == 2_000_000  # giữ phần cuối
     assert (folder / "pip-install.log").is_file() and (folder / "pip-freeze.txt").is_file()
-    (run,) = fake.by_type("setup")
-    assert out["wandb_id"] == run.id and run.finished
-    assert run.kwargs["group"] == "train_all_v004" and "group:G1" in run.kwargs["tags"]
-    assert {"setup/kernel_packages", "setup/workers", "setup/logs"} <= run.keys()
-    assert run.artifacts and run.artifacts[0].type == "setup-log"
+
+    plain = tracking.open_run(cfg, "evaluate", "e")  # run phụ: không đính kèm
+    assert "setup" not in plain.run.config and not plain.run.artifacts
+    run = tracking.open_run(cfg, "train", "m", config={"session": "cũ"}, with_setup=True)
+    assert run.run.config["setup"]["session"] == "train-P1-x"
+    assert run.run.config["session"] == "train-P1-x"  # đổi được giá trị khi train tiếp phiên khác
+    assert {"setup/kernel_packages", "setup/logs"} <= run.run.keys()
+    assert run.run.step == 0  # không tăng step: epoch 1 log theo step=1 không bị W&B bỏ
+    run.log({"epoch": 1}, step=1)
+    assert run.run.artifacts[0].type == "setup-log"
+    assert run.run.artifacts[0].name == "setup-train_all_v004-train-P1-x"
     # merge_runs giữ log setup của mọi phiên, không coi là thư mục model
     target = tmp_path / "merged"
     merge_runs(target, [runs])
-    assert (target / "setup" / "train-G1-x" / "setup.json").is_file()
+    assert (target / "setup" / "train-P1-x" / "setup.json").is_file()
 
 
 def test_mismatch_intervals_follow_labels():

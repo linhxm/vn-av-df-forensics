@@ -1,4 +1,4 @@
-"""Log W&B: setup từng phiên (setup_log.py), trích feature, train, test, báo cáo (bằng chứng).
+"""Log W&B: trích feature, train, test, báo cáo (kèm setup của phiên, setup_log.py) làm bằng chứng.
 
 Bật bằng cfg["wandb"] (notebook prepare / train đặt; project để private):
     {"project": "vn-av-df-v004", "entity": None, "mode": "online"}
@@ -49,6 +49,17 @@ class Run:
                 {key: self.wandb.Table(columns=list(columns), data=[list(r) for r in rows])}
             )
 
+    def tables(self, tables):
+        """{key: (cột, dòng)} log một lần, commit=False: không tăng step (run log epoch theo step)."""
+        if self.active:
+            data = {
+                key: self.wandb.Table(columns=list(columns), data=[list(r) for r in rows])
+                for key, (columns, rows) in tables.items()
+                if rows
+            }
+            if data:
+                self.run.log(data, commit=False)
+
     def hist(self, key, values):
         values = [float(v) for v in values if v is not None and not _nan(v)]
         if self.active and values:
@@ -98,8 +109,9 @@ def _nan(value):
     return isinstance(value, float) and (math.isnan(value) or math.isinf(value))
 
 
-def open_run(cfg, job_type, name, group=None, config=None, folder=None, tags=()):
-    """Mở run; `folder` có thì lưu id để phiên sau tiếp tục đúng run."""
+def open_run(cfg, job_type, name, group=None, config=None, folder=None, tags=(), with_setup=False):
+    """Mở run; `folder` có thì lưu id để phiên sau tiếp tục đúng run. with_setup: đính kèm setup
+    của phiên (setup_log.attach), cho run chính của phiên (prepare, train, labels, report)."""
     options = cfg.get("wandb")
     if not options:
         return Run()
@@ -135,7 +147,12 @@ def open_run(cfg, job_type, name, group=None, config=None, folder=None, tags=())
             record,
             {"id": run.id, "name": name, "display": display, "job_type": job_type, "group": group},
         )
-    return Run(wandb, run)
+    opened = Run(wandb, run)
+    if with_setup:
+        from vn_av_df.setup_log import attach
+
+        attach(opened, cfg)
+    return opened
 
 
 # ---------------------------------------------------------------- nội dung dùng chung

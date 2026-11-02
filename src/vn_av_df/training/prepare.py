@@ -104,6 +104,7 @@ def prepare(cfg, encoders=ORDER, factory=None):
             "samples": len(rows),
         },
         folder=cache,
+        with_setup=True,
     )
     print(
         f"prepare: {len(rows)} mẫu, encoder {chosen} → {cache} | "

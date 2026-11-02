@@ -1,13 +1,14 @@
-"""Ghi cách cài một phiên (notebook Kaggle prepare / train / test) lên W&B và vào Output.
+"""Ghi cách cài một phiên (notebook Kaggle prepare / train / report) vào Output và vào run W&B.
 
-v004 train tách từng lượt (settings.TRAIN_GROUPS), mỗi lượt một phiên riêng nên môi trường có thể
-khác nhau giữa các model. Mỗi phiên một run W&B `job_type="setup"` (cùng group với các run train):
-- config: phiên, lượt, model / lane, dữ liệu và cache gắn vào, commit code, phần cứng, phiên bản
-  thư viện, môi trường worker (biên nhận cài của environments/*.py), tài sản đã tải;
-- bảng: gói pip của kernel, gói pip của từng worker;
-- artifact `setup-log`: setup.json, pip-freeze, log cài (pip của notebook, setup.log của worker).
-Bản local ở `<folder>/<phiên>/` (folder = runs/<RUN>/setup ở train, cache/.../setup ở prepare);
-`merge_runs` giữ log setup của mọi phiên. Mỗi run train ghi `setup_run` = run của phiên đã train nó.
+v004 train tách từng model theo phiên, nên môi trường có thể khác nhau giữa các model. `log_setup`
+ghi `<folder>/<phiên>/` (folder = runs/<RUN>/setup ở train, cache/.../setup ở prepare): setup.json
+(phiên, commit, phần cứng, thư viện, biên nhận cài worker, dữ liệu / cache / tài sản gắn vào),
+pip-freeze của kernel và từng worker, log cài (pip của notebook, setup.log của worker).
+
+Không có run W&B riêng: chính run của phiên (`prepare`, `train`, `labels`, `report`) đính kèm qua
+`tracking.open_run(..., with_setup=True)`: config `setup`, bảng `setup/*`, artifact `setup-log`.
+Nhiều run cùng phiên (hai model) dùng chung một artifact, W&B không lưu trùng nội dung. Run train
+tiếp ở phiên sau đính kèm thêm setup của phiên đó. `merge_runs` giữ log setup của mọi phiên.
 
 Không ghi secret: chỉ tên biến môi trường W&B / Kaggle, không giá trị.
 """
@@ -20,7 +21,6 @@ import sys
 import time
 from pathlib import Path
 
-from vn_av_df import tracking
 from vn_av_df.common.runtime import environment, read_json, write_json
 
 MAX_LOG_BYTES = 2_000_000  # mỗi log giữ phần cuối 2 MB (pip -v của worker có thể vài chục MB)
@@ -78,7 +78,8 @@ def worker_logs(env_root):
 
 
 def log_setup(cfg, session, folder, logs=(), env_root=None, info=None, timings=None):
-    """Ghi phiên `session` (vd. "train-G1", "prepare-p2-gpu"); trả {"session", "wandb_id", "file"}.
+    """Ghi phiên `session` (vd. "train-P1-…", "prepare-p2-gpu"); trả {"session", "file"}: đặt vào
+    cfg["setup"] để run W&B của phiên đính kèm.
 
     logs: file log của notebook (pip install, setup_avhubert…); env_root: thư mục môi trường worker
     (log + biên nhận + pip freeze của từng worker); info: thông tin riêng phiên (lane, dữ liệu,
@@ -130,44 +131,64 @@ def log_setup(cfg, session, folder, logs=(), env_root=None, info=None, timings=N
         }
     )
     write_json(out / "setup.json", record)
-    run = tracking.open_run(
-        cfg,
-        "setup",
-        f"setup-{session}",
-        group=group,
-        config={k: v for k, v in record.items() if k != "logs"},
-        folder=out,
-        tags=["setup", session]
-        + ([f"group:{cfg['train_group']}"] if cfg.get("train_group") else []),
-    )
-    run.table(
-        "setup/kernel_packages",
-        ["package", "version"],
-        [line.split("==", 1) if "==" in line else [line, ""] for line in kernel],
-    )
-    run.table(
-        "setup/workers",
-        ["worker", "status", "python", "packages"],
-        [
-            [n, w["receipt"].get("status"), w["receipt"].get("python"), w["packages"]]
-            for n, w in workers.items()
-        ],
-    )
-    run.table(
-        "setup/logs",
-        ["file", "bytes", "kept", "source"],
-        [[k["file"], k["bytes"], k["kept"], k["source"]] for k in kept],
-    )
-    run.summary({"workers": len(workers), "logs": len(kept), "kernel_packages": len(kernel)})
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "-", f"setup-{group}-{session}")
-    run.artifact(
-        safe, "setup-log", sorted(p for p in out.iterdir() if p.is_file()), {"session": session}
-    )
-    wandb_id = run.run.id if run.active else None
-    run.finish()
-    result = {"session": session, "wandb_id": wandb_id, "file": str(out / "setup.json")}
+    result = {"session": session, "file": str(out / "setup.json")}
     print("setup log:", json.dumps(result, ensure_ascii=False), flush=True)
     return result
+
+
+def setup_record(cfg):
+    """setup.json của phiên hiện tại (cfg["setup"]), None nếu chưa ghi."""
+    path = Path((cfg.get("setup") or {}).get("file") or "")
+    return read_json(path) if path.is_file() else None
+
+
+def attach(run, cfg):
+    """Đính kèm setup của phiên vào run W&B đang mở. Cập nhật config sau khi mở (cho phép đổi giá
+    trị: run train tiếp ở phiên khác) và log bảng commit=False: không tăng step, các epoch log
+    theo step=epoch không bị W&B bỏ vì step lùi."""
+    record = setup_record(cfg)
+    if not run.active or record is None:
+        return
+    folder = Path(cfg["setup"]["file"]).parent
+    run.run.config.update(
+        {
+            "setup": {k: v for k, v in record.items() if k != "logs"},
+            "session": record["session"],
+            "train_group": record.get("train_group"),
+        },
+        allow_val_change=True,
+    )
+    freeze = folder / "pip-freeze.txt"
+    kernel = freeze.read_text(encoding="utf-8").splitlines() if freeze.is_file() else []
+    workers = record.get("workers") or {}
+    kept = record.get("logs") or []
+    run.tables(
+        {
+            "setup/kernel_packages": (
+                ["package", "version"],
+                [line.split("==", 1) if "==" in line else [line, ""] for line in kernel if line],
+            ),
+            "setup/workers": (
+                ["worker", "status", "python", "packages"],
+                [
+                    [n, w["receipt"].get("status"), w["receipt"].get("python"), w["packages"]]
+                    for n, w in workers.items()
+                ],
+            ),
+            "setup/logs": (
+                ["file", "bytes", "kept", "source"],
+                [[k["file"], k["bytes"], k["kept"], k["source"]] for k in kept],
+            ),
+        }
+    )
+    group = record.get("run_group") or ""
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "-", f"setup-{group}-{record['session']}")
+    run.artifact(
+        safe,
+        "setup-log",
+        sorted(p for p in folder.iterdir() if p.is_file()),
+        {"session": record["session"]},
+    )
 
 
 def copy_tree(source, target):

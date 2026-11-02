@@ -9,7 +9,7 @@
   model có đầu ra; model chỉ học real / validation thiếu lớp: val loss); scheduler plateau
   bước theo cùng thước đó; early stopping `patience` epoch.
 - Mỗi run ghi `architecture.json` / `architecture.txt` (lớp, tham số theo khối, đầu vào, công
-  thức train) và gắn với run setup của phiên (`cfg["setup_run"]`, setup_log.py) trên W&B.
+  thức train); run W&B đính kèm setup của phiên đã train nó (setup_log.py).
 - Train tiếp được giữa chừng: sau mỗi epoch ghi `last.pt` (model, optimizer, scheduler, AMP scaler,
   lịch sử, trạng thái ngẫu nhiên); chạy lại thì tiếp từ epoch sau đó, xong thì xoá `last.pt`.
 - Nguồn gốc lần train ghi ở `runs/<RUN>/provenance.json` (dữ liệu, chữ ký cache, commit code, tài
@@ -380,18 +380,21 @@ def train_one(cfg, name, seed, rows, out):
             "val_samples": len(val_rows),
             "monitor": f"{monitor[0]}:{'+'.join(monitor[1])}" if monitor[1] else monitor[0],
             "architecture": {k: v for k, v in arch.items() if k not in ("doc", "training")},
-            # Phiên Kaggle đã train run này (lượt G1…G5) và run setup ghi cách cài phiên đó.
-            "session": cfg.get("session"),
-            "train_group": group_tag,
-            "setup_run": cfg.get("setup_run"),
         },
         folder=out,
         tags=[name] + ([f"group:{group_tag}"] if group_tag else []),
+        with_setup=True,
     )
-    run.table(
-        "architecture/modules",
-        ["module", "type", "parameters", "trainable"],
-        [[m["module"], m["type"], m["parameters"], m["trainable"]] for m in arch["modules"]],
+    run.tables(
+        {
+            "architecture/modules": (
+                ["module", "type", "parameters", "trainable"],
+                [
+                    [m["module"], m["type"], m["parameters"], m["trainable"]]
+                    for m in arch["modules"]
+                ],
+            )
+        }
     )
     if not model.trainable:
         save(out / "best.pt", {"config": config, "state": model.state_dict(), "epoch": 0})

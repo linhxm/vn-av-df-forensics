@@ -386,6 +386,7 @@ def report(cfg):
     """Bước "labels" trước train (CPU): bảng đếm nhãn mismatch + kiểm lối tắt độ trễ + kiểm ngữ
     điệu–đầu của M3 → runs/<RUN>/sync_labels.json. Cần sync_syncnet.json trong mỗi part và
     avhubert/sync_profile.json trong cache (prepare)."""
+    from vn_av_df import tracking
     from vn_av_df.common.runtime import write_json
     from vn_av_df.dataset import training_dataset
     from vn_av_df.training.prosody import audit
@@ -395,5 +396,11 @@ def report(cfg):
     result["meters_found"] = [[m, str(p)] for m, p in measurement_files(cfg)]
     # M3: ngữ điệu ↔ đầu có tách real với ô thay tiếng không (không học tham số, trước train).
     result["prosody_head_audit"] = audit(cfg, rows)
-    write_json(Path(cfg["runs"]) / "sync_labels.json", result)
+    runs = Path(cfg["runs"])
+    write_json(runs / "sync_labels.json", result)
+    run = tracking.open_run(
+        cfg, "labels", f"{runs.name}-sync-labels", group=runs.name, folder=runs, with_setup=True
+    )
+    run.artifact(f"labels-{runs.name}", "labels", [runs / "sync_labels.json"])
+    run.finish()
     return result
