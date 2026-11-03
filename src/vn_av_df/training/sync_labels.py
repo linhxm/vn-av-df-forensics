@@ -18,8 +18,9 @@ Căn cứ và luật: RESEARCH_WORKLOG/v004_model.md §5 (user chốt 31/10 - 01
   nên cần cả hai thước đồng ý.
 
 Đoạn trên là luật tổng quát theo `cfg["mismatch_labels"]`. Cấu hình v004 trong `settings.py` (user
-chốt 03/11, v004_model.md §5): `meters` chỉ SyncNet, phân vị âm = dương = 95 %, không cổng độ nhọn;
-vậy ô lip-sync thành 0 / 1, mask chỉ còn ở mẫu thiếu số đo.
+chốt 03/11, v004_model.md §5): `meters` chỉ SyncNet, phân vị âm = dương = 95 %, cổng độ nhọn ở mức
+thấp nhất của real train; vậy ô lip-sync train chỉ còn 0 / 1, mask còn ở validation, test khi clip
+real gốc nhọn dưới mức đó hoặc thiếu số đo.
 
 Chế độ (`cfg["mismatch_labels"]["mode"]`): "construction" (v003: ô lip-sync = 0, không chú thích),
 "mask_lipsync" (dự phòng không cần đo: ô lip-sync → mask), "measured" (luật trên).

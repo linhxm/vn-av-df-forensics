@@ -272,8 +272,9 @@ def config():
         # "measured" = lệch nội dung theo cách tạo + ô lip-sync đo tại lag 0 so với real (cần
         # <part>/sync_syncnet.json từ training/01a_syncnet.py); "mask_lipsync" = dự phòng không cần
         # đo (ô lip-sync → mask); "construction" = như v003.
-        # User chốt 03/11: một thước SyncNet, một ngưỡng p95 của real train, không dùng cổng độ nhọn,
-        # nên ô lip-sync không còn mask (trừ mẫu thiếu số đo).
+        # User chốt 03/11: một thước SyncNet, một ngưỡng p95 của real train. Cổng độ nhọn hạ về mức
+        # thấp nhất của real train nên train không còn mask; validation, test còn 14 mẫu lip-sync
+        # mask vì 3 clip real gốc nhọn dưới mức đó.
         "mismatch_labels": {
             "mode": "measured",
             "meters": ["syncnet"],

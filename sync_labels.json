@@ -1,0 +1,417 @@
+{
+  "rule": "mismatch-measured-v1",
+  "counts": {
+    "test/both/diff2lip": {
+      "0": 202,
+      "1": 4
+    },
+    "test/both/iplap": {
+      "0": 196,
+      "1": 2
+    },
+    "test/both/latentsync_1_5": {
+      "0": 200,
+      "mask": 4
+    },
+    "test/both/musetalk_1_5": {
+      "1": 152,
+      "0": 54
+    },
+    "test/both/videoretalking": {
+      "1": 176,
+      "0": 28
+    },
+    "test/both/wav2lip_gan": {
+      "1": 202
+    },
+    "test/donor/diff2lip": {
+      "0": 166,
+      "1": 28
+    },
+    "test/donor/iplap": {
+      "0": 166,
+      "1": 28
+    },
+    "test/donor/latentsync_1_5": {
+      "0": 204
+    },
+    "test/donor/musetalk_1_5": {
+      "1": 174,
+      "0": 36
+    },
+    "test/donor/videoretalking": {
+      "1": 192,
+      "mask": 2,
+      "0": 8
+    },
+    "test/donor/wav2lip_gan": {
+      "1": 202,
+      "mask": 2
+    },
+    "test/real": {
+      "0": 620
+    },
+    "test/sham": {
+      "1": 1222
+    },
+    "test/source/diff2lip": {
+      "0": 212,
+      "mask": 2
+    },
+    "test/source/iplap": {
+      "0": 188,
+      "1": 4,
+      "mask": 2
+    },
+    "test/source/latentsync_1_5": {
+      "0": 208
+    },
+    "test/source/musetalk_1_5": {
+      "1": 122,
+      "0": 80
+    },
+    "test/source/videoretalking": {
+      "1": 188,
+      "0": 20
+    },
+    "test/source/wav2lip_gan": {
+      "1": 212
+    },
+    "test/voice": {
+      "1": 1860
+    },
+    "train/both/iplap": {
+      "0": 464,
+      "1": 6
+    },
+    "train/both/musetalk_1_5": {
+      "1": 358,
+      "0": 122
+    },
+    "train/both/videoretalking": {
+      "1": 412,
+      "0": 60
+    },
+    "train/both/wav2lip_gan": {
+      "1": 480
+    },
+    "train/donor/iplap": {
+      "0": 420,
+      "1": 40
+    },
+    "train/donor/musetalk_1_5": {
+      "1": 410,
+      "0": 64
+    },
+    "train/donor/videoretalking": {
+      "1": 446,
+      "0": 22
+    },
+    "train/donor/wav2lip_gan": {
+      "1": 468
+    },
+    "train/real": {
+      "0": 1440
+    },
+    "train/sham": {
+      "1": 2842
+    },
+    "train/source/iplap": {
+      "0": 466,
+      "1": 2
+    },
+    "train/source/musetalk_1_5": {
+      "1": 338,
+      "0": 148
+    },
+    "train/source/videoretalking": {
+      "1": 396,
+      "0": 82
+    },
+    "train/source/wav2lip_gan": {
+      "1": 492
+    },
+    "train/voice": {
+      "1": 2880
+    },
+    "validation/both/iplap": {
+      "0": 104,
+      "1": 6
+    },
+    "validation/both/musetalk_1_5": {
+      "1": 82,
+      "0": 32
+    },
+    "validation/both/videoretalking": {
+      "1": 88,
+      "0": 14
+    },
+    "validation/both/wav2lip_gan": {
+      "1": 112
+    },
+    "validation/donor/iplap": {
+      "0": 82,
+      "1": 20
+    },
+    "validation/donor/musetalk_1_5": {
+      "1": 94,
+      "0": 16
+    },
+    "validation/donor/videoretalking": {
+      "1": 98,
+      "0": 10
+    },
+    "validation/donor/wav2lip_gan": {
+      "1": 114
+    },
+    "validation/real": {
+      "0": 340
+    },
+    "validation/sham": {
+      "1": 668
+    },
+    "validation/source/iplap": {
+      "0": 112,
+      "1": 2
+    },
+    "validation/source/musetalk_1_5": {
+      "1": 82,
+      "0": 32,
+      "mask": 2
+    },
+    "validation/source/videoretalking": {
+      "1": 84,
+      "0": 28
+    },
+    "validation/source/wav2lip_gan": {
+      "1": 114
+    },
+    "validation/voice": {
+      "1": 680
+    }
+  },
+  "thresholds": {
+    "syncnet": {
+      "negative": 10.846354999999999,
+      "positive": 10.846354999999999,
+      "sharpness": 1.38063,
+      "reals": 1440
+    }
+  },
+  "real_train_by_shift": {
+    "-5": {
+      "1": 1437,
+      "0": 3,
+      "mask": 0
+    },
+    "-4": {
+      "1": 1434,
+      "0": 6,
+      "mask": 0
+    },
+    "-3": {
+      "1": 1424,
+      "0": 16,
+      "mask": 0
+    },
+    "-2": {
+      "1": 1282,
+      "0": 158,
+      "mask": 0
+    },
+    "-1": {
+      "1": 0,
+      "0": 1440,
+      "mask": 0
+    },
+    "0": {
+      "1": 0,
+      "0": 1440,
+      "mask": 0
+    },
+    "1": {
+      "1": 0,
+      "0": 1440,
+      "mask": 0
+    },
+    "2": {
+      "1": 1343,
+      "0": 97,
+      "mask": 0
+    },
+    "3": {
+      "1": 1435,
+      "0": 5,
+      "mask": 0
+    },
+    "4": {
+      "1": 1438,
+      "0": 2,
+      "mask": 0
+    },
+    "5": {
+      "1": 1439,
+      "0": 1,
+      "mask": 0
+    },
+    "6": {
+      "1": 1438,
+      "0": 2,
+      "mask": 0
+    },
+    "7": {
+      "1": 1438,
+      "0": 2,
+      "mask": 0
+    }
+  },
+  "lag0_audit_avhubert": {},
+  "meters_found": [
+    [
+      "avhubert",
+      "/kaggle/input/notebooks/linhxm/vn-av-df-prepare-p1-gpu/vn-av-df-forensics/cache/vn-av-df-data/avhubert/sync_profile.json"
+    ],
+    [
+      "avhubert",
+      "/kaggle/input/notebooks/linhxm/vn-av-df-prepare-p2-gpu/vn-av-df-forensics/cache/vn-av-df-data/avhubert/sync_profile.json"
+    ],
+    [
+      "avhubert",
+      "/kaggle/input/notebooks/linhxm/vn-av-df-prepare-p3-gpu/vn-av-df-forensics/cache/vn-av-df-data/avhubert/sync_profile.json"
+    ],
+    [
+      "syncnet",
+      "/kaggle/input/datasets/linhxm/vn-av-df-data-part1-trim04-fake/vn-av-df-data-part1/sync_syncnet.json"
+    ],
+    [
+      "syncnet",
+      "/kaggle/input/datasets/linhxm/vn-av-df-data-part2-fake/vn-av-df-data-part2/sync_syncnet.json"
+    ],
+    [
+      "syncnet",
+      "/kaggle/input/datasets/linhxm/vn-av-df-data-part3-fake/vn-av-df-data-part3/sync_syncnet.json"
+    ]
+  ],
+  "prosody_head_audit": {
+    "test/both/full": {
+      "n": 200,
+      "auc_vs_real": 0.46379999999999993
+    },
+    "test/both/partial": {
+      "n": 200,
+      "auc_vs_real": 0.496125
+    },
+    "test/donor/full": {
+      "n": 200,
+      "auc_vs_real": 0.4825750000000001
+    },
+    "test/donor/partial": {
+      "n": 200,
+      "auc_vs_real": 0.4847000000000001
+    },
+    "test/sham/full": {
+      "n": 200,
+      "auc_vs_real": 0.48977500000000007
+    },
+    "test/sham/partial": {
+      "n": 200,
+      "auc_vs_real": 0.476725
+    },
+    "test/source/full": {
+      "n": 200,
+      "auc_vs_real": 0.461225
+    },
+    "test/source/partial": {
+      "n": 200,
+      "auc_vs_real": 0.43047499999999994
+    },
+    "test/voice/full": {
+      "n": 200,
+      "auc_vs_real": 0.5011000000000001
+    },
+    "test/voice/partial": {
+      "n": 200,
+      "auc_vs_real": 0.44155
+    },
+    "train/both/full": {
+      "n": 200,
+      "auc_vs_real": 0.5115075376884421
+    },
+    "train/both/partial": {
+      "n": 197,
+      "auc_vs_real": 0.5309542637043084
+    },
+    "train/donor/full": {
+      "n": 199,
+      "auc_vs_real": 0.5490012878462665
+    },
+    "train/donor/partial": {
+      "n": 200,
+      "auc_vs_real": 0.5170603015075377
+    },
+    "train/sham/full": {
+      "n": 198,
+      "auc_vs_real": 0.5365209887822954
+    },
+    "train/sham/partial": {
+      "n": 199,
+      "auc_vs_real": 0.5461478245498851
+    },
+    "train/source/full": {
+      "n": 199,
+      "auc_vs_real": 0.5332188581096438
+    },
+    "train/source/partial": {
+      "n": 199,
+      "auc_vs_real": 0.5185980152016363
+    },
+    "train/voice/full": {
+      "n": 199,
+      "auc_vs_real": 0.5794550642660539
+    },
+    "train/voice/partial": {
+      "n": 198,
+      "auc_vs_real": 0.5288310238058983
+    },
+    "validation/both/full": {
+      "n": 200,
+      "auc_vs_real": 0.5011749999999999
+    },
+    "validation/both/partial": {
+      "n": 200,
+      "auc_vs_real": 0.5226500000000001
+    },
+    "validation/donor/full": {
+      "n": 200,
+      "auc_vs_real": 0.534125
+    },
+    "validation/donor/partial": {
+      "n": 200,
+      "auc_vs_real": 0.5421
+    },
+    "validation/sham/full": {
+      "n": 200,
+      "auc_vs_real": 0.5641
+    },
+    "validation/sham/partial": {
+      "n": 200,
+      "auc_vs_real": 0.531525
+    },
+    "validation/source/full": {
+      "n": 200,
+      "auc_vs_real": 0.514875
+    },
+    "validation/source/partial": {
+      "n": 200,
+      "auc_vs_real": 0.531025
+    },
+    "validation/voice/full": {
+      "n": 200,
+      "auc_vs_real": 0.55445
+    },
+    "validation/voice/partial": {
+      "n": 200,
+      "auc_vs_real": 0.5155500000000001
+    }
+  }
+}
