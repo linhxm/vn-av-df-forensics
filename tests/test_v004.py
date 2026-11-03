@@ -529,3 +529,41 @@ def test_mismatch_intervals_follow_labels():
     out = localization(OneHead(), [row], predictions, "mismatch")
     assert out["clips"] == 1 and out["auc_inside_vs_outside"] == pytest.approx(1.0)
     assert out["by_cell"]["sham"]["clips"] == 1
+
+
+# ---------------------------------------------------------------- kiểm ngữ điệu–đầu trước train
+def test_prosody_audit_samples_per_group_and_reads_cache(tmp_path, capsys):
+    from vn_av_df.common.runtime import save_npz
+    from vn_av_df.training.prosody import audit, audit_sample
+
+    rows = [
+        {"sample_id": f"{cell}{i}", "split": "train", "cell": cell, "kind": "full"}
+        for cell in ("real", "voice")
+        for i in range(12)
+    ]
+    picked = audit_sample(rows, 5)
+    assert len(picked) == 10 and {r["sample_id"] for r in picked} == {
+        r["sample_id"] for r in audit_sample(list(reversed(rows)), 5)
+    }  # không phụ thuộc thứ tự manifest
+    assert len(audit_sample(rows, None)) == 24
+
+    rng = np.random.default_rng(0)
+    frames = 80
+    for row in rows[:-1]:  # mẫu cuối thiếu cache: bỏ qua, có báo số thiếu
+        sid = row["sample_id"]
+        (tmp_path / "wave").mkdir(exist_ok=True)
+        (tmp_path / "avhubert").mkdir(exist_ok=True)
+        (tmp_path / "mouth").mkdir(exist_ok=True)
+        wave = (rng.normal(size=(frames, 640)) * 3000).astype(np.int16)
+        save_npz(tmp_path / "wave" / f"{sid}.npz", wave=wave)
+        save_npz(
+            tmp_path / "avhubert" / f"{sid}.npz",
+            landmarks=rng.normal(size=(frames, 68, 2)).astype(np.float32),
+            visual_valid=np.ones(frames, bool),
+        )
+        pose = rng.normal(size=(frames, 3)).astype(np.float32)
+        save_npz(tmp_path / "mouth" / f"{sid}.npz", pose=pose)
+    out = audit({"cache": [str(tmp_path)]}, rows, per_group=None, workers=2, every=10)
+    assert out["train/voice/full"]["n"] == 11 and 0 <= out["train/voice/full"]["auc_vs_real"] <= 1
+    printed = capsys.readouterr().out
+    assert "24 / 24 mẫu" in printed and "10 / 24 mẫu" in printed and "thiếu cache: 1 mẫu" in printed

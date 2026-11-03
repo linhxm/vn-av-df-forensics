@@ -15,7 +15,11 @@ cửa sổ 64 ms quanh mỗi frame, dải 70-400 Hz (giọng nói người lớn
 chuẩn hoá trong clip), sai phân của nó, vận tốc yaw / pitch / roll.
 """
 
+import hashlib
 import math
+import time
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 
@@ -116,32 +120,63 @@ def coupling(prosody, head, valid, max_lag=12):
     return best if best > -1 else math.nan
 
 
-def audit(cfg, rows, limit=None):
+def audit_sample(rows, per_group=None):
+    """Lấy tối đa per_group mẫu mỗi (split, ô, kiểu), chọn theo băm sample_id: ổn định giữa các lần
+    chạy và rải đều các part (manifest xếp theo part, lấy đầu danh sách sẽ chỉ có part 1)."""
+    groups = defaultdict(list)
+    for row in rows:
+        groups[(row["split"], row.get("cell"), row.get("kind"))].append(row)
+    picked = []
+    for group in groups.values():
+        group.sort(key=lambda r: hashlib.sha1(r["sample_id"].encode()).hexdigest())
+        picked.extend(group[:per_group])
+    return picked
+
+
+def clip_coupling(files):
+    """{encoder: file} của một clip → coupling (số, NaN nếu quá ngắn); None nếu thiếu cache."""
+    if not all(path.is_file() for path in files.values()):
+        return None
+    with np.load(files["wave"], allow_pickle=False) as z:
+        prosody = prosody_features(z["wave"].astype(np.float32) / 32768.0)
+    with np.load(files["avhubert"], allow_pickle=False) as z:
+        landmarks, valid = z["landmarks"], z["visual_valid"]
+    with np.load(files["mouth"], allow_pickle=False) as z:
+        pose = z["pose"] if "pose" in z.files else np.zeros((len(z["lips"]), 3))
+    head = head_features(landmarks, pose, valid)
+    return coupling(prosody, head, valid[: len(head)])
+
+
+def audit(cfg, rows, per_group=200, workers=8, every=500):
     """Ngữ điệu ↔ đầu có tách được real với các ô thay tiếng không, **trước khi train** (không có
     tham số học): AUC của −coupling (cao = lệch) cho từng ô so với real cùng split. Nếu mọi AUC
-    ≈ 0,5 thì nhánh ngữ điệu khó có ích trên dữ liệu này."""
-    from collections import defaultdict
+    ≈ 0,5 thì nhánh ngữ điệu khó có ích trên dữ liệu này.
 
+    Chỉ là phép kiểm nên lấy mẫu theo nhóm: 200 + 200 mẫu cho sai số chuẩn của AUC quanh 0,5 ≈ 0,03.
+    per_group=None: mọi mẫu. Đọc từ /kaggle/input rất chậm (cả 23.242 mẫu tuần tự: sau hơn 3 giờ vẫn
+    chưa xong, 03/11) nên đọc song song, tra file bằng cache_index và in tiến độ."""
     from sklearn.metrics import roc_auc_score
 
-    from vn_av_df.training.data import cache_file
+    from vn_av_df.training.data import cache_index
 
-    values = defaultdict(list)
-    for row in rows[: limit or None]:
-        sid = row["sample_id"]
-        paths = {e: cache_file(cfg, e, sid) for e in ("avhubert", "mouth", "wave")}
-        if not all(p.is_file() for p in paths.values()):
-            continue
-        with np.load(paths["wave"], allow_pickle=False) as z:
-            prosody = prosody_features(z["wave"].astype(np.float32) / 32768.0)
-        with np.load(paths["avhubert"], allow_pickle=False) as z:
-            landmarks, valid = z["landmarks"], z["visual_valid"]
-        with np.load(paths["mouth"], allow_pickle=False) as z:
-            pose = z["pose"] if "pose" in z.files else np.zeros((len(z["lips"]), 3))
-        head = head_features(landmarks, pose, valid)
-        score = coupling(prosody, head, valid[: len(head)])
-        if math.isfinite(score):
-            values[(row["split"], row.get("cell"), row.get("kind"))].append(-score)
+    picked = audit_sample(rows, per_group)
+    ids = [r["sample_id"] for r in picked]
+    index = {e: cache_index(cfg, e, ids) for e in ("avhubert", "mouth", "wave")}
+    print(f"Kiểm ngữ điệu–đầu: {len(picked)} / {len(rows)} mẫu", flush=True)
+    values, missing, start = defaultdict(list), 0, time.time()
+    with ThreadPoolExecutor(workers) as pool:  # đa phần chờ đọc đĩa mạng; zlib, FFT nhả GIL
+        jobs = {
+            pool.submit(clip_coupling, {e: index[e][r["sample_id"]] for e in index}): r
+            for r in picked
+        }
+        for done, job in enumerate(as_completed(jobs), 1):
+            row, score = jobs[job], job.result()
+            missing += score is None
+            if score is not None and math.isfinite(score):
+                values[(row["split"], row.get("cell"), row.get("kind"))].append(-score)
+            if done % every == 0 or done == len(picked):
+                print(f"  {done} / {len(picked)} mẫu, {time.time() - start:.0f} s", flush=True)
+    print(f"  thiếu cache: {missing} mẫu", flush=True)
     out = {}
     for (split, cell, kind), scores in sorted(values.items(), key=str):
         reals = [v for (s, c, _), vs in values.items() if s == split and c == "real" for v in vs]

@@ -21,6 +21,7 @@ Chế độ (`cfg["mismatch_labels"]["mode"]`): "construction" (v003: ô lip-syn
 "mask_lipsync" (dự phòng không cần đo: ô lip-sync → mask), "measured" (luật trên).
 """
 
+import json
 import math
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -394,9 +395,12 @@ def report(cfg):
     rows, _ = training_dataset(cfg)
     result = summary(rows)
     result["meters_found"] = [[m, str(p)] for m, p in measurement_files(cfg)]
+    runs = Path(cfg["runs"])
+    # Phần nhãn chỉ mất vài chục giây: ghi và in ngay, phép kiểm dưới đây chậm hơn nhiều.
+    write_json(runs / "sync_labels.json", result)
+    print(json.dumps(result, indent=1, ensure_ascii=False)[:20000], flush=True)
     # M3: ngữ điệu ↔ đầu có tách real với ô thay tiếng không (không học tham số, trước train).
     result["prosody_head_audit"] = audit(cfg, rows)
-    runs = Path(cfg["runs"])
     write_json(runs / "sync_labels.json", result)
     run = tracking.open_run(
         cfg, "labels", f"{runs.name}-sync-labels", group=runs.name, folder=runs, with_setup=True
