@@ -108,10 +108,10 @@ TRAIN_GROUPS = {
         "gates": ["BL-Ens"],
     },
     "M1": {
-        "title": "M1 (kiến trúc v003, có tham chiếu người): 2-3 phiên",
+        "title": "M1 (kiến trúc v003, có tham chiếu người): 2-3 phiên; hoãn, xem kết quả M3 rồi quyết",
         "lanes": [["trihead_v2"]],
         "hours": [12.3, 24.5],
-        "tier": "core",
+        "tier": "deferred",
         "gates": ["V1"],
     },
     "M3-nophi": {
@@ -145,14 +145,15 @@ TRAIN_GROUPS = {
 }
 # Phiên Kaggle T4 ×2 (1 giờ T4 ×2 trừ 1 giờ quota: thông báo T4 của Kaggle): hai hàng song song,
 # mỗi hàng một GPU, các bước trong một hàng chạy nối tiếp; model nào xong thì test ngay. Bỏ bước
-# nào thì xoá khỏi hàng (notebook: DROP). P4 / P5: PREVIOUS_RUN = Output phiên trước để M1 /
-# BL-A / M3-ref chạy tiếp từ last.pt. Giờ ○ ở RESEARCH_WORKLOG/v004_model.md §8.2.
+# nào thì xoá khỏi hàng (notebook: DROP). P5: PREVIOUS_RUN = Output P4 để BL-A / M3-ref chạy tiếp
+# từ last.pt. M1 không nằm trong phiên nào: user chốt 03/11 hoãn, có kết quả M3 rồi mới quyết,
+# chạy bằng GROUP = "M1". Giờ ○ ở RESEARCH_WORKLOG/v004_model.md §8.2.
 TRAIN_SESSIONS = {
     "P1": [["M3"], ["M3-noprosody"]],
     "P2": [["BL-Msup"], ["BL-A2", "BL-V", "M2", "BL-M"]],
-    "P3": [["M1"], ["M3-nophi", "M3-abs"]],
-    "P4": [["M1"], ["M3-ref"]],
-    "P5": [["BL-A"], ["M3-ref", "M1"]],
+    "P3": [["M3-nophi"], ["M3-abs"]],
+    "P4": [["BL-A"], ["M3-ref"]],
+    "P5": [["BL-A"], ["M3-ref"]],
 }
 # Đội hình đầy đủ: notebook in model nào chưa train xong; report gồm các model đã có (cổng thiếu
 # model thì bỏ qua).
@@ -269,15 +270,17 @@ def config():
         "bootstrap_replicates": 1000,
         # Nhãn mismatch (training/sync_labels.py, RESEARCH_WORKLOG/v004_model.md §5):
         # "measured" = lệch nội dung theo cách tạo + ô lip-sync đo tại lag 0 so với real (cần
-        # avhubert/sync_profile.json từ prepare và <part>/sync_syncnet.json từ training/01a_syncnet.py);
-        # "mask_lipsync" = dự phòng không cần đo (ô lip-sync → mask); "construction" = như v003.
+        # <part>/sync_syncnet.json từ training/01a_syncnet.py); "mask_lipsync" = dự phòng không cần
+        # đo (ô lip-sync → mask); "construction" = như v003.
+        # User chốt 03/11: một thước SyncNet, một ngưỡng p95 của real train, không dùng cổng độ nhọn,
+        # nên ô lip-sync không còn mask (trừ mẫu thiếu số đo).
         "mismatch_labels": {
             "mode": "measured",
-            "meters": ["avhubert", "syncnet"],
+            "meters": ["syncnet"],
             "near_shift": 1,
             "negative_quantile": 0.95,
-            "positive_quantile": 0.99,
-            "sharpness_quantile": 0.10,
+            "positive_quantile": 0.95,
+            "sharpness_quantile": 0.0,
         },
     }
     cfg["encoders"] = {

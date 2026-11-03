@@ -405,13 +405,33 @@ def test_train_groups_cover_test_roster_once():
     assert sorted(seen) == sorted(settings.TEST_MODELS)
     assert all(len(g["lanes"]) == 1 for g in settings.TRAIN_GROUPS.values())
     assert all(m in zoo.SPECS for m in seen)
-    assert {g["tier"] for g in settings.TRAIN_GROUPS.values()} == {"core", "optional"}
+    assert {g["tier"] for g in settings.TRAIN_GROUPS.values()} == {"core", "optional", "deferred"}
     first = next(iter(settings.TRAIN_GROUPS.values()))
     assert first["benchmark"] and first["lanes"] == [["trihead_v4"]]
     steps = [s for lanes in settings.TRAIN_SESSIONS.values() for lane in lanes for s in lane]
-    assert set(steps) == set(settings.TRAIN_GROUPS)
+    deferred = {k for k, g in settings.TRAIN_GROUPS.items() if g["tier"] == "deferred"}
+    assert deferred == {"M1"}  # hoãn, không tự chạy trong phiên nào; GROUP = "M1" khi quyết
+    assert set(steps) == set(settings.TRAIN_GROUPS) - deferred
     assert all(len(lanes) == 2 for lanes in settings.TRAIN_SESSIONS.values())
     assert settings.TRAIN_SESSIONS["P1"] == [["M3"], ["M3-noprosody"]]
+
+
+def test_settings_label_rule_has_one_threshold():
+    import settings
+
+    spec = settings.config()["mismatch_labels"]
+    assert spec["mode"] == "measured" and spec["meters"] == ["syncnet"]
+    assert spec["negative_quantile"] == spec["positive_quantile"] == 0.95
+    assert spec["sharpness_quantile"] == 0.0
+
+    info = {"meters": ["syncnet"], "thr": {"syncnet": {"negative": 10.0, "positive": 10.0}}}
+
+    def state(value):
+        curve = [0.0] * 31
+        curve[SL.MAX_LAG] = value
+        return SL.measured_state({"bad": {"syncnet": curve}, "measurable": True}, 0, info)
+
+    assert state(10.5) == 1 and state(10.0) == 0 and state(float("nan")) is None  # chỉ thiếu số đo mới mask
 
 
 def test_architecture_record_describes_model():

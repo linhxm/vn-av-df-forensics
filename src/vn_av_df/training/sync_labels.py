@@ -17,6 +17,10 @@ Căn cứ và luật: RESEARCH_WORKLOG/v004_model.md §5 (user chốt 31/10 - 01
   qua trễ cố định (syncnet_python); Wav2Lip được SyncNet chấm tốt hơn cả real (Wav2Lip Table 1),
   nên cần cả hai thước đồng ý.
 
+Đoạn trên là luật tổng quát theo `cfg["mismatch_labels"]`. Cấu hình v004 trong `settings.py` (user
+chốt 03/11, v004_model.md §5): `meters` chỉ SyncNet, phân vị âm = dương = 95 %, không cổng độ nhọn;
+vậy ô lip-sync thành 0 / 1, mask chỉ còn ở mẫu thiếu số đo.
+
 Chế độ (`cfg["mismatch_labels"]["mode"]`): "construction" (v003: ô lip-sync = 0, không chú thích),
 "mask_lipsync" (dự phòng không cần đo: ô lip-sync → mask), "measured" (luật trên).
 """

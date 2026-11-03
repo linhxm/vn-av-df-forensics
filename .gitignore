@@ -27,3 +27,6 @@ __pycache__/
 
 # Dữ liệu fake sinh từ part real (video người thật): không bao giờ đưa lên git
 /vn-av-df-data-part*_fake/
+
+# Trình xem so sánh real / fake: nhúng metadata dataset, chỉ dùng ở máy
+/tools/viewer.html

@@ -355,9 +355,10 @@ Mỗi phiên (`GROUP` = `P1`…`P5`, `settings.TRAIN_SESSIONS`) là **một note
 | `labels` | None (CPU) | nhãn mismatch 0 / 1 / mask + kiểm lối tắt độ trễ + kiểm ngữ điệu–đầu → `sync_labels.json` (gửi xem trước khi train) | |
 | `P1` | T4 ×2 | M3 (+ benchmark mọi model) | M3 −prosody |
 | `P2` (song song P1 được) | T4 ×2 | BL-M/sup | BL-A2 → BL-V → M2 → BL-M + SpeechForensics |
-| `P3` | T4 ×2 | M1 (dừng ở `MAX_HOURS`) | M3 −Φ → M3 −abs |
-| `P4` (`PREVIOUS_RUN` = P3) | T4 ×2 | M1 chạy tiếp | M3-ref |
-| `P5` (nếu giữ BL-A; `PREVIOUS_RUN` = P4) | T4 ×2 | BL-A | M3-ref / M1 chạy tiếp nếu còn dở |
+| `P3` | T4 ×2 | M3 −Φ | M3 −abs |
+| `P4` | T4 ×2 | BL-A (dừng ở `MAX_HOURS`) | M3-ref (dừng ở `MAX_HOURS`) |
+| `P5` (nếu còn dở; `PREVIOUS_RUN` = P4) | T4 ×2 | BL-A chạy tiếp | M3-ref chạy tiếp |
+| `M1` (hoãn, có kết quả M3 rồi quyết) | T4 ×2 | M1 (2-3 phiên, mỗi phiên sau gắn `PREVIOUS_RUN` = phiên trước) | |
 | `report` | None (CPU) | gộp Output mọi phiên (`PREVIOUS_RUN`): ghép muộn BL-Ens / BL-Ens-AV, cổng V1-V11, `report.md` (không chấm lại) | |
 
 Cần: 3 dataset part (có `sync_syncnet.json`, chạy `training/01a_syncnet.py` ở local) + Output 9 phiên prepare. Mỗi run train trên W&B có luôn cách cài phiên (config `setup`, bảng `setup/*`, artifact `setup-log`) và `architecture`; mỗi lần test ghi `test-log.json` (số lần model dùng test). Model dừng ở `MAX_HOURS` chưa xong thì chưa test; phiên sau train tiếp rồi test.
@@ -368,7 +369,7 @@ Cần: 3 dataset part (có `sync_syncnet.json`, chạy `training/01a_syncnet.py`
         (
             "code",
             """
-GROUP = "labels"      # "labels" → "P1" (∥ "P2") → "P3" → "P4" → ("P5") → "report"; hoặc một bước lẻ, vd. "M2"
+GROUP = "labels"      # "labels" → "P1" (∥ "P2") → ("P3") → ("P4") → ("P5") → "report"; hoặc một bước lẻ, vd. "M2", "M1"
 DROP = []             # bước bỏ ở phiên này, vd. ["M3-abs"] (settings.TRAIN_GROUPS)
 DATASET_PARTS = [Path(f"/kaggle/input/datasets/linhxm/{s}") for s in (
     "vn-av-df-data-part1-trim04-fake", "vn-av-df-data-part2-fake", "vn-av-df-data-part3-fake")]
@@ -376,8 +377,8 @@ DATASET_PARTS = [Path(f"/kaggle/input/datasets/linhxm/{s}") for s in (
 PREPARE = "/kaggle/input/notebooks/linhxm/vn-av-df-prepare-p{}-{}/vn-av-df-forensics/cache/vn-av-df-data"
 CACHES = [Path(PREPARE.format(p, s)) for p in (1, 2, 3) for s in ("landmarks", "cpu", "gpu")]
 RUNS = "/kaggle/input/notebooks/linhxm/vn-av-df-train-{}/vn-av-df-forensics/runs/" + settings.RUN_NAME
-PREVIOUS_RUN = []     # P4: [Path(RUNS.format("P3"))]; P5: [Path(RUNS.format("P4"))];
-                      # report: [Path(RUNS.format(g)) for g in ("P1", "P2", "P3", "P4")] (+ "P5" nếu chạy)
+PREVIOUS_RUN = []     # P5: [Path(RUNS.format("P4"))];
+                      # report: [Path(RUNS.format(g)) for g in ("P1", "P2")] (+ phiên khác đã chạy, vd. "P3", "M1")
 SEEDS = [42]          # lượt đầu một seed; chốt thiết kế rồi chạy [42, 43, 44]
 MAX_HOURS = 11        # tính từ cell này; dừng sạch (lưu last.pt) trước giới hạn 12 giờ của Kaggle
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # trước lần dùng GPU đầu
