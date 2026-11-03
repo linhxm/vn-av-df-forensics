@@ -517,7 +517,7 @@ def test_batches_split_clips_across_sessions(world, tmp_path, monkeypatch):
     assert kinds == {"face"}
 
 
-def write_fake_caches(cfg, rows, dim=32):
+def write_fake_caches(cfg, rows, dim=32, ssl_groups=3):
     rng = np.random.default_rng(0)
     cache = Path(cfg["cache"])
     for row in rows:
@@ -540,7 +540,7 @@ def write_fake_caches(cfg, rows, dim=32):
         )
         np.savez(
             cache / "xlsr" / f"{sid}.npz",
-            ssl=rng.normal(size=(n, 3, 1024)).astype(np.float16),
+            ssl=rng.normal(size=(n, ssl_groups, 1024)).astype(np.float16),
             times_s=np.arange(n) / 25,
             valid=np.ones(n, bool),
         )
@@ -1006,3 +1006,34 @@ def test_benchmark_estimates_epoch_time(world, tmp_path):
             entry["max_hours_per_seed"] * len(cfg["seeds"])
         )
     assert (Path(cfg["runs"]) / "benchmark.json").is_file()
+
+
+def test_benchmark_builds_models_from_cache_ssl_groups(world, tmp_path):
+    """Cache XLS-R v004 có 5 nhóm lớp: benchmark phải dựng model theo cache như train."""
+    from vn_av_df.dataset import training_dataset
+    from vn_av_df.training.benchmark import benchmark
+
+    cfg = copy.deepcopy(world["cfg"])
+    cfg["runs"] = str(tmp_path / "runs")
+    cfg["cache"] = str(tmp_path / "cache")
+    for name in ("avhubert", "mouth", "lipinc", "xlsr", "wave"):
+        (Path(cfg["cache"]) / name).mkdir(parents=True, exist_ok=True)
+    rows, _ = training_dataset(cfg)
+    write_fake_caches(cfg, rows, ssl_groups=5)
+    models = [
+        "xlsr_frozen",
+        "avh_align",
+        "avh_align_sup",
+        "speechforensics",
+        "trihead_v2",
+        "avh_align_plus",
+        "trihead_v4",
+        "trihead_v4_no_prosody",
+        "trihead_v4_no_phi",
+        "trihead_v4_abs",
+        "trihead_v4_ref",
+    ]
+    report = benchmark(cfg, models, steps=1, warmup=0)
+    for name in models:
+        entry = report["models"][name]
+        assert entry["trainable"] is False or entry["error"] is None, name

@@ -23,7 +23,7 @@ import torch
 from vn_av_df import tracking
 from vn_av_df.common.runtime import environment, write_json
 from vn_av_df.training.models import build
-from vn_av_df.training.train import feature_dim, loaders, recipe
+from vn_av_df.training.train import feature_dim, loaders, recipe, ssl_groups
 
 # facebook/wav2vec2-xls-r-300m (dùng khi chưa tải trọng số; chỉ để đo thời gian).
 XLSR_300M = dict(
@@ -141,6 +141,8 @@ def benchmark(cfg, models=None, steps=10, warmup=2, synthetic=False):
         assets["xlsr"] = XLSR_300M
     init = assets.get("avh_align_init")
     assets["load_pretrained"] = bool(init and Path(init).is_file()) or not synthetic
+    if rows:  # như train: dựng model theo số nhóm lớp của cache (tổng hợp: 3 nhóm)
+        assets["ssl_groups"] = ssl_groups(cfg, rows)
     base = cfg["training"]
     seeds = len(cfg["seeds"])
     dim = feature_dim(cfg, rows) if rows else 1024
