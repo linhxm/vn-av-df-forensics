@@ -819,7 +819,17 @@ def test_resume_after_interruption_and_provenance(world, tmp_path, monkeypatch):
     assert (out / "last.pt").is_file()
     assert not json.loads((out / "history.json").read_text(encoding="utf-8"))["complete"]
     monkeypatch.setattr(T, "run_epoch", original)
+    loads, torch_load = [], torch.load
+
+    def spy_load(path, *args, **kwargs):
+        if Path(path).name == "last.pt":
+            loads.append(kwargs.get("map_location"))
+        return torch_load(path, *args, **kwargs)
+
+    monkeypatch.setattr(torch, "load", spy_load)
     T.train_all(cfg)
+    # Trên GPU, nạp thẳng vào cuda làm trạng thái RNG hỏng ("RNG state must be a torch.ByteTensor").
+    assert loads == ["cpu"]
     history = json.loads((out / "history.json").read_text(encoding="utf-8"))
     assert history["complete"] and history["resumed_at"] == [2]
     assert [e["epoch"] for e in history["epochs"]] == [1, 2, 3]

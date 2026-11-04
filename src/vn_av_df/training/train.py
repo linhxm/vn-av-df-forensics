@@ -432,7 +432,8 @@ def train_one(cfg, name, seed, rows, out):
     best, patience, stop, start = None, 0, "max_epochs", 1
     resume = out / "last.pt"
     if resume.is_file():
-        state = torch.load(resume, map_location=device, weights_only=False)
+        # Nạp về CPU: trạng thái RNG phải là ByteTensor trên CPU; model, optimizer tự về đúng thiết bị.
+        state = torch.load(resume, map_location="cpu", weights_only=False)
         speed = ("workers", "eval_batch_size")  # chỉ ảnh hưởng tốc độ, đổi được khi chạy tiếp
         same = {k: v for k, v in options.items() if k not in speed} == {
             k: v for k, v in state["options"].items() if k not in speed
