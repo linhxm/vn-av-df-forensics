@@ -1,4 +1,4 @@
-# VN-AV-DF Forensics (v004)
+# VN-AV-DF Forensics (v005)
 
 **A Vietnamese lip-sync deepfake benchmark: real speakers, six audio-visual cells, unseen generators and voices at test time.**
 
@@ -7,7 +7,7 @@
 | v001-v002 | `v001`, `v002` | earlier study on one pilot part (closed 14 October 2026) |
 | v003 | `v003` | the benchmark rebuilt from scratch; detectors M1, M2 and baselines on part 1 |
 | **v004** | `v004` | measured mismatch labels, the M3 lip–audio–head detector, all three parts (closed 7 November 2026): **[docs/v004_report.md](docs/v004_report.md)** |
-| v005 | `main` | M3-R, a detector trained for re-compressed video (in progress) |
+| **v005** | `main` | **M3-R**, a detector trained on real re-compressed video, with a processed-real check and a resolution gate (local study done, Kaggle training pending) |
 
 ## Benchmark design
 
@@ -24,7 +24,7 @@
 
 ## Detectors
 
-Baselines are re-implemented from the authors' released code (differences listed in the model docstrings and in [docs/v003_model.md](docs/v003_model.md)). Names in **bold** were trained in v004.
+Baselines are re-implemented from the authors' released code (differences listed in the model docstrings and in [docs/v003_model.md](docs/v003_model.md)). Names in **bold** are trained in v005 (core steps).
 
 | Name | Role |
 |---|---|
@@ -37,10 +37,11 @@ Baselines are re-implemented from the authors' released code (differences listed
 | `bl_ens`, `bl_ens_av` | BL-Ens = max(BL-V, BL-A); **BL-Ens-AV** = max(BL-M/sup, BL-A2); z-normalized on validation reals (no training) |
 | `trihead_v2` | M1 (v003): sync (lag cost volume) + mouth trace (NPR, head pose) + audio (learned XLS-R layer weights) branches, three outputs, per-speaker reference clips, pseudo-fake audio replacement, speaker gradient reversal; deferred in v004 |
 | `avh_align_plus` | **M2**: AVH-Align scorer over a ±15-frame lag volume + lip–head motion + pseudo-fakes |
-| `trihead_v4` | **M3** (v004): relative / absolute sync streams, AVH-Align Φ channel, appearance, prosody ↔ head-motion branch, mismatch / offset / cell-type heads |
-| `trihead_v4_no_prosody` | **M3 without the prosody ↔ head branch**; other ablations (`_no_phi`, `_abs`, `_ref`, `_no_type`) are in `models.SPECS` |
+| `trihead_v4` | M3 (v004): relative / absolute sync streams, AVH-Align Φ channel, appearance, prosody ↔ head-motion branch, mismatch / offset / cell-type heads; optional ablation in v005 |
+| `trihead_v5` | **M3-R** (v005): M3 without prosody, appearance and speaker loss; trained on clean / re-encoded pairs (480p and 360p) with a consistency loss, sham clips as hard negatives for the visual head, XLS-R layer and channel dropout; at inference a **resolution gate** skips the visual evidence below 360p (AI? from the audio head) |
+| `trihead_v5_no_pair`, `_quality`, `_clean` | M3-R ablations: random compressed copies without pairing (**core**); with a quality-conditioned FiLM branch; trained on clean video only |
 
-Evaluation covers four tasks (ai / visual / audio / mismatch), per-cell, per-generator, per-voice and seen/unseen breakdowns, per-speaker AUC, localization inside partial segments (visual and mismatch), reference-normalized scores, a delayed-audio stress test, operating points at 5% validation FPR, and pre-registered gates with speaker-level bootstrap CIs. Since v004 the mismatch label of lip-synced clips is **measured** (SyncNet at lag 0 against real clips) instead of set by construction, and each model is tested right after training (every test use is logged in `test-log.json`).
+Evaluation covers four tasks (ai / visual / audio / mismatch), per-cell, per-generator, per-voice and seen/unseen breakdowns, per-speaker AUC, localization inside partial segments (visual and mismatch), reference-normalized scores, a delayed-audio stress test, operating points at 5% validation FPR, and pre-registered gates with speaker-level bootstrap CIs. Since v004 the mismatch label of lip-synced clips is **measured** (SyncNet at lag 0 against real clips) instead of set by construction, and each model is tested right after training (every test use is logged in `test-log.json`). Since v005 every model is also trained with **re-encoded copies** (`settings.VARIANTS`: 480p libx264 CRF 30 + AAC 64 kbps, 360p CRF 35 + AAC 32 kbps) and tested on them and on two levels never seen in training (360p VP9 + Opus, 288p), with false-alarm rates at the clean-validation threshold and gates R1-R8, R2b, R2c. A **processed-real** set (real, sham and voice-only clips passed through benign codec / rescaling chains like those inside the generator pipelines, labels kept; three of the seven chain families appear only at test time) checks whether a detector finds AI manipulation or just the processing trace of the fake pipeline.
 
 ## Repository layout
 
@@ -58,11 +59,11 @@ Evaluation covers four tasks (ai / visual / audio / mismatch), per-cell, per-gen
 
 How to run each step is described in **[PIPELINE.md](PIPELINE.md)** (written in Vietnamese).
 
-## Status (v004, 7 November 2026)
+## Status (v005, 8 November 2026)
 
-- Three parts (120 speakers, 23,242 clips) generated and featurized on Kaggle; M3, M3 without prosody, M2 and five baselines trained and tested once (seed 42).
-- Test, 31 speakers: **M3 AI? AUC 0.968**, +0.038 [+0.031; +0.045] over the BL-Ens-AV late fusion and +0.041 [+0.033; +0.050] over M2; 0.953 on the unseen LatentSync. The new prosody ↔ head branch does not help (−0.003).
-- A post-hoc review found that the visual head relies partly on sharpness and a whole-frame trace of the generation pipeline, and that every detector loses much of its accuracy on re-compressed video (M3-lean AI? 0.965 → 0.900 at 480p → 0.761 at 360p). Details and limitations: [docs/v004_report.md](docs/v004_report.md).
+- v004 is closed (branch `v004`, [docs/v004_report.md](docs/v004_report.md)): M3 reached AI? AUC 0.968 on clean test video, but every detector lost much of its accuracy on re-compressed video.
+- v005 code is on `main` and passes the synthetic tests; it has **not been trained on Kaggle yet**. Before training, the `prepare` sessions `c480`, `c360` (training) and `pr`, `w360`, `c288` (evaluation only) build the variant caches, one per part.
+- Local study (part 3 only, 1,000 common test clips, 4,800 steps, 2 seeds for M3-R): M3-R AI? AUC 0.964 clean, 0.944 at 480p, 0.892 at 360p and 0.953 on unseen VP9 360p; at 360p it flags 11% of real clips at the clean threshold (0.43 without 360p training). On the processed-real set the AUC equals the AUC against untouched real clips (0.98 visual) and 1-3% of processed real clips are flagged, including unseen chain families, so the detector does not rely on the pipeline trace. Below 360p the visual evidence is gone for every AV-HuBERT-based detector (AUC ~0.5, nearly all real clips flagged); with the resolution gate M3-R keeps a 3% false-alarm rate there but only detects AI voices.
 
 ## Ethics and usage limits
 
