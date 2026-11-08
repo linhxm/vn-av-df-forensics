@@ -217,6 +217,13 @@ def training_dataset(cfg, verify_media=False, labels=True):
                 }
             rows.append(row)
     validate_rows(rows)
+    if cfg.get("smoke_speakers"):
+        # Chạy thử luồng (notebook SMOKE): giữ k người đầu (theo tên) mỗi split, mọi mẫu của họ.
+        k = int(cfg["smoke_speakers"])
+        keep = set()
+        for split in ("train", "validation", "test"):
+            keep |= set(sorted({r["speaker_id"] for r in rows if r["split"] == split and r.get("speaker_id")})[:k])
+        rows = [r for r in rows if r.get("speaker_id") in keep]
     signature = (
         receipts[0]["manifest_sha256"] if receipts[0]["part"] is None else fingerprint(receipts)
     )

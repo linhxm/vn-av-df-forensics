@@ -1,6 +1,8 @@
-"""Train song song nhiều nhóm model trong một phiên, mỗi nhóm (lane) một GPU (Kaggle T4 ×2).
+"""Train song song nhiều nhóm model trong một phiên (Kaggle T4 ×2). v005: số lane có thể lớn hơn số GPU:
+lane đầu dùng riêng GPU0 (model nặng), các lane sau chia GPU còn lại (`lane_devices`), vd. baseline nhẹ
+chạy đồng thời trên GPU1.
 
-Mỗi lane là một tiến trình `train_all` riêng (CUDA_VISIBLE_DEVICES = chỉ số GPU), ghi vào
+Mỗi lane là một tiến trình `train_all` riêng (CUDA_VISIBLE_DEVICES = GPU của lane), ghi vào
 `<runs>-gpu<i>`; xong thì chuyển (không chép) các <model>_seed<seed> về `cfg["runs"]` bằng
 `merge_runs(move=True)`. Không đổi phép toán của model: chỉ chạy hai model cùng lúc thay vì lần
 lượt, nên giờ phiên (quota Kaggle tính theo giờ phiên) giảm gần một nửa khi hai lane cân nhau.
@@ -21,9 +23,21 @@ def lane_dirs(cfg, count):
     return [runs.parent / f"{runs.name}-gpu{i}" for i in range(count)]
 
 
-def run_lanes(cfg, lanes):
+def lane_devices(lanes, gpus):
+    """GPU của từng lane: lane 0 → GPU0 riêng; lane sau xoay vòng trên GPU 1..n-1 (chỉ 1 GPU: mọi lane GPU0)."""
+    if gpus <= 1:
+        return [0] * lanes
+    return [0] + [1 + (i - 1) % (gpus - 1) for i in range(1, lanes)]
+
+
+def run_lanes(cfg, lanes, gpus=None):
     """lanes: danh sách nhóm model, vd. [["ssl_aasist"], ["trihead_v2", ...]]. Lane nào lỗi thì
-    vẫn gộp phần đã train rồi báo lỗi."""
+    vẫn gộp phần đã train rồi báo lỗi. gpus: số GPU (mặc định torch.cuda.device_count())."""
+    if gpus is None:
+        import torch
+
+        gpus = max(1, torch.cuda.device_count())
+    devices = lane_devices(len(lanes), gpus)
     runs = Path(cfg["runs"])
     runs.mkdir(parents=True, exist_ok=True)
     folders = lane_dirs(cfg, len(lanes))
@@ -44,7 +58,7 @@ def run_lanes(cfg, lanes):
             write_json(config, sub)
             env = {
                 **os.environ,
-                "CUDA_VISIBLE_DEVICES": str(i),
+                "CUDA_VISIBLE_DEVICES": str(devices[i]),
                 "PYTHONPATH": env_path,
                 "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
             }
@@ -57,10 +71,10 @@ def run_lanes(cfg, lanes):
                 encoding="utf-8",
                 errors="replace",
             )
-            reader = threading.Thread(target=relay, args=(proc, f"[GPU{i}] "), daemon=True)
+            reader = threading.Thread(target=relay, args=(proc, f"[L{i}/GPU{devices[i]}] "), daemon=True)
             reader.start()
             procs.append((proc, reader))
-            print(f"[GPU{i}] lane {i}: {', '.join(models)} → {lane}", flush=True)
+            print(f"[L{i}/GPU{devices[i]}] lane {i}: {', '.join(models)} → {lane}", flush=True)
         codes = [proc.wait() for proc, _ in procs]
         for _, reader in procs:
             reader.join()

@@ -101,14 +101,16 @@ TRAIN_GROUPS = {
         "benchmark": True,
         # ○ Cặp sạch + nén: mỗi epoch xử lý mỗi mẫu 2 lần; giây / step như bản không cặp (07/11: 1.075
         # so với 1.042 s / 1.600 step) nên giờ / epoch ≈ 2 lần; dừng ở MAX_HOURS thì phiên sau chạy tiếp.
-        "hours": [5, 11],
+        # 08/11: M3 v004 thật mất 34,5 giờ (75-96 phút / epoch) vì đọc /kaggle/input ~20 MB/s; với chép cache
+        # sang ổ local (STAGE_LOCAL, training/stage.py) ước lại theo phần tính toán ~20-30 phút / epoch.
+        "hours": [9, 18],
         "tier": "core",
         "gates": ["mọi cổng R", "V2", "V3", "V6", "V7"],
     },
     "M3-R-nopair": {
         "title": "M3-R bỏ cặp sạch ↔ nén (bản nén lấy ngẫu nhiên, không loss nhất quán)",
         "lanes": [["trihead_v5_no_pair"]],
-        "hours": [3, 6.5],
+        "hours": [5, 11],
         "tier": "core",
         "gates": ["R6"],
     },
@@ -183,14 +185,15 @@ TRAIN_GROUPS = {
         "gates": ["BL-Ens"],
     },
 }
-# Phiên Kaggle T4 ×2 (1 giờ T4 ×2 trừ 1 giờ quota: thông báo T4 của Kaggle): hai hàng song song,
-# mỗi hàng một GPU, các bước trong một hàng chạy nối tiếp; model nào xong thì test ngay. Bỏ bước
-# nào thì xoá khỏi hàng (notebook: DROP). P5: PREVIOUS_RUN = Output P4 để BL-A (và M3 nếu dở) chạy tiếp
-# từ last.pt. M1 không nằm trong phiên nào: user chốt 03/11 hoãn, có kết quả M3 rồi mới quyết,
-# chạy bằng GROUP = "M1". Giờ ○ ở RESEARCH_WORKLOG/v004_model.md §8.2.
+# Phiên Kaggle T4 ×2 (1 giờ T4 ×2 trừ 1 giờ quota: thông báo T4 của Kaggle): các hàng chạy song song, các bước
+# trong một hàng chạy nối tiếp. v005: hàng đầu dùng riêng GPU0 (model nặng), các hàng sau chia GPU còn lại
+# (training.lanes.lane_devices): baseline nhẹ (BL-M/sup, BL-A2, M2, BL-M, BL-V: < 1,2 GB VRAM ở benchmark v004)
+# chạy đồng thời trên GPU1. Phiên train CHỈ train; test chấm một lần ở GROUP = "test" sau khi train xong hết
+# (một run W&B cho test + báo cáo). Model chưa xong ở MAX_HOURS thì chạy lại phiên đó với PREVIOUS_RUN (bước đã
+# xong được bỏ qua): P2 tiếp M3-R của P1. P5: PREVIOUS_RUN = Output P4. M1 hoãn (GROUP = "M1").
 TRAIN_SESSIONS = {
-    "P1": [["M3-R"], ["M3-R-nopair"]],
-    "P2": [["BL-Msup"], ["BL-A2", "BL-V", "M2", "BL-M"]],
+    "P1": [["M3-R"], ["BL-Msup", "M2", "BL-M"], ["BL-A2", "BL-V"]],
+    "P2": [["M3-R"], ["M3-R-nopair"]],
     "P3": [["M3-R-quality"], ["M3-R-clean"]],
     "P4": [["BL-A"], ["M3"]],
     "P5": [["BL-A"], ["M3"]],

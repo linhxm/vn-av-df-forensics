@@ -412,8 +412,11 @@ def test_train_groups_cover_test_roster_once():
     deferred = {k for k, g in settings.TRAIN_GROUPS.items() if g["tier"] == "deferred"}
     assert deferred == {"M1"}  # hoãn, không tự chạy trong phiên nào; GROUP = "M1" khi quyết
     assert set(steps) == set(settings.TRAIN_GROUPS) - deferred
-    assert all(len(lanes) == 2 for lanes in settings.TRAIN_SESSIONS.values())
-    assert settings.TRAIN_SESSIONS["P1"] == [["M3-R"], ["M3-R-nopair"]]
+    assert all(len(lanes) >= 2 for lanes in settings.TRAIN_SESSIONS.values())
+    # v005: P1 = M3-R (GPU0 riêng) + baseline lõi chia GPU1; P2 chạy tiếp M3-R + M3-R-nopair
+    assert settings.TRAIN_SESSIONS["P1"][0] == ["M3-R"]
+    core = {k for k, g in settings.TRAIN_GROUPS.items() if g["tier"] == "core"}
+    assert core <= {s for p in ("P1", "P2") for lane in settings.TRAIN_SESSIONS[p] for s in lane}
     assert {n for n, v in settings.VARIANTS.items() if v.get("train")} == {"c480", "c360"}
     assert settings.config()["training"]["variant_p"] == 0.5
     # mọi cổng R đều có đủ hai model trong đội hình (hoặc là ghép muộn)

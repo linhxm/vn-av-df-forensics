@@ -105,3 +105,54 @@ def test_resolution_gate():
     assert resolution_gate(scores, 360, 360) == (scores, False)
     assert resolution_gate({"ai": 0.9, "visual": 0.9}, 288, 360)[1] is False
     assert resolution_gate(scores, 288, None)[1] is False
+
+
+def test_stage_copies_needed_files_first(tmp_path):
+    """Chép npz của mẫu cần + file phụ, bỏ sidecar từng mẫu; gốc local đứng trước gốc cũ; thiếu chỗ thì giữ nguyên."""
+    from vn_av_df.training.data import cache_index
+    from vn_av_df.training.stage import stage
+
+    roots = []
+    for part in ("p1", "p2"):
+        root = tmp_path / "input" / f"prepare-{part}" / "repo" / "cache" / "data"
+        for enc in ("avhubert", "mouth", "lipinc"):
+            (root / enc).mkdir(parents=True)
+            for sid in (f"{part}_a", f"{part}_b"):
+                (root / enc / f"{sid}.npz").write_bytes(b"x" * 10)
+                (root / enc / f"{sid}.json").write_text("{}")
+        (root / "avhubert" / "sync_profile.json").write_text("{}")
+        roots.append(root)
+    new = stage(roots, ["avhubert", "mouth"], ["p1_a", "p2_a"], tmp_path / "local", threads=4, reserve_gb=0, log=lambda *_: None)
+    staged = [r for r in new if "local" in r]
+    assert len(staged) == 2 and new[2:] == [str(r) for r in roots]
+    first = tmp_path / "local" / "00-prepare-p1"
+    assert (first / "avhubert" / "p1_a.npz").is_file() and (first / "mouth" / "p1_a.npz").is_file()
+    assert not (first / "avhubert" / "p1_b.npz").exists() and not (first / "avhubert" / "p1_a.json").exists()
+    assert (first / "avhubert" / "sync_profile.json").is_file() and not (first / "lipinc").exists()
+    index = cache_index({"cache": new}, "avhubert", ["p1_a", "p1_b"])
+    assert "local" in str(index["p1_a"]) and "input" in str(index["p1_b"])
+    assert stage(roots, ["avhubert"], ["p1_a"], tmp_path / "local2", reserve_gb=1e9, log=lambda *_: None) == [str(r) for r in roots]
+
+
+def test_lane_devices_share_second_gpu():
+    """Lane đầu dùng riêng GPU0; các lane sau chia GPU còn lại; một GPU thì mọi lane GPU0."""
+    from vn_av_df.training.lanes import lane_devices
+
+    assert lane_devices(3, 2) == [0, 1, 1]
+    assert lane_devices(2, 2) == [0, 1]
+    assert lane_devices(4, 3) == [0, 1, 2, 1]
+    assert lane_devices(3, 1) == [0, 0, 0]
+
+
+def test_smoke_subset_keeps_few_speakers(tmp_path, monkeypatch):
+    """smoke_speakers = k: giữ k người mỗi split, mọi mẫu của họ."""
+    import vn_av_df.dataset as D
+
+    rows = [{"sample_id": f"{sp}_{i}", "speaker_id": sp, "split": sp[0:1] == "a" and "train" or "test"}
+            for sp in ("a1", "a2", "a3", "b1", "b2") for i in range(3)]
+    monkeypatch.setattr(D, "selected_parts", lambda cfg: [(None, tmp_path)])
+    monkeypatch.setattr(D, "load_dataset", lambda folder, verify_media=False: [dict(r) for r in rows])
+    monkeypatch.setattr(D, "validate_rows", lambda rows: None)
+    monkeypatch.setattr(D, "sha", lambda path: "x")
+    out, sel = D.training_dataset({"dataset": str(tmp_path), "smoke_speakers": 2}, labels=False)
+    assert {r["speaker_id"] for r in out} == {"a1", "a2", "b1", "b2"} and len(out) == 12

@@ -160,7 +160,7 @@ def num(value, digits=3):
     return f"{value:.{digits}f}"
 
 
-def build_report(cfg):
+def build_report(cfg, run=None):
     runs = Path(cfg["runs"])
     evaluation = read_json(runs / "evaluation.json")
     results = evaluation["results"]
@@ -391,15 +391,17 @@ def build_report(cfg):
     text = "\n".join(lines) + "\n"
     atomic_bytes(runs / "report.md", text.encode("utf-8"))
     write_json(runs / "gates.json", gates)
-    log_report(cfg, runs, by_model, gates)
+    log_report(cfg, runs, by_model, gates, run=run)
     return {"report": str(runs / "report.md"), "gates": gates, "tasks": TASKS}
 
 
-def log_report(cfg, runs, by_model, gates):
+def log_report(cfg, runs, by_model, gates, run=None):
     """Run "report": bảng mean ± std theo seed, các cổng kèm CI, report.md làm artifact."""
-    run = tracking.open_run(
-        cfg, "report", f"{runs.name}-report", group=runs.name, folder=runs, with_setup=True
-    )
+    own = run is None
+    if own:
+        run = tracking.open_run(
+            cfg, "report", f"{runs.name}-report", group=runs.name, folder=runs, with_setup=True
+        )
     if not run.active:
         return
     rows = []
@@ -441,4 +443,5 @@ def log_report(cfg, runs, by_model, gates):
         ],
     )
     run.artifact(f"report-{runs.name}", "report", [runs / "report.md", runs / "gates.json"])
-    run.finish()
+    if own:
+        run.finish()

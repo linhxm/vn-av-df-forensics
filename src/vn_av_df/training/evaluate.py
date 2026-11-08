@@ -854,12 +854,13 @@ def evaluated(folder, stamp):
     return metrics if metrics.get("stamp") == stamp else None
 
 
-def evaluate_all(cfg, force=False, models=None):
+def evaluate_all(cfg, force=False, models=None, run=None):
     """Test model đã train xong. `models` (tên model, vd. ["trihead_v4"]): chỉ chấm các model này
     (bước train vừa xong); None: mọi model trong runs. Model khác đã chấm thì đọc lại kết quả.
     Checkpoint đã chấm (cùng sha best.pt, cùng dữ liệu) không chạy lại trừ khi force; checkpoint
     mới của model đã từng chấm (train lại) được chấm và ghi là lần thứ n trong test-log.json.
-    Ghép muộn tính lại từ dự đoán đã lưu khi đủ hai thành viên (không cần GPU)."""
+    Ghép muộn tính lại từ dự đoán đã lưu khi đủ hai thành viên (không cần GPU).
+    run: run W&B đã mở (bước "test" v005: một run duy nhất cho test + báo cáo); None thì mở run riêng."""
     rows, selection = training_dataset(cfg)
     runs = Path(cfg["runs"])
     device = cfg["device"] if torch.cuda.is_available() or cfg["device"] == "cpu" else "cpu"
@@ -931,11 +932,11 @@ def evaluate_all(cfg, force=False, models=None):
         {"seen": {k: sorted(v) for k, v in seen.items()}, "results": results},
     )
     stamp = {"dataset": selection, "checkpoints": {k: v["checkpoint"] for k, v in stamps.items()}}
-    log_evaluation(cfg, runs, rows, results, seen, stamp, fresh)
+    log_evaluation(cfg, runs, rows, results, seen, stamp, fresh, run=run)
     return {name: {t: m["tasks"][t]["auc"] for t in m["tasks"]} for name, m in results.items()}
 
 
-def log_evaluation(cfg, runs, rows, results, seen, stamp, models):
+def log_evaluation(cfg, runs, rows, results, seen, stamp, models, run=None):
     """Run "evaluate" mỗi lần chấm (theo phiên): bảng test của mọi model đã chấm tới lúc đó +
     ROC + histogram điểm + artifact; `models` = các model vừa chấm ở lần này."""
     session = cfg.get("session")
@@ -943,21 +944,23 @@ def log_evaluation(cfg, runs, rows, results, seen, stamp, models):
     # Tên run (và file wandb-<tên>.json): một model thì tên model, nhiều model thì số lượng; danh
     # sách đủ ở config evaluated_now (ghép mọi tên vượt giới hạn 260 ký tự đường dẫn Windows).
     now = Path(models[0]).name if len(models) == 1 else (f"{len(models)}models" if models else "")
-    run = tracking.open_run(
-        cfg,
-        "evaluate",
-        f"{group}-test" + (f"-{session}" if session else "") + (f"-{now}" if now else ""),
-        group=group,
-        config={
-            "seen": {k: sorted(v) for k, v in seen.items()},
-            "stamp": fingerprint(stamp),
-            "evaluated_now": [Path(m).name for m in models],
-            "session": session,
-            "train_group": cfg.get("train_group"),
-        },
-        folder=runs,
-        tags=[f"group:{cfg['train_group']}"] if cfg.get("train_group") else (),
-    )
+    own = run is None
+    if own:
+        run = tracking.open_run(
+            cfg,
+            "evaluate",
+            f"{group}-test" + (f"-{session}" if session else "") + (f"-{now}" if now else ""),
+            group=group,
+            config={
+                "seen": {k: sorted(v) for k, v in seen.items()},
+                "stamp": fingerprint(stamp),
+                "evaluated_now": [Path(m).name for m in models],
+                "session": session,
+                "train_group": cfg.get("train_group"),
+            },
+            folder=runs,
+            tags=[f"group:{cfg['train_group']}"] if cfg.get("train_group") else (),
+        )
     if not run.active:
         return
     summary, parts, speakers, refs, locs = [], [], [], [], []
@@ -1036,4 +1039,5 @@ def log_evaluation(cfg, runs, rows, results, seen, stamp, models):
         + [runs / f / "predictions-test.npz" for f in results],
         {"stamp": fingerprint(stamp)},
     )
-    run.finish()
+    if own:
+        run.finish()

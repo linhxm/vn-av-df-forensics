@@ -273,6 +273,7 @@ PREVIOUS_CACHE = None  # Path("/kaggle/input/<Output phiên dở>/vn-av-df-foren
 # Phiên "cpu" / "gpu" / biến thể: Output phiên "landmarks" CỦA CÙNG PART (đường dẫn ở panel Input).
 OTHER_CACHES = []      # vd. [Path("/kaggle/input/notebooks/linhxm/vn-av-df-prepare-p1-landmarks/vn-av-df-forensics/cache/vn-av-df-data")]
 SESSION_NAME = f"prepare-p{PART}-{SESSION}"
+SMOKE = False          # thử luồng: chỉ 2 người mỗi split, không W&B (Output không dùng để train; xong thì đặt lại False)
 MODELS = settings.MODELS + settings.ABLATIONS
 import torch
 from vn_av_df.dataset import part_selection
@@ -302,6 +303,9 @@ cfg["dataset"], cfg["dataset_parts"] = str(root), parts
 cfg["prepare_devices"] = [f"cuda:{i}" for i in range(torch.cuda.device_count())] or [None]
 cfg["wandb"] = WANDB
 cfg["session"] = SESSION_NAME
+if SMOKE:
+    cfg["smoke_speakers"] = 2
+    cfg["wandb"] = None
 OUTPUT_CACHE = Path(cfg["cache"])  # ghi vào đây; đọc thêm từ OTHER_CACHES
 cfg["run_group"] = OUTPUT_CACHE.name  # cùng group W&B với run prepare
 if PREVIOUS_CACHE and not OUTPUT_CACHE.exists():
@@ -360,22 +364,22 @@ train = nb(
         (
             "markdown",
             """
-# v005 · Train từng model (2 hàng song song), test ngay trên test cả 3 part, báo cáo
+# v005 · Train từng model (nhiều hàng song song trên 2 GPU), rồi test một lần + báo cáo
 
-Mỗi phiên (`GROUP` = `P1`…`P5`, `settings.TRAIN_SESSIONS`) là **một notebook Kaggle T4 ×2** tên `vn-av-df-train-<GROUP>`: hai hàng song song, mỗi hàng một GPU, các bước trong hàng chạy nối tiếp. **Model nào train xong thì test ngay** trên tập test của cả 3 part (in điểm, ghi `metrics.json`, run W&B `evaluate`), không chờ hàng kia. Mỗi bước là một model (`settings.TRAIN_GROUPS`); bỏ bước nào thì thêm vào `DROP`. Chạy một bước lẻ: `GROUP = "<bước>"` (vd. `"M2"`). Giờ ước, model nào bỏ được: `RESEARCH_WORKLOG/v004_model.md` §8.2.
+Mỗi phiên train (`GROUP` = `P1`…`P5`, `settings.TRAIN_SESSIONS`) là **một notebook Kaggle T4 ×2** tên `vn-av-df-train-<GROUP>`: các hàng chạy song song, **hàng đầu dùng riêng GPU0**, các hàng sau **chia GPU1** (baseline nhẹ chạy đồng thời); các bước trong hàng chạy nối tiếp. Phiên train **chỉ train** (không chấm test). Train xong hết thì chạy `GROUP = "test"`: chấm test mọi model một lần + ghép muộn + cổng + `report.md`, **một run W&B** duy nhất. Đầu mỗi phiên, cache cần được chép sang `/kaggle/temp` bằng 64 luồng (`STAGE_LOCAL`; đọc thẳng `/kaggle/input` chậm vì độ trễ từng file). Bỏ bước nào thì thêm vào `DROP`; chạy một bước lẻ: `GROUP = "<bước>"` (vd. `"M2"`). Thử luồng trước: `SMOKE = True` (vài người mỗi split, 1 epoch, không W&B).
 
 | GROUP | Accelerator | GPU0 | GPU1 |
 |---|---|---|---|
-| `labels` | None (CPU) | nhãn mismatch 0 / 1 / mask + kiểm lối tắt độ trễ + kiểm ngữ điệu–đầu → `sync_labels.json` (gửi xem trước khi train) | |
-| `P1` | T4 ×2 | M3-R (+ benchmark mọi model) | M3-R −cặp sạch ↔ nén |
-| `P2` (song song P1 được) | T4 ×2 | BL-M/sup | BL-A2 → BL-V → M2 → BL-M + SpeechForensics |
-| `P3` | T4 ×2 | M3-R +nhánh chất lượng | M3-R không học nén |
-| `P4` | T4 ×2 | BL-A (dừng ở `MAX_HOURS`) | M3 của v004 (trihead_v4) |
-| `P5` (nếu còn dở; `PREVIOUS_RUN` = P4) | T4 ×2 | BL-A chạy tiếp | M3 của v004 chạy tiếp (xong rồi thì bỏ qua) |
-| `M1` (hoãn, có kết quả M3 rồi quyết) | T4 ×2 | M1 (2-3 phiên, mỗi phiên sau gắn `PREVIOUS_RUN` = phiên trước) | |
-| `report` | None (CPU) | gộp Output mọi phiên (`PREVIOUS_RUN`): ghép muộn BL-Ens / BL-Ens-AV, cổng V / R (R: M3-R, gồm cổng trên video nén 480p), `report.md` (không chấm lại) | |
+| `labels` | None (CPU) | nhãn mismatch 0 / 1 / mask + kiểm lối tắt → `sync_labels.json` (xem trước khi train) | |
+| `P1` | T4 ×2 | M3-R (+ benchmark mọi model) | đồng thời: BL-M/sup → M2 → BL-M + SpeechForensics, và BL-A2 → BL-V |
+| `P2` (`PREVIOUS_RUN` = P1) | T4 ×2 | M3-R chạy tiếp (xong rồi thì bỏ qua) | M3-R −cặp sạch ↔ nén |
+| `P3` (tuỳ chọn) | T4 ×2 | M3-R +nhánh chất lượng | M3-R không học nén |
+| `P4`, `P5` (tuỳ chọn) | T4 ×2 | BL-A | M3 của v004 (trihead_v4) |
+| `M1` (hoãn) | T4 ×2 | M1 | |
+| `test` (`PREVIOUS_RUN` = mọi phiên train) | T4 ×2 | chấm test mọi model (bản gốc + mọi biến thể + PR), ghép muộn BL-Ens / BL-Ens-AV, cổng V / R, `report.md`; một run W&B `test` | |
+| `report` | None (CPU) | dựng lại `report.md` từ kết quả test đã có (không chấm lại) | |
 
-Cần: 3 dataset part (có `sync_syncnet.json`, chạy `training/01a_syncnet.py` ở local) + Output 24 phiên prepare (9 bản gốc + 5 biến thể × 3 part: `c480`, `c360`, `pr`, `w360`, `c288`). Mọi model train thấy các biến thể có `"train": True` (c480, c360, PR; M3-R theo cặp sạch ↔ biến thể, model khác lấy ngẫu nhiên `variant_p` = 0,5; trừ `trihead_v5_clean`, và BL-V / BL-A vì bản biến thể không có khung LIPINC / waveform) và được test thêm trên mọi biến thể (`predictions-test-<biến thể>.npz`, `metrics.json` → `variants`; PR → `pipeline`: AUC khớp đường ống, FPR theo họ đã thấy / chưa thấy). Mỗi run train trên W&B có luôn cách cài phiên (config `setup`, bảng `setup/*`, artifact `setup-log`) và `architecture`; mỗi lần test ghi `test-log.json` (số lần model dùng test). Model dừng ở `MAX_HOURS` chưa xong thì chưa test; phiên sau train tiếp rồi test.
+Cần: 3 dataset part (có `sync_syncnet.json`, chạy `training/01a_syncnet.py` ở local) + Output 24 phiên prepare (9 bản gốc + 5 biến thể × 3 part: `c480`, `c360`, `pr`, `w360`, `c288`). Mọi model train thấy các biến thể có `"train": True` (c480, c360, PR; M3-R theo cặp sạch ↔ biến thể, model khác lấy ngẫu nhiên `variant_p` = 0,5; trừ `trihead_v5_clean`, và BL-V / BL-A vì bản biến thể không có khung LIPINC / waveform) và được test thêm trên mọi biến thể (`predictions-test-<biến thể>.npz`, `metrics.json` → `variants`; PR → `pipeline`: AUC khớp đường ống, FPR theo họ đã thấy / chưa thấy). Mỗi run train trên W&B có luôn cách cài phiên (config `setup`, bảng `setup/*`, artifact `setup-log`) và `architecture`; lần test ghi `test-log.json` (số lần model dùng test). Model dừng ở `MAX_HOURS` chưa xong: chạy lại phiên đó với `PREVIOUS_RUN`, train tiếp từ `last.pt`.
 """,
         ),
         ("code", setup_cell("training")),
@@ -383,7 +387,7 @@ Cần: 3 dataset part (có `sync_syncnet.json`, chạy `training/01a_syncnet.py`
         (
             "code",
             """
-GROUP = "labels"      # "labels" → "P1" (∥ "P2") → ("P3") → ("P4") → ("P5") → "report"; hoặc một bước lẻ, vd. "M2", "M1"
+GROUP = "labels"      # "labels" → "P1" → "P2" → ("P3") → ("P4") → ("P5") → "test"; hoặc một bước lẻ, vd. "M2"
 DROP = []             # bước bỏ ở phiên này, vd. ["M3-abs"] (settings.TRAIN_GROUPS)
 DATASET_PARTS = [Path(f"/kaggle/input/datasets/linhxm/{s}") for s in (
     "vn-av-df-data-part1-trim04-fake", "vn-av-df-data-part2-fake", "vn-av-df-data-part3-fake")]
@@ -393,10 +397,12 @@ CACHES = [Path(PREPARE.format(p, s)) for p in (1, 2, 3) for s in ("landmarks", "
 # Biến thể (settings.VARIANTS, phiên prepare cùng tên của 3 part): train học biến thể "train" + test thêm trên mọi biến thể.
 VARIANT_CACHES = {v: [Path(PREPARE.format(p, v)) for p in (1, 2, 3)] for v in settings.VARIANTS}
 RUNS = "/kaggle/input/notebooks/linhxm/vn-av-df-train-{}/vn-av-df-forensics/runs/" + settings.RUN_NAME
-PREVIOUS_RUN = []     # P5: [Path(RUNS.format("P4"))];
-                      # report: [Path(RUNS.format(g)) for g in ("P1", "P2")] (+ phiên khác đã chạy, vd. "P3", "M1")
+PREVIOUS_RUN = []     # P2: [Path(RUNS.format("P1"))]; P5: [Path(RUNS.format("P4"))];
+                      # test / report: [Path(RUNS.format(g)) for g in ("P1", "P2")] (+ phiên khác đã chạy, vd. "P3")
 SEEDS = [42]          # lượt đầu một seed; chốt thiết kế rồi chạy [42, 43, 44]
 MAX_HOURS = 11        # tính từ cell này; dừng sạch (lưu last.pt) trước giới hạn 12 giờ của Kaggle
+STAGE_LOCAL = True    # chép cache cần sang /kaggle/temp trước khi train / test (nhanh hơn nhiều lần; thiếu chỗ thì tự bỏ)
+SMOKE = False         # thử luồng: 2 người mỗi split, 1 epoch, không W&B (xong thì đặt lại False)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # trước lần dùng GPU đầu
 import torch
 from vn_av_df.dataset import part_selection
@@ -409,12 +415,16 @@ for v in [v for v in VARIANT_CACHES if not settings.VARIANTS[v].get("train")]:
         print(f"CẢNH BÁO: thiếu cache biến thể {v} ({len(missing)} part), bỏ biến thể này:", missing[0])
         VARIANT_CACHES.pop(v)
 settings.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-if GROUP not in ("labels", "report", *settings.TRAIN_SESSIONS, *settings.TRAIN_GROUPS):
+if GROUP not in ("labels", "report", "test", *settings.TRAIN_SESSIONS, *settings.TRAIN_GROUPS):
     raise ValueError(f"GROUP không có: {GROUP}")
 if GROUP not in ("labels", "report") and not torch.cuda.is_available():
     raise RuntimeError(f"GROUP {GROUP} cần Accelerator GPU")
 cfg = settings.config()
 cfg["deadline"] = time.time() + MAX_HOURS * 3600
+if SMOKE:
+    cfg["smoke_speakers"] = 2
+    cfg["training"]["max_epochs"] = 1  # trần trên mọi công thức gốc (BL-M 500, BL-Msup / BL-V / BL-A2 100 epoch)
+    WANDB = None
 # BL-A trọng số lớp: "balanced" = 1 − tỉ lệ lớp trong train, cùng nguyên tắc với gốc; "paper" =
 # đúng 0,1 / 0,9 (cân bằng cho ASVspoof ~90 % giả). Đổi thì BL-A train lại từ đầu.
 cfg["recipe_overrides"] = {"ssl_aasist": {"class_weight": "balanced"}}
@@ -436,7 +446,7 @@ if previous:
     print("Gộp từ phiên trước:", merge_runs(cfg["runs"], previous))
 # Log setup của 9 phiên prepare đi cùng kết quả train (runs/<RUN>/setup/prepare-…).
 print("Log setup prepare:", sum((copy_tree(c / "setup", Path(cfg["runs"]) / "setup") for c in CACHES), []))
-if GROUP in ("labels", "report"):
+if GROUP in ("labels", "report", "test"):
     STEPS = []
 elif GROUP in settings.TRAIN_SESSIONS:
     STEPS = [[s for s in lane if s not in DROP] for lane in settings.TRAIN_SESSIONS[GROUP]]
@@ -447,8 +457,20 @@ LANES = [[m for s in lane for group in settings.TRAIN_GROUPS[s]["lanes"] for m i
 LANES = [lane for lane in LANES if lane]
 MODELS = [m for lane in LANES for m in lane]  # train ở phiên này
 RUN_BENCHMARK = any(settings.TRAIN_GROUPS[s].get("benchmark") for lane in STEPS for s in lane)
-cfg["test_after_train"] = True
+cfg["test_after_train"] = False  # v005: test chấm một lần ở GROUP "test"
 print("Phiên", GROUP, "| bước:", STEPS, "| model theo GPU:", LANES, "| chưa train xong:", missing_runs(cfg))
+# Chép cache model của phiên cần (train + validation, bản gốc + biến thể) sang ổ local bằng 64 luồng: đọc
+# /kaggle/input bị chặn bởi độ trễ từng file (đo 08/11: 1 luồng 10 MB/s, 64 luồng 438 MB/s), M3 v004 mất
+# 75-96 phút / epoch chỉ vì đọc. Thiếu chỗ thì tự bỏ qua (đọc thẳng như cũ).
+if STAGE_LOCAL and (MODELS or GROUP == "test"):
+    from vn_av_df.dataset import training_dataset
+    from vn_av_df.training.prepare import encoders_for
+    from vn_av_df.training.stage import stage_cfg
+    tick = time.time()
+    _rows, _ = training_dataset(cfg, verify_media=False, labels=False)
+    _splits = ("validation", "test") if GROUP == "test" else ("train", "validation")
+    print("Chép sang /kaggle/temp:", stage_cfg(cfg, encoders_for(MODELS or cfg["models"]), _rows, "/kaggle/temp/cache", splits=_splits))
+    TIMINGS["stage"] = round(time.time() - tick, 1)
 """,
         ),
         (
@@ -486,8 +508,8 @@ if GROUP == "labels":
 if RUN_BENCHMARK:
     from vn_av_df.training.benchmark import benchmark
     print(json.dumps(benchmark(cfg, cfg["models"], steps=10), indent=2))
-if MODELS and torch.cuda.device_count() >= len(LANES) > 1:
-    from vn_av_df.training.lanes import run_lanes
+if MODELS and len(LANES) > 1 and torch.cuda.is_available():
+    from vn_av_df.training.lanes import run_lanes  # hàng đầu GPU0 riêng, hàng sau chia GPU1
     run_lanes(cfg, LANES)
 elif MODELS:
     from vn_av_df.training.train import train_all
@@ -497,21 +519,25 @@ elif MODELS:
         (
             "code",
             """
-# Mỗi model đã được test ngay khi train xong (trong hàng của nó); ở đây gộp kết quả (đọc lại, không chấm thêm).
-from vn_av_df.training.evaluate import evaluate_all
+# Phiên train chỉ train; GROUP "test" chấm test mọi model một lần (một run W&B cho test + báo cáo).
 from vn_av_df.training.train import run_state
 runs = Path(cfg["runs"])
-done = [m for m in MODELS if all(run_state(runs / f"{m}_seed{s}")[0] for s in SEEDS)]
-if done:
-    results = evaluate_all(cfg, models=done)
-    print(json.dumps({k: v for k, v in results.items() if k.rsplit("_seed", 1)[0] in done}, indent=2))
-elif MODELS:
-    print("Chưa train xong, chưa test:", MODELS)
+if MODELS:
+    done = [m for m in MODELS if all(run_state(runs / f"{m}_seed{s}")[0] for s in SEEDS)]
+    print("Train xong:", done, "| còn dở (chạy lại phiên với PREVIOUS_RUN):", [m for m in MODELS if m not in done])
+if GROUP == "test":
+    from vn_av_df import tracking
+    from vn_av_df.training.evaluate import evaluate_all
+    from vn_av_df.training.report import build_report
+    print("Chưa train xong (không có trong test):", missing_runs(cfg))
+    TEST_RUN = tracking.open_run(cfg, "test", f"{runs.name}-test", group=runs.name, folder=runs, with_setup=True)
+    print(json.dumps(evaluate_all(cfg, run=TEST_RUN), indent=2))
+    report = build_report(cfg, run=TEST_RUN)
+    TEST_RUN.finish()
+    print(Path(report["report"]).read_text(encoding="utf-8"))
 if GROUP == "report":
     from vn_av_df.training.report import build_report
-    print("Chưa train xong (không có trong báo cáo):", missing_runs(cfg))
-    print(json.dumps(evaluate_all(cfg), indent=2))  # đọc lại kết quả từng model, tính ghép muộn
-    report = build_report(cfg)
+    report = build_report(cfg)  # đọc kết quả test đã có (GROUP "test"), không chấm lại
     print(Path(report["report"]).read_text(encoding="utf-8"))
 from vn_av_data.common.runtime import prune_output
 print("Đã xoá khỏi Output:", len(prune_output(ROOT, [str(Path(cfg["runs"]).relative_to(ROOT))])), "mục")
