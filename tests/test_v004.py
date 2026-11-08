@@ -407,13 +407,20 @@ def test_train_groups_cover_test_roster_once():
     assert all(m in zoo.SPECS for m in seen)
     assert {g["tier"] for g in settings.TRAIN_GROUPS.values()} == {"core", "optional", "deferred"}
     first = next(iter(settings.TRAIN_GROUPS.values()))
-    assert first["benchmark"] and first["lanes"] == [["trihead_v4"]]
+    assert first["benchmark"] and first["lanes"] == [["trihead_v5"]]
     steps = [s for lanes in settings.TRAIN_SESSIONS.values() for lane in lanes for s in lane]
     deferred = {k for k, g in settings.TRAIN_GROUPS.items() if g["tier"] == "deferred"}
     assert deferred == {"M1"}  # hoãn, không tự chạy trong phiên nào; GROUP = "M1" khi quyết
     assert set(steps) == set(settings.TRAIN_GROUPS) - deferred
     assert all(len(lanes) == 2 for lanes in settings.TRAIN_SESSIONS.values())
-    assert settings.TRAIN_SESSIONS["P1"] == [["M3"], ["M3-noprosody"]]
+    assert settings.TRAIN_SESSIONS["P1"] == [["M3-R"], ["M3-R-nopair"]]
+    assert {n for n, v in settings.VARIANTS.items() if v.get("train")} == {"c480", "c360"}
+    assert settings.config()["training"]["variant_p"] == 0.5
+    # mọi cổng R đều có đủ hai model trong đội hình (hoặc là ghép muộn)
+    from vn_av_df.training.report import GATES
+
+    for first, second, *_ in [g for g in GATES if g[3].startswith("R")]:
+        assert {first, second} <= set(settings.TEST_MODELS) | {"bl_ens_av"}
 
 
 def test_settings_label_rule_has_one_threshold():
@@ -587,3 +594,95 @@ def test_prosody_audit_samples_per_group_and_reads_cache(tmp_path, capsys):
     assert out["train/voice/full"]["n"] == 11 and 0 <= out["train/voice/full"]["auc_vs_real"] <= 1
     printed = capsys.readouterr().out
     assert "24 / 24 mẫu" in printed and "10 / 24 mẫu" in printed and "thiếu cache: 1 mẫu" in printed
+
+
+# ---------------------------------------------------------------- v005: M3-R + biến thể nén
+def test_trihead_v5_quality_sham_and_consistency_losses():
+    """M3-R: luồng visual chọn được, không đối kháng người nói, nhánh chất lượng (FiLM khởi tạo
+    đồng nhất), loss sham / chất lượng / nhất quán khi batch có cặp sạch + nén."""
+    assets = {"load_pretrained": False, "n_speakers": 2, "ssl_groups": 5}
+    model = zoo.TriHeadV5(16, 8, 0.1, visual=("trace",), quality=True, sham_weight=1.0,
+                          consistency=1.0, ssl_drop=0.1, assets=assets)
+    assert model.visual_streams == ["trace"] and model.n_speakers == 0
+    assert all(not f.weight.detach().any() for f in model.quality_film.values())
+    batch = small_batch(B=4, groups=5)
+    batch["cell_index"] = torch.tensor([1, 0, 1, 0])  # 2 cặp: [sạch sham, sạch real, nén sham, nén real]
+    batch["degraded"] = torch.tensor([0.0, 0.0, 1.0, 1.0])
+    batch["quality"] = torch.zeros(4, 60, 1)
+    batch["pair"] = 2
+    for key in ("speaker", "lag_shift", "offset_valid"):
+        batch[key] = torch.cat([batch[key], batch[key]])
+    model.train()
+    out = model(batch)
+    loss = model.loss(batch, out)
+    assert {"sham_visual", "degrade", "consistency", "offset", "cell"} <= set(model.loss_parts)
+    assert not any(k.startswith("speaker") for k in model.loss_parts)
+    loss.backward()
+    assert model.degrade_head[0].weight.grad is not None
+    model.eval()
+    del batch["pair"]
+    assert "_pooled" not in model(batch)  # chỉ cần khi có cặp
+
+
+def _variant_cache(root, sid, side, frames=50):
+    for name, arrays in (
+        ("avhubert", {"audio": np.zeros((frames, 16), np.float32), "visual": np.zeros((frames, 16), np.float32),
+                      "audio_valid": np.ones(frames, bool), "visual_valid": np.ones(frames, bool)}),
+        ("xlsr", {"ssl": np.zeros((frames, 5, 1024), np.float16)}),
+        ("mouth", {"mouth": np.full((frames, 96, 96), side, np.uint8), "lips": np.zeros((frames, 20, 2), np.float16),
+                   "pose": np.zeros((frames, 3), np.float16), "valid": np.ones(frames, bool),
+                   "native_side": np.float32(side)}),
+    ):
+        (root / name).mkdir(parents=True, exist_ok=True)
+        np.savez(root / name / f"{sid}.npz", **arrays)
+
+
+def test_bench_data_variants_pair_and_quality(tmp_path):
+    """Biến thể nén: train chọn bản nén theo xác suất / theo cặp cùng ngẫu nhiên; đánh giá ép một
+    biến thể; mẫu thiếu bản nén giữ bản gốc; khoá quality = log(native_side / 100)."""
+    from vn_av_df.training.data import BenchData, collate
+
+    clean, c480 = tmp_path / "clean", tmp_path / "c480"
+    rows = []
+    for sid in ("a_real", "b_real"):
+        _variant_cache(clean, sid, 100)
+        rows.append({"sample_id": sid, "split": "train", "cell": "real", "label": 0, "duration_s": 2.0,
+                     "source_clip_id": sid, "speaker_id": "s"})
+    _variant_cache(c480, "a_real", 66)  # b_real chưa có bản nén
+    cfg = {"cache": [str(clean)], "training": {"audio_lag_aug": [-2, 5]}}
+    needs = {"av", "ssl", "mouth"}
+    data = BenchData(cfg, rows, needs, augment=True, lag_augment=True, crop_frames=30,
+                     variants={"c480": [str(c480)]}, pair=True)
+    assert data.variant_ids["c480"] == {"a_real"}
+    item = data[0]
+    pair = item["_pair"]
+    assert item["degraded"] == 0.0 and pair["degraded"] == 1.0
+    assert int(item["mouth"].mean()) != int(pair["mouth"].mean())  # đặc trưng từ bản nén
+    assert item["lag_shift"] == pair["lag_shift"] and len(item["valid"]) == len(pair["valid"])
+    assert np.allclose(pair["quality"], np.log(0.66)) and np.allclose(item["quality"], 0.0)
+    batch = collate([data[0], data[0]])
+    assert batch["pair"] == 2 and batch["mouth"].shape[0] == 4
+    assert batch["degraded"].tolist() == [0.0, 0.0, 1.0, 1.0] and batch["quality"].shape[-1] == 1
+    assert "_pair" not in data[1]  # thiếu bản nén → không có cặp
+    always = BenchData(cfg, rows, needs, augment=True, variants={"c480": [str(c480)]}, variant_p=1.0)
+    assert always[0]["degraded"] == 1.0 and always[1]["degraded"] == 0.0
+    # Baseline không augment (BL-M/sup, BL-A2) vẫn phải nhận bản nén khi train.
+    plain = BenchData(cfg, rows, needs, augment=False, variants={"c480": [str(c480)]}, variant_p=1.0)
+    assert plain[0]["degraded"] == 1.0
+    fixed = BenchData(cfg, rows[:1], needs, variants={"c480": [str(c480)]}, variant="c480")
+    assert fixed[0]["degraded"] == 1.0
+    with pytest.raises(ValueError, match="biến thể"):
+        BenchData(cfg, rows, needs, variants={"c480": [str(c480)]}, variant="c360")
+
+
+def test_report_variant_gate_reads_variant_predictions(tmp_path):
+    """Cổng R trên bản nén đọc predictions-test-<biến thể>.npz; thiếu file thì bỏ cổng (không lỗi)."""
+    from vn_av_df.training.evaluate import save_predictions
+    from vn_av_df.training.report import GATES, load_scores
+
+    folder = tmp_path / "trihead_v5_seed42"
+    folder.mkdir()
+    save_predictions(folder / "predictions-test-c480.npz", {"ai": {"a": 0.9, "b": 0.1}})
+    assert load_scores(tmp_path, folder.name, "ai", "c480") == {"a": 0.9, "b": 0.1}
+    assert load_scores(tmp_path, folder.name, "ai") == {}
+    assert any(len(g) == 6 and g[5] == "c480" for g in GATES)

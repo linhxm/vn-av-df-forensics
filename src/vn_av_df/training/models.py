@@ -924,6 +924,30 @@ class TraceTrunk(nn.Module):
         return self.temporal(self.mix(feature), mask.float())
 
 
+class RelTraceTrunk(TraceTrunk):
+    """v005 · trace tương đối: cùng CNN cho miệng và vùng tham chiếu cùng khung (giữa hai mắt, `ref`);
+    đặc trưng ảnh = miệng − tham chiếu (`mode="rel"`) hoặc [miệng, miệng − tham chiếu] (`"both"`).
+    Xử lý toàn khung (nén, co giãn, codec của đường ống) tác động lên cả hai vùng nên phần lớn triệt tiêu
+    trong hiệu; vẽ lại cục bộ nửa dưới mặt (lip-sync) chỉ đổi vùng miệng."""
+
+    def __init__(self, hidden=128, dropout=0.1, mode="rel"):
+        super().__init__(hidden, dropout)
+        if mode not in ("rel", "both"):
+            raise ValueError(f"trace_mode {mode}")
+        self.mode = mode
+        width = 128 if mode == "rel" else 256
+        self.mix = nn.Sequential(nn.Linear(width + 64, hidden), nn.LayerNorm(hidden), nn.GELU())
+
+    def forward(self, mouth, lips, pose, mask, ref):
+        h = self.cnn(trace_streams(torch.cat([mouth, ref], 0)))  # một lượt: BatchNorm thấy cả hai vùng
+        pooled = torch.cat([h.mean((-1, -2)), h.amax((-1, -2))], 1).transpose(1, 2)
+        m, r = pooled.chunk(2, 0)
+        appearance = m - r if self.mode == "rel" else torch.cat([m, m - r], -1)
+        kin = torch.cat([lip_kinematics(lips)[..., :60], pose, velocity(pose)], -1)
+        feature = torch.cat([appearance, self.kin(kin)], -1)
+        return self.temporal(self.mix(feature), mask.float())
+
+
 class AudioTrunk(nn.Module):
     """XLS-R (đóng băng, cache theo nhóm lớp) → trọng số softmax học được trên các nhóm → chiếu →
     2 lớp self-attention theo thời gian (AASIST-lite)."""
@@ -1530,7 +1554,156 @@ class TriHeadV4(Model):
         return total
 
 
+# ---------------------------------------------------------------- v005 · M3-R (bền với nén)
+class TriHeadV5(TriHeadV4):
+    """M3-R (v005): M3 gọn + các phần cho video nén (RESEARCH_WORKLOG/v005_model.md; thử nghiệm 07/11/2026 ở v004_model.md §11).
+
+    - gọn: bỏ nhánh ngữ điệu–đầu, luồng appearance và đối kháng người nói (không giúp ở thử nghiệm
+      800-1.600 step); đầu visual ← `visual` (luồng trong trace / sync_rel / sync_abs);
+    - XLS-R: khi train tắt ngẫu nhiên nhóm lớp (`layer_drop`) và kênh (`ssl_drop`, như nhau mọi frame)
+      để đầu audio không học thuộc vài lớp / kênh của hệ giọng đã thấy;
+    - nhánh chất lượng (`quality`): log độ phân giải thật vùng miệng (data "quality", nhiễu ±10 % khi
+      train) + xác suất "bị nén" do đầu phụ ước lượng từ đặc trưng trace (học bằng cờ `degraded` của
+      biến thể nén, dừng gradient tác vụ) → FiLM lên các luồng hình / sync để ngưỡng theo chất lượng;
+    - sham (lệch tiếng–môi không do AI) là mẫu âm khó của đầu visual (`sham_weight`);
+    - nhất quán sạch ↔ nén (`consistency`, batch có cặp từ data `pair=True`): bản nén học theo dự
+      đoán (visual, mismatch) và đặc trưng luồng visual của bản sạch (dừng gradient phía sạch);
+    - `train_variants=False`: train chỉ trên bản gốc dù cfg có biến thể nén (ablation "không học nén").
+    """
+
+    quality_weight = 0.1
+
+    def __init__(
+        self,
+        dim,
+        hidden=128,
+        dropout=0.1,
+        visual=("trace", "sync_rel"),
+        layer_drop=0.4,
+        ssl_drop=0.0,
+        quality=False,
+        sham_weight=0.0,
+        consistency=0.0,
+        train_variants=True,
+        trace_mode="abs",
+        assets=None,
+        **_,
+    ):
+        assets = {**(assets or {}), "n_speakers": 0}
+        super().__init__(dim, hidden, dropout, use_prosody=False, assets=assets)
+        self.trace_mode = trace_mode
+        if trace_mode != "abs":
+            self.trace = RelTraceTrunk(hidden, dropout, trace_mode)
+            self.needs = self.needs | {"ref"}
+        self.visual_streams = list(visual)
+        self.type_streams = sorted(set(self.visual_streams + self.mismatch_streams))
+
+        def head(n, out=1):
+            return nn.Sequential(nn.Linear(hidden * n, hidden), nn.GELU(), nn.Linear(hidden, out))
+
+        self.visual_head = head(len(self.visual_streams))
+        self.type_head = head(len(self.type_streams), len(CELL_CLASSES))
+        self.layer_drop, self.ssl_drop = float(layer_drop), float(ssl_drop)
+        self.sham_weight, self.consistency = float(sham_weight), float(consistency)
+        self.train_variants = bool(train_variants)
+        self.use["quality"] = bool(quality)
+        if quality:
+            self.degrade_head = nn.Sequential(nn.Linear(hidden, 64), nn.GELU(), nn.Linear(64, 1))
+            self.quality_proj = nn.Sequential(nn.Linear(2, 32), nn.GELU(), nn.Linear(32, hidden))
+            self.quality_film = nn.ModuleDict(
+                {k: nn.Linear(hidden, 2 * hidden) for k in self.type_streams if k != "audio"}
+            )
+            for film in self.quality_film.values():
+                nn.init.zeros_(film.weight)
+                nn.init.zeros_(film.bias)
+
+    def audio_features(self, ssl, mask):
+        trunk = self.audio
+        groups = ssl.shape[2]
+        if groups > trunk.groups:
+            raise ValueError(f"cache XLS-R có {groups} nhóm lớp nhưng model dựng cho {trunk.groups}")
+        logits = trunk.layer_logits[:groups][None].expand(ssl.shape[0], -1)
+        if self.training and self.layer_drop > 0:
+            keep = torch.rand(logits.shape, device=logits.device) >= self.layer_drop
+            keep[keep.sum(1) == 0, 0] = True
+            logits = logits.masked_fill(~keep, -1e4)
+        if self.training and self.ssl_drop > 0:
+            shape = (ssl.shape[0], 1, 1, ssl.shape[-1])
+            keep = (torch.rand(shape, device=ssl.device) >= self.ssl_drop).to(ssl.dtype)
+            ssl = ssl * keep / (1 - self.ssl_drop)
+        weights = logits.softmax(1)
+        mixed = (ssl * weights[:, None, :, None]).sum(2)
+        return trunk.attention(trunk.proj(mixed), src_key_padding_mask=~mask)
+
+    def branches(self, batch):
+        mask = batch["mask"]
+        out = {"audio": self.audio_features(batch["ssl"], mask)}
+        out.update(self.sync(batch["a"], batch["v"], mask))
+        extra = (batch["ref"],) if self.trace_mode != "abs" else ()
+        out["trace"] = self.trace(batch["mouth"], batch["lips"], batch["pose"], mask, *extra)
+        return out
+
+    def forward(self, batch):
+        mask = batch["mask"]
+        feats = self.branches(batch)
+        out = {"_global_lag": feats.pop("global_lag")}
+        if self.use["quality"]:
+            degrade = self.degrade_head(feats["trace"].detach())[..., 0]  # [B, T] logit "bị nén"
+            out["_degrade"] = degrade
+            q = batch.get("quality")
+            q = torch.zeros_like(degrade)[..., None] if q is None else q[..., :1].to(degrade.dtype)
+            if self.training:
+                q = q + 0.1 * torch.randn(q.shape[0], 1, 1, device=q.device, dtype=q.dtype)
+            emb = self.quality_proj(torch.cat([q, degrade.detach().sigmoid()[..., None]], -1))
+            for k, film in self.quality_film.items():
+                gamma, beta = film(emb).chunk(2, -1)
+                feats[k] = feats[k] * (1 + gamma) + beta
+        out["visual"] = self.visual_head(torch.cat([feats[k] for k in self.visual_streams], -1))[..., 0]
+        out["audio"] = self.audio_head(feats["audio"])[..., 0]
+        out["mismatch"] = self.mismatch_head(
+            torch.cat([feats[k] for k in self.mismatch_streams], -1)
+        )[..., 0]
+        if self.use["type"]:
+            pooled = [masked_mean(feats[k], mask) for k in self.type_streams]
+            out["_cell"] = self.type_head(torch.cat(pooled, -1))
+        if self.consistency > 0 and batch.get("pair"):
+            out["_pooled"] = {k: masked_mean(feats[k], mask) for k in self.visual_streams}
+        return out
+
+    def loss(self, batch, out, pos_weight=None):
+        total = super().loss(batch, out, pos_weight)
+        mask = batch["mask"]
+        cell = batch.get("cell_index")
+        if self.sham_weight > 0 and cell is not None:
+            sham = cell == CELL_CLASSES.index("sham")
+            if sham.any():
+                pooled = self.video_pool(out["visual"][sham], mask[sham])
+                term = F.binary_cross_entropy(pooled, torch.zeros_like(pooled))
+                self.loss_parts["sham_visual"] = float(term.detach())
+                total = total + self.sham_weight * term
+        if "_degrade" in out and "degraded" in batch:
+            target = batch["degraded"].to(out["_degrade"].dtype)[:, None].expand_as(out["_degrade"])
+            term = masked_bce(out["_degrade"], target, mask)
+            self.loss_parts["degrade"] = float(term.detach())
+            total = total + self.quality_weight * term
+        pair = int(batch.get("pair") or 0)
+        if self.consistency > 0 and pair:
+            both = (mask[:pair] & mask[pair:]).float()
+            term = 0
+            for name in ("visual", "mismatch"):
+                clean = out[name][:pair].detach().sigmoid()
+                comp = out[name][pair:].sigmoid()
+                term = term + ((comp - clean) ** 2 * both).sum() / both.sum().clamp(min=1)
+            for h in out.get("_pooled", {}).values():
+                term = term + (1 - F.cosine_similarity(h[pair:], h[:pair].detach(), dim=-1)).mean()
+            self.loss_parts["consistency"] = float(term.detach())
+            total = total + self.consistency * term
+        return total
+
+
 # ---------------------------------------------------------------- registry
+# M3-R (v005, RESEARCH_WORKLOG/v005_model.md).
+M3R = {"quality": False, "sham_weight": 1.0, "ssl_drop": 0.1, "consistency": 3.0}
 SPECS = {
     "speechforensics": (SpeechForensics, {}),
     "lipinc_v2": (LipincV2, {}),
@@ -1550,6 +1723,13 @@ SPECS = {
     "trihead_v4_no_phi": (TriHeadV4, {"use_phi": False}),
     "trihead_v4_abs": (TriHeadV4, {"route": "absolute"}),
     "trihead_v4_ref": (TriHeadV4, {"use_ref": True}),
+    # v005 (RESEARCH_WORKLOG/v005_model.md): M3-R, tuỳ chọn chốt theo thử nghiệm 07/11
+    # (part 3, 1.600 step, 2 seed: nhất quán ×3 tốt hơn ×1, nhánh chất lượng không thêm gì nên tắt).
+    # Ablation: thêm nhánh chất lượng; bỏ cặp sạch ↔ nén (bản nén lấy ngẫu nhiên variant_p); không học nén.
+    "trihead_v5": (TriHeadV5, M3R),
+    "trihead_v5_quality": (TriHeadV5, {**M3R, "quality": True}),
+    "trihead_v5_no_pair": (TriHeadV5, {**M3R, "consistency": 0.0}),
+    "trihead_v5_clean": (TriHeadV5, {**M3R, "consistency": 0.0, "train_variants": False}),
 }
 
 

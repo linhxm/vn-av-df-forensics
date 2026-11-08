@@ -73,7 +73,7 @@ WANDB_CELL = """
 # W&B: log quá trình (setup từng phiên, trích feature, nhãn, train, test, báo cáo) làm bằng chứng.
 # Project PRIVATE. Thêm secret WANDB_API_KEY: Add-ons → Secrets. Không đẩy ảnh / video người thật.
 USE_WANDB = True
-WANDB_PROJECT = "vn-av-df-v004"  # v003: "vn-av-df-v003" (giữ nguyên, không ghi chồng)
+WANDB_PROJECT = "vn-av-df-v005"  # v004: "vn-av-df-v004", v003: "vn-av-df-v003" (giữ nguyên, không ghi chồng)
 WANDB_ENTITY = "vn-av-df-capstone"  # team trong org vn-av-df-capstone-org; key tạo trong org đó
 if USE_WANDB:
     from kaggle_secrets import UserSecretsClient
@@ -240,13 +240,18 @@ prepare = nb(
         (
             "markdown",
             """
-# v004 · Trích feature (AV-HuBERT Large, crop miệng, khung LIPINC-V2, XLS-R 5 nhóm lớp, waveform)
+# v005 · Trích feature (AV-HuBERT Large, crop miệng, khung LIPINC-V2, XLS-R 5 nhóm lớp, waveform)
 
-Mỗi part (`PART` = 1, 2, 3) chạy **ba phiên**, mỗi phiên dưới 12 giờ và Output dưới 20 GB. Đặt tên notebook Kaggle đúng `SESSION_NAME` (`vn-av-df-prepare-p<PART>-<SESSION>`) để notebook train tìm được Output:
+Mỗi part (`PART` = 1, 2, 3) chạy **ba phiên** bản gốc (+ 5 phiên biến thể v005), mỗi phiên dưới 12 giờ và Output dưới 20 GB. Đặt tên notebook Kaggle đúng `SESSION_NAME` (`vn-av-df-prepare-p<PART>-<SESSION>`) để notebook train tìm được Output:
 1. `SESSION = "landmarks"` (Accelerator: None, không tốn quota GPU): dlib dò mặt (part 1 v003: 8,7 giờ).
 2. Sau phiên 1 của **cùng part**, chạy song song hai phiên, cả hai attach Output phiên 1 vào `OTHER_CACHES`:
    - `SESSION = "cpu"` (None): `mouth`, `lipinc`, `wave`.
    - `SESSION = "gpu"` (T4 ×2): `avhubert` (ghi thêm `avhubert/sync_profile.json` cho nhãn mismatch v004), `xlsr`.
+3. v005, mỗi biến thể dữ liệu (`settings.VARIANTS`) một phiên T4 ×2, attach Output phiên `landmarks` của cùng part vào `OTHER_CACHES`; tạo video biến thể (giữ số frame) rồi trích `avhubert`, `mouth`, `xlsr` trên bản đó:
+   - `SESSION = "c480"`, `"c360"`: nén lại mọi mẫu (480p libx264 CRF 30 + AAC 64k; 360p CRF 35 + AAC 32k), dùng khi train + test.
+   - `SESSION = "pr"`: real / sham / voice qua xử lý lành tính giống đường ống generator (x264 CRF 8 → codec / co giãn → x264 CRF 18, tiếng giữ nguyên, nhãn giữ nguyên); train / validation 4 họ xử lý, test một nửa họ đã thấy + một nửa 3 họ chưa thấy (`clips/reencode.json` → `chains`). Âm khó khi train + phép thử "AI thật hay vết đường ống".
+   - `SESSION = "w360"` (VP9 360p + Opus), `"c288"` (288p): chỉ mẫu test, mức không có khi train (ngắn).
+   Xong thì xoá clip khỏi Output (giữ `clips/reencode.json`); dở giữa chừng thì giữ để phiên sau (`PREVIOUS_CACHE`) không làm lại.
 
 Hết giờ giữa chừng: chạy lại cùng `SESSION`, attach Output phiên dở vào `PREVIOUS_CACHE`. Cell "Log setup" ghi cách cài phiên vào `cache/vn-av-df-data/setup/`; run W&B `prepare` của phiên đính kèm luôn (config `setup`, bảng `setup/*`, artifact `setup-log`).
 """,
@@ -257,7 +262,7 @@ Hết giờ giữa chừng: chạy lại cùng `SESSION`, attach Output phiên d
             "code",
             """
 PART = 1               # 1, 2, 3
-SESSION = "landmarks"  # "landmarks" (CPU) → rồi song song "cpu" (CPU) và "gpu" (T4 ×2)
+SESSION = "landmarks"  # "landmarks" (CPU) → rồi song song "cpu" (CPU), "gpu", "c480", "c360", "pr", "w360", "c288" (T4 ×2)
 # Slug dataset Kaggle của từng part (bản có sync_syncnet.json); sửa nếu upload tên khác.
 DATASETS = {1: "linhxm/vn-av-df-data-part1-trim04-fake",
             2: "linhxm/vn-av-df-data-part2-fake",
@@ -265,7 +270,7 @@ DATASETS = {1: "linhxm/vn-av-df-data-part1-trim04-fake",
 DATASET_PARTS = [Path(f"/kaggle/input/datasets/{DATASETS[PART]}")]
 # Hết giờ giữa chừng: chạy lại cùng SESSION, attach Output phiên dở vào đây (mẫu đã có được bỏ qua).
 PREVIOUS_CACHE = None  # Path("/kaggle/input/<Output phiên dở>/vn-av-df-forensics/cache/vn-av-df-data")
-# Phiên "cpu" / "gpu": Output phiên "landmarks" CỦA CÙNG PART (đường dẫn ở panel Input).
+# Phiên "cpu" / "gpu" / biến thể: Output phiên "landmarks" CỦA CÙNG PART (đường dẫn ở panel Input).
 OTHER_CACHES = []      # vd. [Path("/kaggle/input/notebooks/linhxm/vn-av-df-prepare-p1-landmarks/vn-av-df-forensics/cache/vn-av-df-data")]
 SESSION_NAME = f"prepare-p{PART}-{SESSION}"
 MODELS = settings.MODELS + settings.ABLATIONS
@@ -279,11 +284,15 @@ CHOOSE = {
     "landmarks": lambda e: e == "landmarks",
     "cpu": lambda e: e != "landmarks" and cfg["encoders"][e].get("cpu_only"),
     "gpu": lambda e: not cfg["encoders"][e].get("cpu_only"),
+    # Biến thể (settings.VARIANTS: nén, PR, mức chỉ test): landmark dùng lại của bản gốc; model v005 chỉ cần 3 encoder.
+    **{v: (lambda e: e in ("avhubert", "mouth", "xlsr")) for v in settings.VARIANTS},
 }
 ENCODERS = [e for e in encoders_for(MODELS) if CHOOSE[SESSION](e)]  # hoặc chọn tay
-if SESSION == "gpu" and not GPU:
-    raise RuntimeError('SESSION = "gpu" cần Accelerator GPU (T4 ×2)')
-if SESSION != "gpu" and GPU:
+if SESSION in settings.VARIANTS:
+    cfg["variant"] = dict(settings.VARIANTS[SESSION])
+if (SESSION == "gpu" or SESSION in settings.VARIANTS) and not GPU:
+    raise RuntimeError(f'SESSION = "{SESSION}" cần Accelerator GPU (T4 ×2)')
+if SESSION in ("landmarks", "cpu") and GPU:
     print(f"CẢNH BÁO: phiên {SESSION} chỉ cần CPU, chọn Accelerator None để không tốn quota GPU")
 if SESSION != "landmarks" and not OTHER_CACHES:
     print("CẢNH BÁO: OTHER_CACHES rỗng, worker sẽ tự dò landmark bằng dlib (chậm)")
@@ -333,6 +342,11 @@ from vn_av_df.training.prepare import prepare
 from vn_av_data.common.runtime import prune_output
 try:
     print(prepare(cfg, ENCODERS))
+    if cfg.get("variant"):  # xong hết: bỏ clip nén khỏi Output (train chỉ đọc đặc trưng)
+        clips = sorted((OUTPUT_CACHE / "clips").glob("*.mp4"))
+        for clip in clips:
+            clip.unlink()
+        print("Đã xoá", len(clips), "clip nén; giữ clips/reencode.json")
 finally:  # Output chỉ giữ cache (kèm log setup), kể cả khi lỗi giữa chừng (phiên sau dùng PREVIOUS_CACHE)
     print("Đã xoá khỏi Output:", len(prune_output(ROOT, [str(OUTPUT_CACHE.relative_to(ROOT))])), "mục")
 """,
@@ -346,22 +360,22 @@ train = nb(
         (
             "markdown",
             """
-# v004 · Train từng model (2 hàng song song), test ngay trên test cả 3 part, báo cáo
+# v005 · Train từng model (2 hàng song song), test ngay trên test cả 3 part, báo cáo
 
 Mỗi phiên (`GROUP` = `P1`…`P5`, `settings.TRAIN_SESSIONS`) là **một notebook Kaggle T4 ×2** tên `vn-av-df-train-<GROUP>`: hai hàng song song, mỗi hàng một GPU, các bước trong hàng chạy nối tiếp. **Model nào train xong thì test ngay** trên tập test của cả 3 part (in điểm, ghi `metrics.json`, run W&B `evaluate`), không chờ hàng kia. Mỗi bước là một model (`settings.TRAIN_GROUPS`); bỏ bước nào thì thêm vào `DROP`. Chạy một bước lẻ: `GROUP = "<bước>"` (vd. `"M2"`). Giờ ước, model nào bỏ được: `RESEARCH_WORKLOG/v004_model.md` §8.2.
 
 | GROUP | Accelerator | GPU0 | GPU1 |
 |---|---|---|---|
 | `labels` | None (CPU) | nhãn mismatch 0 / 1 / mask + kiểm lối tắt độ trễ + kiểm ngữ điệu–đầu → `sync_labels.json` (gửi xem trước khi train) | |
-| `P1` | T4 ×2 | M3 (+ benchmark mọi model) | M3 −prosody |
+| `P1` | T4 ×2 | M3-R (+ benchmark mọi model) | M3-R −cặp sạch ↔ nén |
 | `P2` (song song P1 được) | T4 ×2 | BL-M/sup | BL-A2 → BL-V → M2 → BL-M + SpeechForensics |
-| `P3` | T4 ×2 | M3 −Φ | M3 −abs |
-| `P4` | T4 ×2 | BL-A (dừng ở `MAX_HOURS`) | M3-ref (dừng ở `MAX_HOURS`) |
-| `P5` (nếu còn dở; `PREVIOUS_RUN` = P4) | T4 ×2 | BL-A chạy tiếp | M3-ref chạy tiếp |
+| `P3` | T4 ×2 | M3-R +nhánh chất lượng | M3-R không học nén |
+| `P4` | T4 ×2 | BL-A (dừng ở `MAX_HOURS`) | M3 của v004 (trihead_v4) |
+| `P5` (nếu còn dở; `PREVIOUS_RUN` = P4) | T4 ×2 | BL-A chạy tiếp | M3 của v004 chạy tiếp (xong rồi thì bỏ qua) |
 | `M1` (hoãn, có kết quả M3 rồi quyết) | T4 ×2 | M1 (2-3 phiên, mỗi phiên sau gắn `PREVIOUS_RUN` = phiên trước) | |
-| `report` | None (CPU) | gộp Output mọi phiên (`PREVIOUS_RUN`): ghép muộn BL-Ens / BL-Ens-AV, cổng V1-V11, `report.md` (không chấm lại) | |
+| `report` | None (CPU) | gộp Output mọi phiên (`PREVIOUS_RUN`): ghép muộn BL-Ens / BL-Ens-AV, cổng V / R (R: M3-R, gồm cổng trên video nén 480p), `report.md` (không chấm lại) | |
 
-Cần: 3 dataset part (có `sync_syncnet.json`, chạy `training/01a_syncnet.py` ở local) + Output 9 phiên prepare. Mỗi run train trên W&B có luôn cách cài phiên (config `setup`, bảng `setup/*`, artifact `setup-log`) và `architecture`; mỗi lần test ghi `test-log.json` (số lần model dùng test). Model dừng ở `MAX_HOURS` chưa xong thì chưa test; phiên sau train tiếp rồi test.
+Cần: 3 dataset part (có `sync_syncnet.json`, chạy `training/01a_syncnet.py` ở local) + Output 24 phiên prepare (9 bản gốc + 5 biến thể × 3 part: `c480`, `c360`, `pr`, `w360`, `c288`). Mọi model train thấy các biến thể có `"train": True` (c480, c360, PR; M3-R theo cặp sạch ↔ biến thể, model khác lấy ngẫu nhiên `variant_p` = 0,5; trừ `trihead_v5_clean`, và BL-V / BL-A vì bản biến thể không có khung LIPINC / waveform) và được test thêm trên mọi biến thể (`predictions-test-<biến thể>.npz`, `metrics.json` → `variants`; PR → `pipeline`: AUC khớp đường ống, FPR theo họ đã thấy / chưa thấy). Mỗi run train trên W&B có luôn cách cài phiên (config `setup`, bảng `setup/*`, artifact `setup-log`) và `architecture`; mỗi lần test ghi `test-log.json` (số lần model dùng test). Model dừng ở `MAX_HOURS` chưa xong thì chưa test; phiên sau train tiếp rồi test.
 """,
         ),
         ("code", setup_cell("training")),
@@ -376,6 +390,8 @@ DATASET_PARTS = [Path(f"/kaggle/input/datasets/linhxm/{s}") for s in (
 # Output của 9 phiên prepare (3 part × landmarks / cpu / gpu), tên notebook vn-av-df-prepare-p<N>-<phiên>.
 PREPARE = "/kaggle/input/notebooks/linhxm/vn-av-df-prepare-p{}-{}/vn-av-df-forensics/cache/vn-av-df-data"
 CACHES = [Path(PREPARE.format(p, s)) for p in (1, 2, 3) for s in ("landmarks", "cpu", "gpu")]
+# Biến thể (settings.VARIANTS, phiên prepare cùng tên của 3 part): train học biến thể "train" + test thêm trên mọi biến thể.
+VARIANT_CACHES = {v: [Path(PREPARE.format(p, v)) for p in (1, 2, 3)] for v in settings.VARIANTS}
 RUNS = "/kaggle/input/notebooks/linhxm/vn-av-df-train-{}/vn-av-df-forensics/runs/" + settings.RUN_NAME
 PREVIOUS_RUN = []     # P5: [Path(RUNS.format("P4"))];
                       # report: [Path(RUNS.format(g)) for g in ("P1", "P2")] (+ phiên khác đã chạy, vd. "P3", "M1")
@@ -384,8 +400,14 @@ MAX_HOURS = 11        # tính từ cell này; dừng sạch (lưu last.pt) trư�
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # trước lần dùng GPU đầu
 import torch
 from vn_av_df.dataset import part_selection
-for c in CACHES:
+for c in CACHES + [c for v, cs in VARIANT_CACHES.items() if settings.VARIANTS[v].get("train") for c in cs]:
     assert c.is_dir(), f"Sai đường dẫn: {c}"
+# Biến thể chỉ để đo (PR, w360, c288): thiếu Output phiên prepare thì bỏ, chỉ mất bảng / cổng tương ứng.
+for v in [v for v in VARIANT_CACHES if not settings.VARIANTS[v].get("train")]:
+    missing = [c for c in VARIANT_CACHES[v] if not c.is_dir()]
+    if missing:
+        print(f"CẢNH BÁO: thiếu cache biến thể {v} ({len(missing)} part), bỏ biến thể này:", missing[0])
+        VARIANT_CACHES.pop(v)
 settings.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 if GROUP not in ("labels", "report", *settings.TRAIN_SESSIONS, *settings.TRAIN_GROUPS):
     raise ValueError(f"GROUP không có: {GROUP}")
@@ -399,6 +421,7 @@ cfg["recipe_overrides"] = {"ssl_aasist": {"class_weight": "balanced"}}
 root, parts = part_selection(DATASET_PARTS)
 cfg["dataset"], cfg["dataset_parts"] = str(root), parts
 cfg["cache"] = [str(p) for p in CACHES]
+cfg["variants"] = {v: [str(p) for p in cs] for v, cs in VARIANT_CACHES.items()}
 # Đội hình đầy đủ (settings.TEST_MODELS): để in model nào chưa xong; mỗi bước chỉ train / test model của nó.
 cfg["models"], cfg["seeds"] = list(settings.TEST_MODELS), list(SEEDS)
 cfg["wandb"] = WANDB
@@ -447,7 +470,7 @@ SETUP_INFO = {"group": GROUP, "steps": STEPS, "drop": DROP,
               "titles": {s: settings.TRAIN_GROUPS[s]["title"] for lane in STEPS for s in lane},
               "lanes": LANES, "benchmark": RUN_BENCHMARK, "test_models": cfg["models"], "seeds": SEEDS,
               "previous_run": [str(p) for p in previous], "datasets": [str(p) for p in DATASET_PARTS],
-              "caches": [str(p) for p in CACHES], "assets": ASSETS, "max_hours": MAX_HOURS,
+              "caches": [str(p) for p in CACHES], "variant_caches": cfg["variants"], "assets": ASSETS, "max_hours": MAX_HOURS,
               "recipe_overrides": cfg["recipe_overrides"]}
 """
             + SETUP_LOG,

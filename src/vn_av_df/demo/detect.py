@@ -133,8 +133,13 @@ class Detector:
         return best, {t: v / np.maximum(counts, 1) for t, v in frames.items()}
 
     def analyze(self, video, references=(), work=None):
+        from vn_av_df.data.media import probe
+        from vn_av_df.training.evaluate import resolution_gate
+
         work = Path(work or tempfile.mkdtemp(prefix="vnav-demo-"))
         cache = work / "cache"
+        info = probe(video)
+        short_side = min(info["width"], info["height"])
         aligned, sync = self.prepare(video, work, "input")
         self.features(aligned, cache, "input")
         ref_ids = []
@@ -150,12 +155,19 @@ class Detector:
             refs = [data.load({"sample_id": r}, None, REF_FRAMES)[0] for r in ref_ids]
             length = max(length, size)
             video_scores, frame_scores = self.score(model, item, size, refs)
+            # Cổng độ phân giải: video nhỏ hơn mức train thấp nhất → không xét hình, AI? theo đầu audio.
+            video_scores, gated = resolution_gate(video_scores, short_side, self.cfg.get("visual_min_short_side"))
+            used = dict(thresholds)
+            if gated:
+                used["ai"] = thresholds.get("audio")
+                frame_scores = {t: v for t, v in frame_scores.items() if t == "audio"}
             results[name] = {
                 "video": video_scores,
                 "frames": frame_scores,
-                "thresholds": thresholds,
+                "thresholds": used,
+                "visual_gated": gated,
                 "decision": {
-                    t: (v >= thresholds[t]) if thresholds.get(t) is not None else None
+                    t: (v >= used[t]) if v is not None and used.get(t) is not None else None
                     for t, v in video_scores.items()
                 },
             }
@@ -164,6 +176,7 @@ class Detector:
             "duration_s": length / 25,
             "sync": sync,
             "references": len(ref_ids),
+            "short_side": short_side,
             "models": results,
         }
 

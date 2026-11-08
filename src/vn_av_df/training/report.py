@@ -15,8 +15,9 @@ from vn_av_df.common.runtime import atomic_bytes, read_json, write_json
 from vn_av_df.dataset import training_dataset
 from vn_av_df.training.evaluate import TASKS, target
 
-# (model A, model B, tác vụ, ý nghĩa, tập con): tập con "unseen_generator" / "unseen_voice" giữ
-# mọi mẫu âm tính và chỉ các mẫu dương sinh bằng generator / giọng chưa thấy khi train.
+# (model A, model B, tác vụ, ý nghĩa, tập con[, biến thể nén]): tập con "unseen_generator" /
+# "unseen_voice" giữ mọi mẫu âm tính và chỉ các mẫu dương sinh bằng generator / giọng chưa thấy khi
+# train; biến thể (vd "c480", cfg["variants"]) = so trên predictions-test-<biến thể>.npz.
 GATES = [
     ("trihead_v2", "bl_ens", "ai", "M1 hơn BL-Ens (max BL-V, BL-A)", None),
     ("trihead_v2", "lipinc_v2", "visual", "M1 hơn BL-V, generator chưa thấy", "unseen_generator"),
@@ -52,6 +53,25 @@ GATES = [
         "V11 nhánh ngữ điệu ↔ đầu giúp mismatch",
         None,
     ),
+    # v005: M3-R (RESEARCH_WORKLOG/v005_model.md, đặt trước khi train thật).
+    ("trihead_v5", "bl_ens_av", "ai", "R1 M3-R hơn BL-Ens-AV", None),
+    ("trihead_v5", "bl_ens_av", "ai", "R2 M3-R hơn BL-Ens-AV, video nén 480p", None, "c480"),
+    # v005 §9 (đặt 08/11 sau thử ở máy, trước khi train thật): 360p có khi train; VP9 360p chưa thấy.
+    ("trihead_v5", "bl_ens_av", "ai", "R2b M3-R hơn BL-Ens-AV, video nén 360p", None, "c360"),
+    ("trihead_v5", "bl_ens_av", "ai", "R2c M3-R hơn BL-Ens-AV, VP9 360p (codec chưa thấy)", None, "w360"),
+    ("trihead_v5", "avh_align_plus", "ai", "R3 M3-R hơn M2, video nén 480p", None, "c480"),
+    ("trihead_v5", "trihead_v5_clean", "ai", "R4 học nén giúp ở 480p (≥ 0,01)", None, "c480"),
+    ("trihead_v5_quality", "trihead_v5", "ai", "R5 nhánh chất lượng giúp ở 480p (≥ 0,01)", None, "c480"),
+    ("trihead_v5", "trihead_v5_no_pair", "ai", "R6 cặp sạch ↔ nén giúp ở 480p", None, "c480"),
+    ("trihead_v5", "trihead_v4", "ai", "R7 M3-R không kém M3 trên bản gốc (≥ −0,01)", None),
+    (
+        "trihead_v5",
+        "xlsr_frozen",
+        "audio",
+        "R8 M3-R không kém BL-A2, giọng chưa thấy, 480p (≥ −0,01)",
+        "unseen_voice",
+        "c480",
+    ),
 ]
 
 
@@ -79,8 +99,10 @@ def model_name(folder):
     return folder.rsplit("_seed", 1)[0]
 
 
-def load_scores(runs, folder, task):
-    path = Path(runs) / folder / "predictions-test.npz"
+def load_scores(runs, folder, task, variant=None):
+    path = Path(runs) / folder / (f"predictions-test-{variant}.npz" if variant else "predictions-test.npz")
+    if not path.is_file():
+        return {}
     with np.load(path, allow_pickle=False) as z:
         return dict(zip(z["sample_id"].tolist(), z[f"video_{task}"].tolist()))
 
@@ -147,7 +169,7 @@ def build_report(cfg):
         by_model[model_name(folder)].append((folder, metrics))
     seeds = sorted({len(items) for items in by_model.values()})
     lines = [
-        "# Kết quả v003",
+        "# Kết quả v005",
         "",
         f"Generator đã thấy khi train: {', '.join(evaluation['seen']['generators'])}",
         f"Giọng đã thấy khi train: {', '.join(evaluation['seen']['voices'])}",
@@ -200,24 +222,25 @@ def build_report(cfg):
         "",
         "## Cổng (ΔAUC, bootstrap theo speaker, seed đầu tiên)",
         "",
-        "| So sánh | Tác vụ | ΔAUC | CI 95% | Speaker |",
-        "|---|---|---|---|---|",
+        "| So sánh | Tác vụ | Bản | ΔAUC | CI 95% | Speaker |",
+        "|---|---|---|---|---|---|",
     ]
     seen = {k: set(v) for k, v in evaluation["seen"].items()}
     gates = []
-    for first, second, task, note, kind in GATES:
+    for first, second, task, note, kind, *rest in GATES:
+        variant = rest[0] if rest else None
         a = sorted(f for f, _ in by_model.get(first, []))
         b = sorted(f for f, _ in by_model.get(second, []))
         if not a or not b:
             continue
-        result = paired_delta(
-            subset(test_rows, task, kind, seen),
-            load_scores(runs, a[0], task),
-            load_scores(runs, b[0], task),
-            task,
-        )
+        first_scores = load_scores(runs, a[0], task, variant)
+        second_scores = load_scores(runs, b[0], task, variant)
+        if not first_scores or not second_scores:
+            continue
+        result = paired_delta(subset(test_rows, task, kind, seen), first_scores, second_scores, task)
         gates.append(
-            {"first": first, "second": second, "task": task, "note": note, "subset": kind, **result}
+            {"first": first, "second": second, "task": task, "note": note, "subset": kind,
+             "variant": variant, **result}
         )
         ci = (
             "-"
@@ -226,7 +249,8 @@ def build_report(cfg):
         )
         delta = "-" if result["delta"] is None else f"{result['delta']:+.3f}"
         lines.append(
-            f"| {note} ({first} − {second}) | {task} | {delta} | {ci} | {result['speakers']} |"
+            f"| {note} ({first} − {second}) | {task} | {variant or 'gốc'} | {delta} | {ci} "
+            f"| {result['speakers']} |"
         )
     lines += [
         "",
@@ -249,6 +273,60 @@ def build_report(cfg):
                 f"{num(rates['0.01']['precision'])} | "
                 f"{num(rates['0.5']['false_alarms_per_1000_real'], 0)} |"
             )
+    variant_rows = []
+    for name, items in sorted(by_model.items()):
+        clean_ai = sorted(items)[0][1]["tasks"].get("ai", {})
+        for variant, entry in sorted((sorted(items)[0][1].get("variants") or {}).items()):
+            task = (entry.get("tasks") or {}).get("ai") or {}
+            if not task:
+                continue
+            clean_point = (task.get("operating_points") or {}).get("fpr_0.05") or {}
+            same = (task.get("operating_points_same_quality") or {}).get("fpr_0.05") or {}
+            aucs = [m.get("variants", {}).get(variant, {}).get("tasks", {}).get("ai", {}).get("auc") for _, m in items]
+            variant_rows.append(
+                f"| {name} | {variant} | {num(clean_ai.get('auc'))} | {fmt(aucs)} | "
+                f"{num(clean_point.get('tpr'))} | {num(clean_point.get('fpr'))} | "
+                f"{num(same.get('tpr'))} | {num(same.get('fpr'))} |"
+            )
+    if variant_rows:
+        lines += [
+            "",
+            "## Video nén lại (cfg[\"variants\"]), tác vụ ai",
+            "",
+            "Cùng mẫu test, nén lại video + tiếng (settings.VARIANTS). Ngưỡng FPR 5 % đặt trên real "
+            "validation **sạch** (lúc dùng không biết chất lượng video) → FPR thực tế cho biết điểm "
+            "real bị đẩy lên bao nhiêu khi nén; cột cuối: ngưỡng đặt trên validation cùng mức nén.",
+            "",
+            "| Model | biến thể | AUC sạch (seed đầu) | AUC nén (mean ± std) | TPR (ngưỡng sạch) "
+            "| FPR (ngưỡng sạch) | TPR (ngưỡng cùng mức) | FPR (ngưỡng cùng mức) |",
+            "|---|---|---|---|---|---|---|---|",
+            *variant_rows,
+        ]
+    pipeline_rows = []
+    for name, items in sorted(by_model.items()):
+        for variant, entry in sorted((sorted(items)[0][1].get("variants") or {}).items()):
+            for task, m in sorted((entry.get("pipeline") or {}).items()):
+                aucs = [x.get("variants", {}).get(variant, {}).get("pipeline", {}).get(task, {}).get("auc_pipeline_matched") for _, x in items]
+                pipeline_rows.append(
+                    f"| {name} | {task} | {num(m.get('auc_clean_negatives'))} | {fmt(aucs)} | "
+                    f"{num(m.get('fpr_clean'))} | {num(m.get('fpr_processed'))} | "
+                    f"{num(m.get('fpr_seen_family'))} | {num(m.get('fpr_unseen_family'))} |"
+                )
+    if pipeline_rows:
+        lines += [
+            "",
+            "## Phát hiện AI thật hay dấu vết đường ống? (biến thể PR)",
+            "",
+            "Dương = lip-sync test (bản sạch); âm = real / sham (/ voice với visual) test đã qua xử lý "
+            "lành tính giống đường ống generator, nhãn giữ nguyên. AUC khớp đường ống tụt nhiều so với âm "
+            "sạch = model dựa vào vết xử lý. FPR ở ngưỡng FPR 5 % của validation sạch; họ chưa thấy = "
+            "không có khi train (settings.VARIANTS[\"pr\"][\"heldout_families\"]).",
+            "",
+            "| Model | tác vụ | AUC âm sạch (seed đầu) | AUC khớp đường ống (mean ± std) | FPR sạch | FPR PR "
+            "| FPR họ đã thấy | FPR họ chưa thấy |",
+            "|---|---|---|---|---|---|---|---|",
+            *pipeline_rows,
+        ]
     lines += [
         "",
         "## Định vị đoạn giả, tác vụ ai (seed đầu; chuẩn LAV-DF / AV-Deepfake1M)",

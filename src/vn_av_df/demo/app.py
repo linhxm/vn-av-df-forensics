@@ -35,10 +35,12 @@ def summary_rows(result):
             rows.append(
                 [
                     name,
-                    task,
-                    round(float(score), 4),
+                    task + (" (theo audio: video dưới mức phân giải đã train)" if out.get("visual_gated") and task == "ai" else ""),
+                    None if score is None else round(float(score), 4),
                     None if threshold is None else round(float(threshold), 4),
-                    "—" if decision is None else ("NGHI NGỜ" if decision else "bình thường"),
+                    ("không xét hình (độ phân giải thấp)" if score is None else "—")
+                    if decision is None
+                    else ("NGHI NGỜ" if decision else "bình thường"),
                 ]
             )
     return rows

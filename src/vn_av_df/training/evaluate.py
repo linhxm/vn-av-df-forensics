@@ -109,8 +109,9 @@ def at_threshold(labels, scores, threshold):
 
 
 @torch.no_grad()
-def predict(model, cfg, rows, device, lag=None):
-    """lag: trượt tiếng cố định k frame cho mọi mẫu (phép thử trễ); None = như dữ liệu."""
+def predict(model, cfg, rows, device, lag=None, variant=None):
+    """lag: trượt tiếng cố định k frame cho mọi mẫu (phép thử trễ); None = như dữ liệu.
+    variant: nạp mọi đặc trưng từ biến thể nén (cfg["variants"]); None = bản gốc."""
     data = BenchData(
         cfg,
         rows,
@@ -118,6 +119,8 @@ def predict(model, cfg, rows, device, lag=None):
         references=model.references,
         fixed_references=True,
         fixed_lag=lag,
+        variants=cfg.get("variants") if variant else None,
+        variant=variant,
     )
     loader = torch.utils.data.DataLoader(
         data, batch_size=cfg["training"]["eval_batch_size"], collate_fn=collate
@@ -509,6 +512,18 @@ def task_metrics(cfg, val_rows, test_rows, val_scores, test_scores, task, seen):
     }
 
 
+def resolution_gate(scores, short_side, min_side):
+    """Cổng độ phân giải (v005, RESEARCH_WORKLOG/v005_model.md §9): video có cạnh ngắn < min_side (mức thấp
+    nhất có khi train) → crop miệng quá nhỏ, đầu visual mất thông tin (đo: AUC ~0,5 ở 288p, báo AI gần
+    mọi real) → không xét hình: visual / mismatch = None, AI? = điểm audio. Trả (điểm, có cổng không)."""
+    if not min_side or short_side is None or short_side >= min_side or scores.get("audio") is None:
+        return dict(scores), False
+    gated = {t: None for t in scores}
+    gated["audio"] = scores["audio"]
+    gated["ai"] = scores["audio"]
+    return gated, True
+
+
 def save_predictions(path, scores):
     """scores: {tác vụ: {sample_id: điểm}} → npz (sample_id, video_<tác vụ>)."""
     ids = sorted({sid for values in scores.values() for sid in values})
@@ -601,8 +616,130 @@ def evaluate_model(cfg, model_dir, rows, device, seen):
         )
     save_predictions(Path(model_dir) / "predictions-val.npz", val_all)
     save_predictions(Path(model_dir) / "predictions-test.npz", test_all)
+    variants = variant_metrics(cfg, model, model_dir, val_rows, test_rows, val_all, device, seen, test_all)
+    if variants:
+        metrics["variants"] = variants
     write_json(Path(model_dir) / "metrics.json", metrics)
     return metrics
+
+
+def variant_rows(cfg, rows, needs, name):
+    """Mẫu có đủ đặc trưng ở biến thể nén `name`."""
+    probe = BenchData(cfg, rows, needs, variants={name: cfg["variants"][name]})
+    have = probe.variant_ids.get(name, set())
+    return [r for r in rows if r["sample_id"] in have]
+
+
+# Âm của phép đo khớp đường ống: video PR của real / sham / voice đều là môi thật (âm của visual,
+# mismatch giữ nhãn gốc); với AI? chỉ real + sham là âm (voice có tiếng AI).
+PIPELINE_NEGATIVE_CELLS = {"visual": ("real", "sham", "voice"), "ai": ("real", "sham")}
+
+
+def pipeline_metrics(spec, val_rows, test_rows, v_test, val_all, test_all, pr_scores):
+    """Biến thể PR (real qua xử lý lành tính, nhãn giữ nguyên): model phát hiện AI thật hay dấu vết
+    đường ống của generator? Dương = lip-sync test bản sạch; âm = bản PR của real / sham (/ voice).
+    - auc_pipeline_matched vs auc_clean_negatives (cùng mẫu âm, bản sạch): tụt nhiều = dựa vào vết;
+    - FPR ở ngưỡng FPR 5 % của validation SẠCH, theo họ xử lý đã thấy / chưa thấy khi train."""
+    from vn_av_df.training.prepare import processed_real_chain
+
+    seen_families = set(spec.get("families") or ())
+    by_id = {r["sample_id"]: r for r in test_rows}
+    positives = [r for r in test_rows if r.get("synthetic_visual")]
+    out = {}
+    for task, cells in PIPELINE_NEGATIVE_CELLS.items():
+        if task not in val_all or task not in test_all or task not in pr_scores:
+            continue
+        reals = [val_all[task][r["sample_id"]] for r in val_rows if r.get("cell") in cells]
+        if not reals:
+            continue
+        threshold = float(np.quantile(reals, 0.95))
+        negatives = [r for r in v_test if r.get("cell") in cells and r["sample_id"] in pr_scores[task]]
+        pos = [test_all[task][r["sample_id"]] for r in positives]
+        pr = np.array([pr_scores[task][r["sample_id"]] for r in negatives])
+        clean = np.array([test_all[task][r["sample_id"]] for r in negatives])
+        family = np.array([processed_real_chain(spec, by_id[r["sample_id"]])[0] for r in negatives])
+        seen = np.isin(family, list(seen_families))
+        labels = [1] * len(pos) + [0] * len(negatives)
+        out[task] = {
+            "auc_pipeline_matched": auc(labels, pos + pr.tolist()),
+            "auc_clean_negatives": auc(labels, pos + clean.tolist()),
+            "threshold_clean_val_fpr_0.05": threshold,
+            "fpr_processed": float(np.mean(pr > threshold)) if len(pr) else None,
+            "fpr_clean": float(np.mean(clean > threshold)) if len(clean) else None,
+            "fpr_seen_family": float(np.mean(pr[seen] > threshold)) if seen.any() else None,
+            "fpr_unseen_family": float(np.mean(pr[~seen] > threshold)) if (~seen).any() else None,
+            "fpr_by_family": {f: float(np.mean(pr[family == f] > threshold)) for f in sorted(set(family.tolist()))},
+            "samples": {"positive": len(pos), "negative": len(negatives)},
+        }
+    return out
+
+
+def variant_metrics(cfg, model, model_dir, val_rows, test_rows, val_all, device, seen, test_all=None):
+    """Test trên từng biến thể (cfg["variants"]): mức nén (c480, c360, w360, c288) → mọi phép đo,
+    ngưỡng đặt trên validation SẠCH (lúc dùng không biết trước chất lượng video), thêm điểm vận hành
+    khi ngưỡng đặt trên validation cùng mức (nếu có); PR → pipeline_metrics. Lưu
+    predictions-{val,test}-<biến thể>.npz."""
+    out = {}
+    specs = cfg.get("variant_specs") or {}
+    for name in cfg.get("variants") or {}:
+        v_test = variant_rows(cfg, test_rows, model.needs, name)
+        if not v_test:
+            continue
+        if specs.get(name, {}).get("kind") == "processed_real":
+            test_pred = predict(model, cfg, v_test, device, variant=name)
+            pr_scores = {}
+            for task in TASKS:
+                scores = {s: task_scores(model, p).get(task) for s, p in test_pred.items()}
+                if all(v is not None for v in scores.values()):
+                    pr_scores[task] = scores
+            save_predictions(Path(model_dir) / f"predictions-test-{name}.npz", pr_scores)
+            out[name] = {
+                "samples": {"test": len(v_test)},
+                "pipeline": pipeline_metrics(specs[name], val_rows, test_rows, v_test, val_all, test_all or {}, pr_scores),
+            }
+            continue
+        v_val = variant_rows(cfg, val_rows, model.needs, name)
+        test_pred = predict(model, cfg, v_test, device, variant=name)
+        val_pred = predict(model, cfg, v_val, device, variant=name) if v_val else {}
+        result = {"samples": {"validation": len(v_val), "test": len(v_test)}, "tasks": {}}
+        test_all, val_same = {}, {}
+        for task in TASKS:
+            scores = {s: task_scores(model, p).get(task) for s, p in test_pred.items()}
+            if any(v is None for v in scores.values()) or task not in val_all:
+                continue
+            test_all[task] = scores
+            metrics = task_metrics(cfg, val_rows, v_test, val_all[task], scores, task, seen)
+            if metrics is None:
+                continue
+            for key in ("per_speaker", "ref_norm", "localization", "temporal"):
+                metrics.pop(key, None)
+            if val_pred:
+                same = {s: task_scores(model, p).get(task) for s, p in val_pred.items()}
+                val_same[task] = same
+                known_val = known(v_val, task)
+                labels = [target(r, task) for r in known(v_test, task)]
+                values = [scores[r["sample_id"]] for r in known(v_test, task)]
+                metrics["operating_points_same_quality"] = operating_points(
+                    [target(r, task) for r in known_val],
+                    [same[r["sample_id"]] for r in known_val],
+                    labels,
+                    values,
+                )
+            result["tasks"][task] = metrics
+        # Mức thấp hơn mức train thấp nhất (cfg["visual_min_short_side"]): AI? theo cổng độ phân giải =
+        # điểm audio, ngưỡng / điểm vận hành đặt bằng điểm audio của validation sạch.
+        spec = specs.get(name, {})
+        if spec.get("height") and spec["height"] < (cfg.get("visual_min_short_side") or 0) and "audio" in test_all and "audio" in val_all:
+            gated = task_metrics(cfg, val_rows, v_test, val_all["audio"], test_all["audio"], "ai", seen)
+            if gated is not None:
+                for key in ("per_speaker", "ref_norm", "localization", "temporal"):
+                    gated.pop(key, None)
+                result["tasks_gated"] = {"ai": gated}
+        save_predictions(Path(model_dir) / f"predictions-test-{name}.npz", test_all)
+        if val_same:
+            save_predictions(Path(model_dir) / f"predictions-val-{name}.npz", val_same)
+        out[name] = result
+    return out
 
 
 # Ghép muộn (không train): ai = max(z_visual, z_audio). bl_ens: hai baseline đúng gốc (v003);
@@ -673,6 +810,36 @@ def evaluate_one_ensemble(cfg, runs, rows, seen, spec):
                 metrics["tasks"][task] = result
         save_predictions(out / "predictions-val.npz", val_scores)
         save_predictions(out / "predictions-test.npz", test_scores)
+        # Biến thể nén: z theo real validation SẠCH (cùng ngưỡng như lúc dùng thật).
+        for name in cfg.get("variants") or {}:
+            files = [f / f"predictions-test-{name}.npz" for f in (visual_dir, audio_dir)]
+            if not all(f.is_file() for f in files):
+                continue
+            variant = {}
+            for task, folder, file in (("visual", visual_dir, files[0]), ("audio", audio_dir, files[1])):
+                variant[task] = zscore(
+                    load_predictions(folder / "predictions-val.npz", task), load_predictions(file, task), val_rows
+                )[1]
+            ids = set(variant["visual"]) & set(variant["audio"])
+            variant = {t: {k: v for k, v in variant[t].items() if k in ids} for t in variant}
+            variant["ai"] = {k: max(variant["visual"][k], variant["audio"][k]) for k in ids}
+            v_rows = [r for r in test_rows if r["sample_id"] in ids]
+            entry = {"samples": {"test": len(v_rows)}, "tasks": {}}
+            spec = (cfg.get("variant_specs") or {}).get(name, {})
+            if spec.get("kind") == "processed_real":
+                entry = {"samples": {"test": len(v_rows)},
+                         "pipeline": pipeline_metrics(spec, val_rows, test_rows, v_rows, val_scores, test_scores, variant)}
+                metrics.setdefault("variants", {})[name] = entry
+                save_predictions(out / f"predictions-test-{name}.npz", variant)
+                continue
+            for task in ("ai", "visual", "audio"):
+                result = task_metrics(cfg, val_rows, v_rows, val_scores[task], variant[task], task, seen)
+                if result is not None:
+                    for key in ("per_speaker", "ref_norm", "localization", "temporal"):
+                        result.pop(key, None)
+                    entry["tasks"][task] = result
+            metrics.setdefault("variants", {})[name] = entry
+            save_predictions(out / f"predictions-test-{name}.npz", variant)
         write_json(out / "metrics.json", metrics)
         results[out.name] = metrics
     return results
