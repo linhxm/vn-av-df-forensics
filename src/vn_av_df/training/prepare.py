@@ -284,7 +284,7 @@ def prepare(cfg, encoders=ORDER, factory=None):
         # Biến thể nén / PR: landmark lấy của bản gốc; không trích lipinc / wave (model v005 không cần).
         chosen = [e for e in chosen if e in ("avhubert", "mouth", "xlsr")]
         rows = variant_selection(cfg["variant"], rows)
-        clips = reencode(cfg, rows)
+    # Run W&B mở trước khi nén clip (bước nén của phiên "<v>-cpu" mất ~2 giờ): thấy phiên ngay từ đầu.
     run = tracking.open_run(
         cfg,
         "prepare",
@@ -299,6 +299,10 @@ def prepare(cfg, encoders=ORDER, factory=None):
         folder=cache,
         with_setup=True,
     )
+    if cfg.get("variant"):
+        tick = time.perf_counter()
+        clips = reencode(cfg, rows)
+        run.log({"reencode/samples": len(clips), "reencode/seconds": time.perf_counter() - tick})
     print(
         f"prepare: {len(rows)} mẫu, encoder {chosen} → {cache} | "
         f"thiết bị {cfg.get('prepare_devices') or ['cpu']} | {system_status()}",
