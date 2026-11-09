@@ -185,7 +185,7 @@ def run_epoch(
 ):
     """Loss trung bình; `stats` (dict) nhận thêm trung bình từng thành phần loss + grad norm.
     `label`: in tiến độ theo batch (batch đầu, rồi mỗi 60 s) kèm loss trung bình tới lúc đó."""
-    total, count = 0.0, 0
+    total, count, steps = 0.0, 0, 0
     parts, norms, skipped = Counter(), [], 0
     model.train(optimizer is not None)
     amp = scaler is not None and str(device).startswith("cuda")
@@ -219,6 +219,7 @@ def run_epoch(
                 scaler.update()
             else:
                 optimizer.step()
+            steps += 1
         size = len(batch["index"])
         total += float(loss.detach()) * size
         count += size
@@ -232,6 +233,9 @@ def run_epoch(
             stats["grad_norm"] = float(np.mean(norms))
         if skipped:
             stats["grad_nonfinite_steps"] = skipped
+        if optimizer is not None:
+            # Trục so được với đường học theo step (harness local, paper): không đưa vào loss_train/.
+            stats["steps"], stats["samples"] = steps, count
     return total / max(1, count)
 
 
@@ -585,7 +589,14 @@ def train_one(cfg, name, seed, rows, out):
                 "loss/train": train_loss,
                 "loss/val": val_loss,
                 "monitor": value,
-                **{f"loss_train/{k}": v for k, v in train_stats.items() if k != "grad_norm"},
+                # Cộng dồn qua mọi epoch đã ghi (kể cả phiên trước khi train tiếp từ last.pt).
+                "train/steps": sum(e["train_parts"].get("steps", 0) for e in history["epochs"]),
+                "train/samples": sum(e["train_parts"].get("samples", 0) for e in history["epochs"]),
+                **{
+                    f"loss_train/{k}": v
+                    for k, v in train_stats.items()
+                    if k not in ("grad_norm", "steps", "samples")
+                },
                 **{f"loss_val/{k}": v for k, v in val_stats.items() if k != "grad_norm"},
                 "grad_norm": train_stats.get("grad_norm"),
                 "lr": optimizer.param_groups[0]["lr"],

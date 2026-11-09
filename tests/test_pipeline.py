@@ -905,8 +905,8 @@ def test_run_lanes_trains_in_subprocesses_and_merges(world, tmp_path, capsys):
     write_fake_caches(cfg, rows)
     assert run_lanes(cfg, [["avh_align_plus"], ["avh_align_sup"]]) == [0, 0]
     out = capsys.readouterr().out
-    assert "[GPU0]" in out and "[GPU1]" in out and "XONG" in out
-    assert "[GPU0] === TEST" in out and "[GPU1] === TEST" in out
+    assert "[L0/GPU" in out and "[L1/GPU" in out and "XONG" in out
+    assert "] === TEST" in out and out.count("=== TEST") >= 2
     assert missing_runs(cfg) == []
     assert not any(d.exists() for d in lane_dirs(cfg, 2))
     records = json.loads((Path(cfg["runs"]) / "provenance.json").read_text(encoding="utf-8"))

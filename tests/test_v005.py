@@ -156,3 +156,26 @@ def test_smoke_subset_keeps_few_speakers(tmp_path, monkeypatch):
     monkeypatch.setattr(D, "sha", lambda path: "x")
     out, sel = D.training_dataset({"dataset": str(tmp_path), "smoke_speakers": 2}, labels=False)
     assert {r["speaker_id"] for r in out} == {"a1", "a2", "b1", "b2"} and len(out) == 12
+
+
+def test_reencode_reuses_clips_from_cpu_session(tmp_path, monkeypatch):
+    """Phiên GPU "<v>" dùng lại clip của phiên "<v>-cpu" (OTHER_CACHES), không gọi ffmpeg nén lại."""
+    import subprocess
+
+    import vn_av_df.training.prepare as P
+
+    own, cpu = tmp_path / "own", tmp_path / "cpu"
+    (cpu / "clips").mkdir(parents=True)
+    rows = [{"sample_id": f"s{i}", "split": "train"} for i in range(3)]
+    for r in rows:
+        (cpu / "clips" / f"{r['sample_id']}.mp4").write_bytes(b"x")
+    calls = []
+    real_run = subprocess.run
+    monkeypatch.setattr(P, "ffmpeg_binary", lambda: "ffmpeg")
+    monkeypatch.setattr(P.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or real_run(["python", "-c", ""], **kw))
+    cfg = {"cache": [str(own), str(cpu)], "dataset": str(tmp_path),
+           "variant": {"name": "c360", "height": 360, "crf": 35, "audio_bitrate": "32k", "workers": 1}}
+    clips = P.reencode(cfg, rows)
+    assert all(clips[r["sample_id"]] == cpu / "clips" / f"{r['sample_id']}.mp4" for r in rows)
+    assert [c for c in calls if c[0] == "ffmpeg"] == [["ffmpeg", "-hide_banner", "-h", "full"]]  # không nén mẫu nào
+    assert not list((own / "clips").glob("*.mp4"))

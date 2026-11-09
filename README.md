@@ -62,7 +62,7 @@ How to run each step is described in **[PIPELINE.md](PIPELINE.md)** (written in 
 ## Status (v005, 8 November 2026)
 
 - v004 is closed (branch `v004`, [docs/v004_report.md](docs/v004_report.md)): M3 reached AI? AUC 0.968 on clean test video, but every detector lost much of its accuracy on re-compressed video.
-- v005 code is on `main` and passes the synthetic tests; it has **not been trained on Kaggle yet**. Before training, the `prepare` sessions `c480`, `c360` (training) and `pr`, `w360`, `c288` (evaluation only) build the variant caches, one per part.
+- v005 code is on `main` and passes the synthetic tests; it has **not been trained on Kaggle yet**. Before training, the `prepare` sessions `c480`, `c360` (training) and `pr`, `w360`, `c288` (evaluation only) build the variant caches. Each variant takes two sessions per part: `<v>-cpu` (CPU only: re-encode and mouth crops) and then `<v>` (T4 ×2: AV-HuBERT and XLS-R), because one session doing all three would exceed the 20 GB Kaggle output limit.
 - Local study (part 3 only, 1,000 common test clips, 4,800 steps, 2 seeds for M3-R): M3-R AI? AUC 0.964 clean, 0.944 at 480p, 0.892 at 360p and 0.953 on unseen VP9 360p; at 360p it flags 11% of real clips at the clean threshold (0.43 without 360p training). On the processed-real set the AUC equals the AUC against untouched real clips (0.98 visual) and 1-3% of processed real clips are flagged, including unseen chain families, so the detector does not rely on the pipeline trace. Below 360p the visual evidence is gone for every AV-HuBERT-based detector (AUC ~0.5, nearly all real clips flagged); with the resolution gate M3-R keeps a 3% false-alarm rate there but only detects AI voices.
 
 ## Ethics and usage limits

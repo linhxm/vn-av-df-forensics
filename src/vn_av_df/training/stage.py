@@ -15,6 +15,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+VARIANT_ENCODERS = ("avhubert", "mouth", "xlsr")  # encoder trích trên bản biến thể (prepare)
+
 
 def plan(roots, encoders, sample_ids, dest):
     """[(nguồn, đích)] và danh sách gốc mới (cùng thứ tự) cho các thư mục cache `roots`."""
@@ -80,8 +82,14 @@ def stage_cfg(cfg, encoders, rows, dest, threads=64, splits=("train", "validatio
     `splits`; sửa cfg["cache"], cfg["variants"] tại chỗ. Trả danh sách encoder đã chép."""
     encoders = sorted(set(encoders) - {"landmarks"} | {"avhubert"})
     ids = [r["sample_id"] for r in rows if r["split"] in splits]
-    cfg["cache"] = stage(cfg["cache"] if isinstance(cfg["cache"], list) else [cfg["cache"]], encoders, ids,
+    # Ổ thiếu chỗ thì phần sau bị bỏ (đọc thẳng gốc): trước hết 3 encoder có ở mọi biến thể (M3-R đọc cặp
+    # sạch ↔ nén), bản gốc rồi từng biến thể; encoder chỉ có ở bản gốc (lipinc, wave: BL-V, BL-A) sau cùng.
+    first = [e for e in encoders if e in VARIANT_ENCODERS]
+    later = [e for e in encoders if e not in VARIANT_ENCODERS]
+    cfg["cache"] = stage(cfg["cache"] if isinstance(cfg["cache"], list) else [cfg["cache"]], first, ids,
                          Path(dest) / "clean", threads, log=log)
     for name, roots in (cfg.get("variants") or {}).items():
-        cfg["variants"][name] = stage(roots, encoders, ids, Path(dest) / name, threads, log=log)
+        cfg["variants"][name] = stage(roots, first, ids, Path(dest) / name, threads, log=log)
+    if later:
+        cfg["cache"] = stage(cfg["cache"], later, ids, Path(dest) / "clean-extra", threads, log=log)
     return encoders

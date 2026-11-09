@@ -87,7 +87,7 @@ def run_lanes(cfg, lanes, gpus=None):
     failed = [i for i, code in enumerate(codes) if code != 0]
     if failed:
         raise RuntimeError(
-            f"Lane lỗi: {failed} (mã {[codes[i] for i in failed]}); xem log [GPU<i>]"
+            f"Lane lỗi: {failed} (mã {[codes[i] for i in failed]}); xem log [L<i>/GPU<d>]"
         )
     return codes
 

@@ -171,6 +171,15 @@ def reencode(cfg, rows):
     spec = cfg["variant"]
     folder = cache_roots(cfg)[0] / "clips"
     folder.mkdir(parents=True, exist_ok=True)
+    # Clip đã nén ở phiên khác (phiên "<biến thể>-cpu" trong OTHER_CACHES): dùng lại, không nén lại.
+    wanted = {r["sample_id"] for r in rows}
+    found = {
+        f.stem: f
+        for root in reversed(cache_roots(cfg))
+        if (root / "clips").is_dir()
+        for f in (root / "clips").glob("*.mp4")
+        if f.stem in wanted and not f.name.endswith(".tmp.mp4")
+    }
     ffmpeg = ffmpeg_binary()
     options = subprocess.run([ffmpeg, "-hide_banner", "-h", "full"], capture_output=True, text=True).stdout
     sync = ["-fps_mode", "passthrough"] if "fps_mode" in options else ["-vsync", "passthrough"]
@@ -178,7 +187,7 @@ def reencode(cfg, rows):
 
     def compress(row):
         out = folder / f"{row['sample_id']}.mp4"
-        if out.is_file():
+        if row["sample_id"] in found:
             return
         tmp = out.with_suffix(".tmp.mp4")
         codec = spec.get("video_codec", "libx264")
@@ -198,7 +207,7 @@ def reencode(cfg, rows):
         os.replace(tmp, out)
 
     def process_real(group):
-        todo = [r for r in group if not (folder / f"{r['sample_id']}.mp4").is_file()]
+        todo = [r for r in group if r["sample_id"] not in found]
         if not todo:
             return
         # real / sham / voice của một clip nguồn chung dòng bit video (đo 07/11: cùng MD5).
@@ -262,7 +271,7 @@ def reencode(cfg, rows):
          **({"chains": plan} if plan else {})},
     )
     print(f"== reencode {spec['name']} xong: {len(rows)} mẫu trong {duration(time.perf_counter() - began)}", flush=True)
-    return {r["sample_id"]: folder / f"{r['sample_id']}.mp4" for r in rows}
+    return {r["sample_id"]: found.get(r["sample_id"], folder / f"{r['sample_id']}.mp4") for r in rows}
 
 
 def prepare(cfg, encoders=ORDER, factory=None):
