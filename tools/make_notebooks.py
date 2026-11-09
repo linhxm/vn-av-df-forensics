@@ -411,7 +411,8 @@ RUNS = "/kaggle/input/notebooks/linhxm/vn-av-df-train-{}/vn-av-df-forensics/runs
 PREVIOUS_RUN = []     # P2: [Path(RUNS.format("p1"))]; P5: [Path(RUNS.format("p4"))]  (slug Kaggle viết thường)
                       # test / report: [Path(RUNS.format(g)) for g in ("p1", "p2")] (+ phiên khác đã chạy, vd. "p3")
 SEEDS = [42]          # lượt đầu một seed; chốt thiết kế rồi chạy [42, 43, 44]
-MAX_HOURS = 11        # tính từ cell này; dừng sạch (lưu last.pt) trước giới hạn 12 giờ của Kaggle
+MAX_HOURS = 11.5      # tính từ đầu phiên (SESSION_START); dừng sạch (lưu last.pt) trước giới hạn 12 giờ của
+                      # Kaggle, chừa ~30 phút cho phần sau train (W&B, Output)
 STAGE_LOCAL = True    # chép cache cần sang /kaggle/temp trước khi train / test (nhanh hơn nhiều lần; thiếu chỗ thì tự bỏ)
 SMOKE = False         # thử luồng: 2 người mỗi split, 1 epoch, không W&B (xong thì đặt lại False)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # trước lần dùng GPU đầu
@@ -431,7 +432,7 @@ if GROUP not in ("labels", "report", "test", *settings.TRAIN_SESSIONS, *settings
 if GROUP not in ("labels", "report") and not torch.cuda.is_available():
     raise RuntimeError(f"GROUP {GROUP} cần Accelerator GPU")
 cfg = settings.config()
-cfg["deadline"] = time.time() + MAX_HOURS * 3600
+cfg["deadline"] = SESSION_START + MAX_HOURS * 3600
 if SMOKE:
     cfg["smoke_speakers"] = 2
     cfg["training"]["max_epochs"] = 1  # trần trên mọi công thức gốc (BL-M 500, BL-Msup / BL-V / BL-A2 100 epoch)
