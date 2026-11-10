@@ -190,10 +190,10 @@ TRAIN_GROUPS = {
 # (training.lanes.lane_devices): baseline nhẹ (BL-M/sup, BL-A2, M2, BL-M, BL-V: < 1,2 GB VRAM ở benchmark v004)
 # chạy đồng thời trên GPU1. Phiên train CHỈ train; test chấm một lần ở GROUP = "test" sau khi train xong hết
 # (một run W&B cho test + báo cáo). Model chưa xong ở MAX_HOURS thì chạy lại phiên đó với PREVIOUS_RUN (bước đã
-# xong được bỏ qua): P2 tiếp M3-R của P1. P5: PREVIOUS_RUN = Output P4. M1 hoãn (GROUP = "M1").
+# xong được bỏ qua): P2 tiếp M3-R, M2 của P1 và BL-M (P1 hết giờ trước khi tới BL-M, 10/11). P5: PREVIOUS_RUN = Output P4. M1 hoãn (GROUP = "M1").
 TRAIN_SESSIONS = {
     "P1": [["M3-R"], ["BL-Msup", "M2", "BL-M"], ["BL-A2", "BL-V"]],
-    "P2": [["M3-R"], ["M3-R-nopair"]],
+    "P2": [["M3-R"], ["M3-R-nopair"], ["M2", "BL-M"]],
     "P3": [["M3-R-quality"], ["M3-R-clean"]],
     "P4": [["BL-A"], ["M3"]],
     "P5": [["BL-A"], ["M3"]],
