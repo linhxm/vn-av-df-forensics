@@ -136,7 +136,7 @@ def test_stage_copies_needed_files_first(tmp_path):
 
 def test_stage_budget_partial_and_copy_error(tmp_path, monkeypatch):
     """Trần GB: bản gốc chép đủ, biến thể chia đều phần còn lại theo mẫu (đủ encoder của mẫu, cùng mẫu ở mọi
-    biến thể); lỗi chép giữa chừng (Errno 30 trên Kaggle) không làm hỏng phiên, mẫu thiếu đọc gốc."""
+    biến thể, validation trước train); lỗi chép giữa chừng (Errno 30 trên Kaggle) không làm hỏng phiên, mẫu thiếu đọc gốc."""
     import shutil
 
     from vn_av_df.training import stage as stage_mod
@@ -151,13 +151,13 @@ def test_stage_budget_partial_and_copy_error(tmp_path, monkeypatch):
         return root
 
     cfg = {"cache": [make("clean")], "variants": {"c480": [make("c480")], "c360": [make("c360")]}}
-    rows = [{"sample_id": s, "split": "train"} for s in ("a", "b", "c", "d")]
+    rows = [{"sample_id": s, "split": "validation" if s in "cd" else "train"} for s in ("a", "b", "c", "d")]
     # 8 KB bản gốc + 2 × 4 KB = 2 mẫu mỗi biến thể (mỗi mẫu 2 KB).
     stage_mod.stage_cfg(cfg, ["avhubert", "mouth"], rows, tmp_path / "local", threads=2, budget_gb=16.5e-6, log=lambda *_: None)
     for name, roots in [("clean", cfg["cache"]), *cfg["variants"].items()]:
         index = cache_index({"cache": roots}, "mouth", ["a", "b", "c", "d"])
         local = sorted(s for s, f in index.items() if "local" in str(f))
-        assert local == (["a", "b", "c", "d"] if name == "clean" else ["a", "b"]), name
+        assert local == (["a", "b", "c", "d"] if name == "clean" else ["c", "d"]), name
 
     real_copy = shutil.copyfile
     calls = []

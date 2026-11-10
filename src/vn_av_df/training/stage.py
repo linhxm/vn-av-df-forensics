@@ -111,7 +111,10 @@ def stage_cfg(cfg, encoders, rows, dest, threads=64, splits=("train", "validatio
     """Chép cache bản gốc + mọi biến thể cho `encoders` (vd. prepare.encoders_for(model của phiên)), mẫu thuộc
     `splits`; sửa cfg["cache"], cfg["variants"] tại chỗ. `budget_gb`: trần tổng GB chép. Trả danh sách encoder."""
     encoders = sorted(set(encoders) - {"landmarks"} | {"avhubert"})
-    ids = [r["sample_id"] for r in rows if r["split"] in splits]
+    # Validation trước: hết trần thì phần thiếu rơi vào mẫu train (loader có worker đọc trước), không rơi vào
+    # validation chấm mỗi epoch ở bản gốc + mọi mức nén.
+    ids = [r["sample_id"] for split in sorted(splits, key=lambda s: s != "validation") for r in rows
+           if r["split"] == split]
     # Hết trần thì phần sau bị bỏ (đọc thẳng gốc): trước hết 3 encoder có ở mọi biến thể (M3-R đọc cặp
     # sạch ↔ nén), bản gốc (mọi model đọc mỗi bước) rồi các biến thể chia đều phần còn lại (cùng mẫu ở mọi
     # biến thể); encoder chỉ có ở bản gốc (lipinc, wave: BL-V, BL-A) sau cùng.

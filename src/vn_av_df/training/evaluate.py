@@ -122,8 +122,11 @@ def predict(model, cfg, rows, device, lag=None, variant=None):
         variants=cfg.get("variants") if variant else None,
         variant=variant,
     )
+    # Cùng số worker đọc đĩa như loader train: 0 worker thì validation mỗi epoch (bản gốc + mọi mức nén)
+    # đọc tuần tự, ~10 phút / epoch ở P1 v005 (10/11), GPU chờ.
     loader = torch.utils.data.DataLoader(
-        data, batch_size=cfg["training"]["eval_batch_size"], collate_fn=collate
+        data, batch_size=cfg["training"]["eval_batch_size"], collate_fn=collate,
+        num_workers=cfg["training"].get("workers", 0),
     )
     out = {}
     model.eval()
