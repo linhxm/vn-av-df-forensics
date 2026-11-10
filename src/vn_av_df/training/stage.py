@@ -45,21 +45,35 @@ def plan(roots, encoders, sample_ids, dest):
     return jobs, staged
 
 
-def stage(roots, encoders, sample_ids, dest, threads=64, reserve_gb=20.0, log=print):
-    """Chép rồi trả danh sách gốc mới = [bản local...] + [gốc cũ...]. Không đủ chỗ trên ổ đích (giữ lại
-    `reserve_gb`) thì không chép, trả nguyên `roots` (train vẫn chạy, chỉ chậm như cũ)."""
+def _stage(roots, encoders, sample_ids, dest, threads=64, reserve_gb=20.0, budget_gb=None, log=print):
+    """(danh sách gốc mới, GB đã chép). Chép theo mẫu (mọi encoder của một mẫu cùng chép hoặc cùng bỏ), thứ
+    tự `sample_ids`, tới khi hết min(chỗ trống − `reserve_gb`, `budget_gb`); mẫu không chép đọc thẳng gốc."""
     roots = [str(r) for r in roots]
     jobs, staged = plan(roots, encoders, sample_ids, dest)
     if not jobs:
-        return roots
+        return roots, 0.0
     with ThreadPoolExecutor(threads) as pool:  # stat song song (độ trễ từng file)
-        need = sum(pool.map(lambda job: os.path.getsize(job[0]), jobs)) / 1e9
+        sizes = list(pool.map(lambda job: os.path.getsize(job[0]), jobs))
     Path(dest).mkdir(parents=True, exist_ok=True)
     free = shutil.disk_usage(dest).free / 1e9
-    if need > free - reserve_gb:
-        log(f"stage: cần {need:.1f} GB, ổ {dest} còn {free:.1f} GB → không chép, đọc thẳng từ gốc")
-        return roots
-    for folder in {d.parent for _, d in jobs}:
+    allowed = free - reserve_gb if budget_gb is None else min(free - reserve_gb, budget_gb)
+    need = sum(sizes) / 1e9
+    by_sample = {}
+    for job, size in zip(jobs, sizes):
+        stem = job[0].name[:-4] if job[0].name.endswith(".npz") else None  # None: file phụ, luôn chép
+        by_sample.setdefault(stem, []).append((job, size))
+    chosen, used = [], 0.0
+    for sid in [None, *dict.fromkeys(sample_ids)]:
+        group = by_sample.get(sid, [])
+        size = sum(s for _, s in group) / 1e9
+        if used + size > allowed:
+            break
+        chosen += [job for job, _ in group]
+        used += size
+    if not any(job[0].name.endswith(".npz") for job in chosen):
+        log(f"stage: cần {need:.1f} GB, được chép {allowed:.1f} GB (ổ {dest} còn {free:.1f} GB) → không chép, đọc thẳng từ gốc")
+        return roots, 0.0
+    for folder in {d.parent for _, d in chosen}:
         folder.mkdir(parents=True, exist_ok=True)
     began = time.time()
 
@@ -70,26 +84,50 @@ def stage(roots, encoders, sample_ids, dest, threads=64, reserve_gb=20.0, log=pr
             shutil.copyfile(source, tmp)
             os.replace(tmp, target)
 
-    with ThreadPoolExecutor(threads) as pool:
-        list(pool.map(copy, jobs))
+    try:
+        with ThreadPoolExecutor(threads) as pool:
+            list(pool.map(copy, chosen))
+    except OSError as error:
+        # 10/11 (train-p1): Errno 30 Read-only file system giữa chừng khi /kaggle/temp đã có ~95 GB dù
+        # disk_usage báo còn chỗ. File chép xong vẫn dùng được (ghi .part rồi mới đổi tên); file thiếu đọc gốc.
+        log(f"stage: CẢNH BÁO lỗi chép vào {dest} ({error.strerror}: {error.filename2 or error.filename}); "
+            "phần chưa chép đọc thẳng từ gốc")
+        return [str(p) for p in staged] + roots, used
     spent = time.time() - began
-    log(f"stage: {len(jobs)} file, {need:.1f} GB → {dest} trong {spent / 60:.1f} phút ({need * 1000 / max(spent, 1e-6):.0f} MB/s)")
-    return [str(p) for p in staged] + roots
+    part = "" if len(chosen) == len(jobs) else f" (một phần: {used:.1f} / {need:.1f} GB, trần {allowed:.1f} GB)"
+    log(f"stage: {len(chosen)} file, {used:.1f} GB → {dest} trong {spent / 60:.1f} phút "
+        f"({used * 1000 / max(spent, 1e-6):.0f} MB/s){part}")
+    return [str(p) for p in staged] + roots, used
 
 
-def stage_cfg(cfg, encoders, rows, dest, threads=64, splits=("train", "validation"), log=print):
+def stage(roots, encoders, sample_ids, dest, threads=64, reserve_gb=20.0, budget_gb=None, log=print):
+    """Chép rồi trả danh sách gốc mới = [bản local...] + [gốc cũ...]. Không đủ chỗ trên ổ đích (giữ lại
+    `reserve_gb`, tối đa `budget_gb`) thì chỉ chép một phần mẫu hoặc không chép, trả nguyên `roots` (train
+    vẫn chạy, phần không chép chỉ chậm như cũ)."""
+    return _stage(roots, encoders, sample_ids, dest, threads, reserve_gb, budget_gb, log)[0]
+
+
+def stage_cfg(cfg, encoders, rows, dest, threads=64, splits=("train", "validation"), budget_gb=None, log=print):
     """Chép cache bản gốc + mọi biến thể cho `encoders` (vd. prepare.encoders_for(model của phiên)), mẫu thuộc
-    `splits`; sửa cfg["cache"], cfg["variants"] tại chỗ. Trả danh sách encoder đã chép."""
+    `splits`; sửa cfg["cache"], cfg["variants"] tại chỗ. `budget_gb`: trần tổng GB chép. Trả danh sách encoder."""
     encoders = sorted(set(encoders) - {"landmarks"} | {"avhubert"})
     ids = [r["sample_id"] for r in rows if r["split"] in splits]
-    # Ổ thiếu chỗ thì phần sau bị bỏ (đọc thẳng gốc): trước hết 3 encoder có ở mọi biến thể (M3-R đọc cặp
-    # sạch ↔ nén), bản gốc rồi từng biến thể; encoder chỉ có ở bản gốc (lipinc, wave: BL-V, BL-A) sau cùng.
+    # Hết trần thì phần sau bị bỏ (đọc thẳng gốc): trước hết 3 encoder có ở mọi biến thể (M3-R đọc cặp
+    # sạch ↔ nén), bản gốc (mọi model đọc mỗi bước) rồi các biến thể chia đều phần còn lại (cùng mẫu ở mọi
+    # biến thể); encoder chỉ có ở bản gốc (lipinc, wave: BL-V, BL-A) sau cùng.
     first = [e for e in encoders if e in VARIANT_ENCODERS]
     later = [e for e in encoders if e not in VARIANT_ENCODERS]
-    cfg["cache"] = stage(cfg["cache"] if isinstance(cfg["cache"], list) else [cfg["cache"]], first, ids,
-                         Path(dest) / "clean", threads, log=log)
-    for name, roots in (cfg.get("variants") or {}).items():
-        cfg["variants"][name] = stage(roots, first, ids, Path(dest) / name, threads, log=log)
+    left = float("inf") if budget_gb is None else float(budget_gb)
+    cfg["cache"], used = _stage(cfg["cache"] if isinstance(cfg["cache"], list) else [cfg["cache"]], first, ids,
+                                Path(dest) / "clean", threads, budget_gb=left, log=log)
+    left -= used
+    variants = list(cfg.get("variants") or {})
+    for index, name in enumerate(variants):
+        share = left / (len(variants) - index)
+        cfg["variants"][name], used = _stage(cfg["variants"][name], first, ids, Path(dest) / name, threads,
+                                             budget_gb=share, log=log)
+        left -= used
     if later:
-        cfg["cache"] = stage(cfg["cache"], later, ids, Path(dest) / "clean-extra", threads, log=log)
+        cfg["cache"], used = _stage(cfg["cache"], later, ids, Path(dest) / "clean-extra", threads,
+                                    budget_gb=left, log=log)
     return encoders

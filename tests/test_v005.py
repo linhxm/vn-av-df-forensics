@@ -134,6 +134,52 @@ def test_stage_copies_needed_files_first(tmp_path):
     assert stage(roots, ["avhubert"], ["p1_a"], tmp_path / "local2", reserve_gb=1e9, log=lambda *_: None) == [str(r) for r in roots]
 
 
+def test_stage_budget_partial_and_copy_error(tmp_path, monkeypatch):
+    """Trần GB: bản gốc chép đủ, biến thể chia đều phần còn lại theo mẫu (đủ encoder của mẫu, cùng mẫu ở mọi
+    biến thể); lỗi chép giữa chừng (Errno 30 trên Kaggle) không làm hỏng phiên, mẫu thiếu đọc gốc."""
+    import shutil
+
+    from vn_av_df.training import stage as stage_mod
+    from vn_av_df.training.data import cache_index
+
+    def make(name):
+        root = tmp_path / "input" / name / "repo" / "cache" / "data"
+        for enc in ("avhubert", "mouth"):
+            (root / enc).mkdir(parents=True)
+            for sid in ("a", "b", "c", "d"):
+                (root / enc / f"{sid}.npz").write_bytes(b"x" * 1000)
+        return root
+
+    cfg = {"cache": [make("clean")], "variants": {"c480": [make("c480")], "c360": [make("c360")]}}
+    rows = [{"sample_id": s, "split": "train"} for s in ("a", "b", "c", "d")]
+    # 8 KB bản gốc + 2 × 4 KB = 2 mẫu mỗi biến thể (mỗi mẫu 2 KB).
+    stage_mod.stage_cfg(cfg, ["avhubert", "mouth"], rows, tmp_path / "local", threads=2, budget_gb=16.5e-6, log=lambda *_: None)
+    for name, roots in [("clean", cfg["cache"]), *cfg["variants"].items()]:
+        index = cache_index({"cache": roots}, "mouth", ["a", "b", "c", "d"])
+        local = sorted(s for s, f in index.items() if "local" in str(f))
+        assert local == (["a", "b", "c", "d"] if name == "clean" else ["a", "b"]), name
+
+    real_copy = shutil.copyfile
+    calls = []
+
+    def flaky(src, dst):
+        calls.append(src)
+        if len(calls) > 2:
+            raise OSError(30, "Read-only file system", str(src), None, str(dst))
+        return real_copy(src, dst)
+
+    monkeypatch.setattr(stage_mod.shutil, "copyfile", flaky)
+    messages = []
+    roots = [make("other")]
+    new = stage_mod.stage(roots, ["avhubert", "mouth"], ["a", "b", "c", "d"], tmp_path / "local3", threads=1,
+                          reserve_gb=0, log=messages.append)
+    assert new[1:] == [str(r) for r in roots] and "CẢNH BÁO" in messages[-1]
+    index = cache_index({"cache": new}, "avhubert", ["a", "b", "c", "d"])
+    assert all(f.is_file() for f in index.values())
+    assert sum("local3" in str(f) for f in index.values()) >= 1
+    assert not any(str(f).endswith(".part") for f in index.values())  # file dở không bao giờ được tra tới
+
+
 def test_lane_devices_share_second_gpu():
     """Lane đầu dùng riêng GPU0; các lane sau chia GPU còn lại; một GPU thì mọi lane GPU0."""
     from vn_av_df.training.lanes import lane_devices

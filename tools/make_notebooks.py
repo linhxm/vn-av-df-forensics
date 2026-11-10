@@ -414,6 +414,8 @@ SEEDS = [42]          # lượt đầu một seed; chốt thiết kế rồi ch�
 MAX_HOURS = 11.5      # tính từ đầu phiên (SESSION_START); dừng sạch (lưu last.pt) trước giới hạn 12 giờ của
                       # Kaggle, chừa ~30 phút cho phần sau train (W&B, Output)
 STAGE_LOCAL = True    # chép cache cần sang /kaggle/temp trước khi train / test (nhanh hơn nhiều lần; thiếu chỗ thì tự bỏ)
+STAGE_MAX_GB = 90     # trần tổng GB chép: 10/11 phiên GPU ghi ~95 GB rồi lỗi "Read-only file system" dù ổ báo còn chỗ;
+                      # bản gốc chép đủ trước, biến thể chia đều phần còn lại, mẫu không chép đọc thẳng /kaggle/input
 SMOKE = False         # thử luồng: 2 người mỗi split, 1 epoch, không W&B (xong thì đặt lại False)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # trước lần dùng GPU đầu
 import torch
@@ -481,7 +483,10 @@ if STAGE_LOCAL and (MODELS or GROUP == "test"):
     tick = time.time()
     _rows, _ = training_dataset(cfg, verify_media=False, labels=False)
     _splits = ("validation", "test") if GROUP == "test" else ("train", "validation")
-    print("Chép sang /kaggle/temp:", stage_cfg(cfg, encoders_for(MODELS or cfg["models"]), _rows, "/kaggle/temp/cache", splits=_splits))
+    print("Ổ /kaggle/temp trước khi chép: còn", round(shutil.disk_usage("/kaggle/temp").free / 1e9, 1), "GB")
+    print("Chép sang /kaggle/temp:", stage_cfg(cfg, encoders_for(MODELS or cfg["models"]), _rows, "/kaggle/temp/cache",
+                                               splits=_splits, budget_gb=STAGE_MAX_GB))
+    print("Ổ /kaggle/temp sau khi chép: còn", round(shutil.disk_usage("/kaggle/temp").free / 1e9, 1), "GB")
     TIMINGS["stage"] = round(time.time() - tick, 1)
 """,
         ),
