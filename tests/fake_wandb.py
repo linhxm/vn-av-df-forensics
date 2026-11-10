@@ -71,6 +71,9 @@ class FakeRun:
             self.step += 1
         self.logged.append(dict(data))
 
+    def define_metric(self, name, step_metric=None, **kwargs):
+        self.axes = {**getattr(self, "axes", {}), name: step_metric}
+
     def log_artifact(self, artifact):
         self.artifacts.append(artifact)
 

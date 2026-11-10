@@ -704,6 +704,11 @@ def test_train_evaluate_report_smoke(world):
     trains = {r.kwargs["name"].split(" ", 1)[1]: r for r in fake.by_type("train")}
     m1 = trains["trihead_v2_seed42"]
     assert {"loss/train", "val_auc/mismatch", "grad_norm"} <= m1.keys()
+    # Đường học theo bước: mọi metric vẽ theo train/steps; điểm loss theo bước + điểm epoch, train/steps tăng dần.
+    assert m1.axes == {"train/steps": None, "*": "train/steps"}
+    points = [e for e in m1.logged if "train/steps" in e]
+    assert any("step/loss" in e for e in points) and any("loss/train" in e for e in points)
+    assert [e["train/steps"] for e in points] == sorted(e["train/steps"] for e in points)
     assert "best_epoch" in m1.summary and m1.artifacts[0].type == "model"
     assert m1.kwargs["config"]["augment_lag"] and m1.kwargs["config"]["pseudo_fake"] > 0
     assert not trains["avh_align_seed42"].kwargs["config"]["augment_lag"]

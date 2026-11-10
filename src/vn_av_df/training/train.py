@@ -43,6 +43,9 @@ from vn_av_df.training.data import (
 )
 from vn_av_df.training.models import build
 
+# Số điểm loss train mỗi epoch trên W&B (trục train/steps); AUC validation vẫn một điểm mỗi epoch.
+STEP_POINTS = 50
+
 
 def feature_dim(cfg, rows):
     for row in rows:
@@ -181,12 +184,17 @@ def loaders(cfg, model, rows, seed, train, options=None, speakers=None):
 
 
 def run_epoch(
-    model, loader, optimizer, device, weights, stats=None, clip=5.0, scaler=None, label=None
+    model, loader, optimizer, device, weights, stats=None, clip=5.0, scaler=None, label=None,
+    step_log=None,
 ):
     """Loss trung bình; `stats` (dict) nhận thêm trung bình từng thành phần loss + grad norm.
-    `label`: in tiến độ theo batch (batch đầu, rồi mỗi 60 s) kèm loss trung bình tới lúc đó."""
+    `label`: in tiến độ theo batch (batch đầu, rồi mỗi 60 s) kèm loss trung bình tới lúc đó.
+    `step_log` (train): {"run", "steps", "samples", "epoch", "every"}: mỗi `every` bước ghi W&B loss trung
+    bình của cửa sổ đó theo trục train/steps cộng dồn (bước / mẫu trước epoch này = "steps" / "samples").
+    Loss, grad norm đã đọc về CPU mỗi batch, nên chỉ thêm một lệnh log (W&B gửi ở tiến trình nền)."""
     total, count, steps = 0.0, 0, 0
     parts, norms, skipped = Counter(), [], 0
+    window, window_parts, window_norms = [0.0, 0], Counter(), []
     model.train(optimizer is not None)
     amp = scaler is not None and str(device).startswith("cuda")
     progress = (
@@ -212,6 +220,7 @@ def run_epoch(
             # qua bước đó. Chỉ lấy trung bình norm hữu hạn, đếm riêng số bước tràn (BL-A, 25/10).
             if math.isfinite(norm):
                 norms.append(norm)
+                window_norms.append(norm)
             else:
                 skipped += 1
             if amp:
@@ -221,10 +230,28 @@ def run_epoch(
                 optimizer.step()
             steps += 1
         size = len(batch["index"])
-        total += float(loss.detach()) * size
+        batch_loss = float(loss.detach())
+        total += batch_loss * size
         count += size
         for key, value in (getattr(model, "loss_parts", None) or {}).items():
             parts[key] += value * size
+            window_parts[key] += value * size
+        window[0] += batch_loss * size
+        window[1] += size
+        if step_log and steps and steps % step_log["every"] == 0 and window[1]:
+            n = window[1]
+            step_log["run"].log(
+                {
+                    "train/steps": step_log["steps"] + steps,
+                    "train/samples": step_log["samples"] + count,
+                    "step/epoch": step_log["epoch"] - 1 + steps / max(1, len(loader)),
+                    "step/loss": window[0] / n,
+                    **{f"step/{k}": v / n for k, v in window_parts.items()},
+                    "step/grad_norm": float(np.mean(window_norms)) if window_norms else None,
+                    "step/lr": optimizer.param_groups[0]["lr"],
+                }
+            )
+            window, window_parts, window_norms = [0.0, 0], Counter(), []
         if progress:
             progress.step(note=f"loss {total / max(1, count):.4f}")
     if stats is not None:
@@ -456,6 +483,7 @@ def train_one(cfg, name, seed, rows, out):
         tags=[name] + ([f"group:{group_tag}"] if group_tag else []),
         with_setup=True,
     )
+    run.step_axis("train/steps")  # đường học theo bước: điểm mỗi STEP_POINTS phần epoch + điểm cuối epoch
     run.tables(
         {
             "architecture/modules": (
@@ -555,6 +583,13 @@ def train_one(cfg, name, seed, rows, out):
             clip,
             scaler,
             label=f"{tag} train",
+            step_log={
+                "run": run,
+                "steps": sum(e["train_parts"].get("steps", 0) for e in history["epochs"]),
+                "samples": sum(e["train_parts"].get("samples", 0) for e in history["epochs"]),
+                "epoch": epoch,
+                "every": max(1, len(train_loader) // STEP_POINTS),
+            },
         )
         val_loss = run_epoch(
             model, val_loader, None, device, weights, val_stats, label=f"{tag} val"
@@ -608,7 +643,6 @@ def train_one(cfg, name, seed, rows, out):
                     else {}
                 ),
             },
-            step=epoch,
         )
         improved = better(value, best, monitor[0])
         spent = time.monotonic() - began

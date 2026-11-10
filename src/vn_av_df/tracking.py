@@ -37,6 +37,13 @@ class Run:
             clean = {k: v for k, v in data.items() if v is not None and not _nan(v)}
             self.run.log(clean, step=step) if step is not None else self.run.log(clean)
 
+    def step_axis(self, key):
+        """Mọi metric vẽ theo `key` (run train: "train/steps", điểm theo bước và điểm theo epoch chung một
+        trục). Log của run như vậy không truyền `step=`: W&B bỏ dữ liệu khi step tụt."""
+        if self.active:
+            self.run.define_metric(key)
+            self.run.define_metric("*", step_metric=key)
+
     def summary(self, data):
         if self.active:
             for k, v in data.items():
