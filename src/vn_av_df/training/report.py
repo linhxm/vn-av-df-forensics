@@ -63,7 +63,6 @@ GATES = [
     ("trihead_v5", "trihead_v5_clean", "ai", "R4 học nén giúp ở 480p (≥ 0,01)", None, "c480"),
     ("trihead_v5_quality", "trihead_v5", "ai", "R5 nhánh chất lượng giúp ở 480p (≥ 0,01)", None, "c480"),
     ("trihead_v5", "trihead_v5_no_pair", "ai", "R6 cặp sạch ↔ nén giúp ở 480p", None, "c480"),
-    ("trihead_v5", "trihead_v4", "ai", "R7 M3-R không kém M3 trên bản gốc (≥ −0,01)", None),
     (
         "trihead_v5",
         "xlsr_frozen",

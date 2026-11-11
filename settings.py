@@ -26,9 +26,9 @@ TEST_ONLY_GENERATORS = ["latentsync_1_5", "diff2lip"]
 TRAIN_VOICES = ["vieneu", "f5_vi", "omnivoice", "seedvc"]
 TEST_ONLY_VOICES = ["voxcpm2", "vixtts"]
 # Đội hình v005 (RESEARCH_WORKLOG/v005_model.md; v004: v004_model.md §7). Baseline đúng code gốc như v003
-# (BL-V, BL-A, BL-M, BL-M/sup) + SpeechForensics (không train) + BL-A2 (XLS-R đóng băng); M1 (kiến
-# trúc v003) và M2 (giữ nguyên) train lại trên cache / nhãn mới. v005 (chốt 07/11/2026): model chính
-# M3-R = trihead_v5 (M3 gọn + học video nén); M3 của v004 (trihead_v4) thành ablation.
+# (BL-V, BL-A, BL-M, BL-M/sup) + SpeechForensics (không train) + BL-A2 (XLS-R đóng băng); M2 (giữ
+# nguyên) train lại trên cache / nhãn mới. v005 (chốt 07/11/2026): model chính M3-R = trihead_v5 (M3
+# gọn + học video nén).
 # Ghép muộn tính ở evaluate, không train: BL-Ens = max(BL-V, BL-A); BL-Ens-AV = max(BL-M/sup, BL-A2).
 MODELS = [
     "lipinc_v2",
@@ -37,19 +37,18 @@ MODELS = [
     "avh_align",
     "avh_align_sup",
     "speechforensics",
-    "trihead_v2",
     "avh_align_plus",
     "trihead_v5",
 ]
-# Ablation của M3-R: bỏ cặp sạch ↔ nén (nhất quán), thêm nhánh chất lượng, không học nén; M3 cũ
-# (trihead_v4, có nhánh ngữ điệu ↔ đầu). Thử nghiệm 07/11 (part 3, 1.600 step): nhánh ngữ điệu, Φ
-# riêng, tham chiếu người không giúp nên ablation v4 cũ (trihead_v4_no_prosody / _no_phi / _abs /
-# _ref) chỉ còn trong models.SPECS, chạy tay bằng GROUP lẻ nếu cần.
+# Ablation của M3-R: bỏ cặp sạch ↔ nén (nhất quán), thêm nhánh chất lượng, không học nén. Thử nghiệm
+# 07/11 (part 3, 1.600 step): nhánh ngữ điệu, Φ riêng, tham chiếu người không giúp nên ablation v4 cũ
+# (trihead_v4_no_prosody / _no_phi / _abs / _ref) chỉ còn trong models.SPECS, chạy tay bằng GROUP lẻ nếu cần.
+# 11/11: báo cáo v005 chỉ so BL ↔ M và ablation của M3-R; bản cũ (M1 = trihead_v2, M3 v004 = trihead_v4)
+# đã so ở thử nghiệm nhỏ trước khi chọn M3-R nên bỏ khỏi đội hình (vẫn trong models.SPECS).
 ABLATIONS = [
     "trihead_v5_no_pair",
     "trihead_v5_quality",
     "trihead_v5_clean",
-    "trihead_v4",
 ]
 # Biến thể dữ liệu v005 (RESEARCH_WORKLOG/v005_model.md §8-9), mỗi biến thể một phiên prepare cùng tên
 # (landmark dùng lại của bản gốc; trích avhubert / mouth / xlsr trên bản đã xử lý, giữ số frame).
@@ -149,33 +148,21 @@ TRAIN_GROUPS = {
         "tier": "core",
         "gates": ["BL-Ens"],
     },
-    "M1": {
-        "title": "M1 (kiến trúc v003, có tham chiếu người): 2-3 phiên; hoãn, xem kết quả M3 rồi quyết",
-        "lanes": [["trihead_v2"]],
-        "hours": [12.3, 24.5],
-        "tier": "deferred",
-        "gates": ["V1"],
-    },
     "M3-R-quality": {
         "title": "M3-R thêm nhánh chất lượng (FiLM theo độ phân giải miệng + đầu phụ 'bị nén')",
         "lanes": [["trihead_v5_quality"]],
-        "hours": [5, 11],
+        # ○ 11/11: theo cặp như M3-R (thật: 25 epoch, 48-64 phút / epoch, ~21 h) → ~2 phiên.
+        "hours": [18, 23],
         "tier": "optional",
         "gates": ["R5"],
     },
     "M3-R-clean": {
         "title": "M3-R không học nén (chỉ bản gốc)",
         "lanes": [["trihead_v5_clean"]],
-        "hours": [3, 6.5],
+        # ○ 11/11: số step như M3-R-nopair (thật: ~27 phút / epoch, > 24 epoch).
+        "hours": [11, 14],
         "tier": "optional",
         "gates": ["R4"],
-    },
-    "M3": {
-        "title": "M3 của v004 (trihead_v4, có nhánh ngữ điệu ↔ đầu)",
-        "lanes": [["trihead_v4"]],
-        "hours": [3, 7],
-        "tier": "optional",
-        "gates": ["R7"],
     },
     "BL-A": {
         "title": "BL-A (SSL-AASIST fine-tune XLS-R; v003 không học được): 1-4 phiên",
@@ -190,13 +177,15 @@ TRAIN_GROUPS = {
 # (training.lanes.lane_devices): baseline nhẹ (BL-M/sup, BL-A2, M2, BL-M, BL-V: < 1,2 GB VRAM ở benchmark v004)
 # chạy đồng thời trên GPU1. Phiên train CHỈ train; test chấm một lần ở GROUP = "test" sau khi train xong hết
 # (một run W&B cho test + báo cáo). Model chưa xong ở MAX_HOURS thì chạy lại phiên đó với PREVIOUS_RUN (bước đã
-# xong được bỏ qua): P2 tiếp M3-R, M2 của P1 và BL-M (P1 hết giờ trước khi tới BL-M, 10/11). P5: PREVIOUS_RUN = Output P4. M1 hoãn (GROUP = "M1").
+# xong được bỏ qua): P2 tiếp M3-R, M2 của P1 và BL-M (P1 hết giờ trước khi tới BL-M, 10/11). M3-R-nopair hết
+# giờ ở P2 (epoch 24, 11/11): chạy tiếp riêng bằng GROUP = "M3-R-nopair" trước test. P3-P5 tuỳ chọn (sau báo cáo):
+# P4 tiếp quality + clean rồi BL-A; P5 tiếp BL-A (+ quality nếu còn dở). PREVIOUS_RUN = mọi phiên trước.
 TRAIN_SESSIONS = {
     "P1": [["M3-R"], ["BL-Msup", "M2", "BL-M"], ["BL-A2", "BL-V"]],
     "P2": [["M3-R"], ["M3-R-nopair"], ["M2", "BL-M"]],
     "P3": [["M3-R-quality"], ["M3-R-clean"]],
-    "P4": [["BL-A"], ["M3"]],
-    "P5": [["BL-A"], ["M3"]],
+    "P4": [["M3-R-quality"], ["M3-R-clean", "BL-A"]],
+    "P5": [["BL-A"], ["M3-R-quality"]],
 }
 # Đội hình đầy đủ: notebook in model nào chưa train xong; report gồm các model đã có (cổng thiếu
 # model thì bỏ qua).

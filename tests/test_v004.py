@@ -405,13 +405,11 @@ def test_train_groups_cover_test_roster_once():
     assert sorted(seen) == sorted(settings.TEST_MODELS)
     assert all(len(g["lanes"]) == 1 for g in settings.TRAIN_GROUPS.values())
     assert all(m in zoo.SPECS for m in seen)
-    assert {g["tier"] for g in settings.TRAIN_GROUPS.values()} == {"core", "optional", "deferred"}
+    assert {g["tier"] for g in settings.TRAIN_GROUPS.values()} == {"core", "optional"}
     first = next(iter(settings.TRAIN_GROUPS.values()))
     assert first["benchmark"] and first["lanes"] == [["trihead_v5"]]
     steps = [s for lanes in settings.TRAIN_SESSIONS.values() for lane in lanes for s in lane]
-    deferred = {k for k, g in settings.TRAIN_GROUPS.items() if g["tier"] == "deferred"}
-    assert deferred == {"M1"}  # hoãn, không tự chạy trong phiên nào; GROUP = "M1" khi quyết
-    assert set(steps) == set(settings.TRAIN_GROUPS) - deferred
+    assert set(steps) == set(settings.TRAIN_GROUPS)  # 11/11: bỏ M1, M3 v004 khỏi đội hình
     assert all(len(lanes) >= 2 for lanes in settings.TRAIN_SESSIONS.values())
     # v005: P1 = M3-R (GPU0 riêng) + baseline lõi chia GPU1; P2 chạy tiếp M3-R, M2 + M3-R-nopair, BL-M
     assert settings.TRAIN_SESSIONS["P1"][0] == ["M3-R"]
