@@ -1,0 +1,122 @@
+[
+  {
+    "first": "avh_align_plus",
+    "second": "avh_align_sup",
+    "task": "mismatch",
+    "note": "M2 hơn BL-M/sup (cùng dữ liệu)",
+    "subset": null,
+    "variant": null,
+    "delta": 0.5215472012670767,
+    "ci95": [
+      0.5078423877035609,
+      0.534600967813294
+    ],
+    "speakers": 31,
+    "samples": 7356
+  },
+  {
+    "first": "avh_align_plus",
+    "second": "avh_align",
+    "task": "mismatch",
+    "note": "M2 hơn BL-M",
+    "subset": null,
+    "variant": null,
+    "delta": 0.05541775152225559,
+    "ci95": [
+      0.048588450841802765,
+      0.061384638858264756
+    ],
+    "speakers": 31,
+    "samples": 7356
+  },
+  {
+    "first": "trihead_v5",
+    "second": "bl_ens_av",
+    "task": "ai",
+    "note": "R1 M3-R hơn BL-Ens-AV",
+    "subset": null,
+    "variant": null,
+    "delta": 0.038605822716264226,
+    "ci95": [
+      0.03342032600928942,
+      0.043603835902710615
+    ],
+    "speakers": 31,
+    "samples": 7368
+  },
+  {
+    "first": "trihead_v5",
+    "second": "bl_ens_av",
+    "task": "ai",
+    "note": "R2 M3-R hơn BL-Ens-AV, video nén 480p",
+    "subset": null,
+    "variant": "c480",
+    "delta": 0.04969195075456134,
+    "ci95": [
+      0.04257235978777402,
+      0.05599320224066501
+    ],
+    "speakers": 31,
+    "samples": 7368
+  },
+  {
+    "first": "trihead_v5",
+    "second": "bl_ens_av",
+    "task": "ai",
+    "note": "R2b M3-R hơn BL-Ens-AV, video nén 360p",
+    "subset": null,
+    "variant": "c360",
+    "delta": 0.06549475129513116,
+    "ci95": [
+      0.051122767077025115,
+      0.07871938628449218
+    ],
+    "speakers": 31,
+    "samples": 7368
+  },
+  {
+    "first": "trihead_v5",
+    "second": "avh_align_plus",
+    "task": "ai",
+    "note": "R3 M3-R hơn M2, video nén 480p",
+    "subset": null,
+    "variant": "c480",
+    "delta": 0.0551300180805534,
+    "ci95": [
+      0.04581787318071451,
+      0.06473842785801562
+    ],
+    "speakers": 31,
+    "samples": 7368
+  },
+  {
+    "first": "trihead_v5",
+    "second": "trihead_v5_no_pair",
+    "task": "ai",
+    "note": "R6 cặp sạch ↔ nén giúp ở 480p",
+    "subset": null,
+    "variant": "c480",
+    "delta": 0.003647793885621309,
+    "ci95": [
+      0.001004766748781505,
+      0.006379924379234242
+    ],
+    "speakers": 31,
+    "samples": 7368
+  },
+  {
+    "first": "trihead_v5",
+    "second": "xlsr_frozen",
+    "task": "audio",
+    "note": "R8 M3-R không kém BL-A2, giọng chưa thấy, 480p (≥ −0,01)",
+    "subset": "unseen_voice",
+    "variant": "c480",
+    "delta": 0.003961920826052956,
+    "ci95": [
+      -0.0036580626752273854,
+      0.013185133832721971
+    ],
+    "speakers": 31,
+    "samples": 5706
+  }
+]
