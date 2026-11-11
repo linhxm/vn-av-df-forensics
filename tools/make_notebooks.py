@@ -383,7 +383,7 @@ Mỗi phiên train (`GROUP` = `P1`…`P5`, `settings.TRAIN_SESSIONS`) là **mộ
 | `labels` | None (CPU) | nhãn mismatch 0 / 1 / mask + kiểm lối tắt → `sync_labels.json` (xem trước khi train) | |
 | `P1` | T4 ×2 | M3-R (+ benchmark mọi model) | đồng thời: BL-M/sup → M2 → BL-M + SpeechForensics, và BL-A2 → BL-V |
 | `P2` (`PREVIOUS_RUN` = P1) | T4 ×2 | M3-R chạy tiếp (xong rồi thì bỏ qua) | đồng thời: M3-R −cặp sạch ↔ nén, và M2 chạy tiếp → BL-M + SpeechForensics |
-| `M3-R-nopair` (`PREVIOUS_RUN` = P1, P2) | T4 ×2 | M3-R −cặp sạch ↔ nén chạy tiếp (P2 hết giờ ở epoch 24) | |
+| `M3-R-nopair` (`PREVIOUS_RUN` = P2) | T4 ×2 | M3-R −cặp sạch ↔ nén chạy tiếp (P2 hết giờ ở epoch 24) | |
 | `P3` (`PREVIOUS_RUN` = mọi phiên trước, tuỳ chọn) | T4 ×2 | M3-R +nhánh chất lượng | M3-R không học nén |
 | `P4` (`PREVIOUS_RUN` = P1-P3, tuỳ chọn) | T4 ×2 | M3-R +nhánh chất lượng chạy tiếp | M3-R không học nén chạy tiếp → BL-A |
 | `P5` (`PREVIOUS_RUN` = P1-P4, tuỳ chọn) | T4 ×2 | BL-A chạy tiếp | M3-R +nhánh chất lượng (nếu còn dở) |
@@ -409,7 +409,7 @@ CACHES = [Path(PREPARE.format(p, s)) for p in (1, 2, 3) for s in ("landmarks", "
 # Mỗi biến thể 2 phiên mỗi part: "<v>-cpu" (clip nén + mouth) và "<v>" (avhubert + xlsr).
 VARIANT_CACHES = {v: [Path(PREPARE.format(p, s)) for p in (1, 2, 3) for s in (v, f"{v}-cpu")] for v in settings.VARIANTS}
 RUNS = "/kaggle/input/notebooks/linhxm/vn-av-df-train-{}/vn-av-df-forensics/runs/" + settings.RUN_NAME
-PREVIOUS_RUN = []     # P2: [Path(RUNS.format("p1"))]; "M3-R-nopair": [Path(RUNS.format(g)) for g in ("p1", "p2")]; P3-P5: thêm phiên đã chạy  (slug Kaggle viết thường)
+PREVIOUS_RUN = []     # P2: [Path(RUNS.format("p1"))]; "M3-R-nopair": [Path(RUNS.format("p2"))] (Output P2 đã gộp P1); P3-P5: thêm phiên đã chạy  (slug Kaggle viết thường)
                       # test / report: [Path(RUNS.format(g)) for g in ("p1", "p2")] (+ phiên khác đã chạy, vd. "p3")
 SEEDS = [42]          # lượt đầu một seed; chốt thiết kế rồi chạy [42, 43, 44]
 MAX_HOURS = 11.5      # tính từ đầu phiên (SESSION_START); dừng sạch (lưu last.pt) trước giới hạn 12 giờ của
