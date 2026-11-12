@@ -87,7 +87,7 @@ Each variant is re-extracted from the re-encoded file (AV-HuBERT, mouth crops, X
 - **Trace:** three mouth image streams (raw, NPR, temporal residual) through Conv3D, plus lip kinematics and head pose, through a TCN.
 - **Audio:** a softmax mix of the XLS-R layer groups (layer dropout 0.4, channel dropout 0.1 during training), followed by 2 Transformer layers.
 
-**Heads.** Frame-level visual ← [trace, sync_rel], mismatch ← [sync_abs, audio], audio ← audio. Auxiliary heads: cell type (CE × 0.2) and global offset (SmoothL1 × 0.1, real clips). Video score = mean of the top-5 frames. **AI? = max(visual, audio).** 3.72 M trainable parameters, of which Φ is 1.74 M.
+**Heads.** Frame-level visual ← [trace, sync_rel], mismatch ← [sync_abs, audio], audio ← audio. Auxiliary heads: cell type (CE × 0.2) and global offset (SmoothL1 × 0.1, real clips). Video score = mean of the top-5 frames. **AI? = max(visual, audio).** 3.72 M trainable parameters, of which Φ is 1.74 M. Of these, 0.28 M (279,296, 7.5%) belong to the appearance stream that `SyncTrunkV4` still builds and computes but no `trihead_v5` head reads. Those weights receive no gradient and keep their initial values in `best.pt` (●: its LayerNorm is still weight 1, bias 0), so the effective count is 3.44 M. Predictions are unaffected.
 
 **Paired training (D5).** Each batch is 8 clips plus their own re-encoded copies (480p or 360p, drawn per epoch), with the same crop, lag shift and pseudo-fake. The loss is
 
@@ -119,6 +119,10 @@ The no-pair ablation has the same model and data, but uses random re-encoded cop
 GPU hours (sum of epoch times, ●): M3-R 21.3, no-pair 12.8, M2 5.5, BL-M/sup 5.5, BL-A2 4.2, BL-V 3.4, BL-M 0.5.
 
 ![Validation curves](figures/v005/c04_val_curves.png)
+
+Validation AUC per epoch, by output head (columns) on clean and 360p video (rows), on a shared 0.4–1 axis. Each model is drawn only for the heads it has. The open circle marks the checkpoint that was tested.
+- M3-R is near the ceiling on clean video after epoch 1 (AI? 0.959). Most of the later gain is at 360p (AI? 0.852 → 0.918).
+- Kaggle validated only at the end of each epoch (1,608 steps for M3-R), so the climb from chance is not visible here. On the local machine it took about 300 steps (part 3: 0.489 at step 0, 0.901 at step 300). v006 adds validation points inside the first three epochs.
 
 ## 5. Results
 
@@ -200,6 +204,8 @@ These checks ran on a local GPU before the Kaggle run. Their test set is 1,000 p
 - **360p at a fixed threshold** flags 8.5% of reals.
 - **Below 360p** only AI voices can be detected (resolution gate).
 - **Unseen voices** VoxCPM2 and F5 inpainting stay around 0.91.
+- **Learning curves start after epoch 1.** There is no validation before step 1,608, so the curves miss the early climb (see §4). v006 retrains the roster on seed 43 with extra validation points.
+- **Unused appearance stream** in `trihead_v5`: 0.28 M parameters with no effect (see §3). It is kept in v006 so both seeds share one architecture.
 - **Not in the v005 roster:** M1 (`trihead_v2`) and M3 v004 (`trihead_v4`) were compared in earlier rounds before M3-R was chosen. Their code stays in `models.SPECS`.
 
 ## 8. Reproducing
