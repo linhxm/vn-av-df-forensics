@@ -1,4 +1,4 @@
-# VN-AV-DF Forensics (v005)
+# VN-AV-DF Forensics (v006)
 
 **A Vietnamese lip-sync deepfake benchmark: real speakers, six audio-visual cells, unseen generators and voices at test time.**
 
@@ -7,7 +7,8 @@
 | v001-v002 | `v001`, `v002` | earlier study on one pilot part (closed 14 October 2026) |
 | v003 | `v003` | the benchmark rebuilt from scratch; detectors M1, M2 and baselines on part 1 |
 | v004 | `v004` | measured mismatch labels, the M3 lip–audio–head detector, all three parts (closed 7 November 2026): [docs/v004_report.md](docs/v004_report.md) |
-| **v005** | `v005`, `main` | **M3-R**, a detector trained on real re-compressed video (480p, 360p) with paired clean ↔ re-encoded consistency, and a resolution gate (closed 11 November 2026): **[docs/v005_report.md](docs/v005_report.md)** |
+| v005 | `v005` | **M3-R**, a detector trained on real re-compressed video (480p, 360p) with paired clean ↔ re-encoded consistency, and a resolution gate (closed 11 November 2026, seed 42): **[docs/v005_report.md](docs/v005_report.md)** |
+| **v006** | `main` | the v005 roster retrained on seed 43 with extra validation points inside the first three epochs, so the learning curves start from chance level (in progress) |
 
 ## Benchmark design
 
@@ -61,7 +62,7 @@ How to run each step is described in **[PIPELINE.md](PIPELINE.md)** (written in 
 
 ## Status (v005, closed 11 November 2026)
 
-Trained and tested once on Kaggle (3 parts, 31 unseen test speakers, 7,368 clips, seed 42); full report in [docs/v005_report.md](docs/v005_report.md).
+v006 (in progress) retrains the same roster on seed 43; the numbers below are the closed v005 round. Trained and tested once on Kaggle (3 parts, 31 unseen test speakers, 7,368 clips, seed 42); full report in [docs/v005_report.md](docs/v005_report.md).
 
 | AI? AUC (test) | clean 720p | 480p | 360p |
 |---|---|---|---|

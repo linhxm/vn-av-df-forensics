@@ -16,8 +16,13 @@
   sản); pipeline train không ghi vào ledger của data_pipeline (ledger chỉ cho dữ liệu real).
 - Đã có `best.pt` + `history.json` hoàn chỉnh thì bỏ qua (chạy lại sau khi ngắt sẽ tiếp tục
   các model chưa xong; model đang dở train lại từ đầu).
+- v006 · đo dày (`training.dense_val`): thêm lần chấm validation giữa các epoch đầu, tại các tỉ lệ epoch
+  cho trước (0 = trước bước đầu tiên), ghi `history["dense"]` và W&B `dense/*` theo trục train/steps.
+  Chỉ để vẽ đường học: không dùng cho chọn checkpoint, scheduler, dừng sớm; giữ nguyên trạng thái ngẫu
+  nhiên qua mỗi lần chấm nên phần train sau đó y như khi không đo.
 """
 
+import contextlib
 import math
 import os
 import random
@@ -43,8 +48,42 @@ from vn_av_df.training.data import (
 )
 from vn_av_df.training.models import build
 
-# Số điểm loss train mỗi epoch trên W&B (trục train/steps); AUC validation vẫn một điểm mỗi epoch.
+# Số điểm loss train mỗi epoch trên W&B (trục train/steps); AUC validation một điểm mỗi epoch, thêm các
+# điểm đo dày ở vài epoch đầu nếu đặt training.dense_val.
 STEP_POINTS = 50
+
+
+@contextlib.contextmanager
+def kept_rng():
+    """Trả lại trạng thái RNG (torch CPU / CUDA, random, numpy) sau khối lệnh: lần chấm giữa epoch (loader
+    validation rút seed từ RNG chung) không làm đổi dropout / augment / thứ tự dữ liệu của phần train sau."""
+    cuda = torch.cuda.is_available()
+    state = (
+        torch.get_rng_state(),
+        torch.cuda.get_rng_state_all() if cuda else None,
+        random.getstate(),
+        np.random.get_state(),
+    )
+    try:
+        yield
+    finally:
+        torch.set_rng_state(state[0])
+        if cuda:
+            torch.cuda.set_rng_state_all(state[1])
+        random.setstate(state[2])
+        np.random.set_state(state[3])
+
+
+def dense_schedule(options, epoch, batches):
+    """Bước (trong epoch) cần chấm thêm: training.dense_val = [tỉ lệ epoch 1, tỉ lệ epoch 2, ...], mỗi phần
+    tử một danh sách tỉ lệ trong [0, 1) (0 = trước bước đầu; cuối epoch đã chấm sẵn). Trả tập bước 0..batches−1."""
+    plan = options.get("dense_val") or []
+    if epoch > len(plan):
+        return set()
+    fractions = plan[epoch - 1]
+    if any(not 0 <= f < 1 for f in fractions):
+        raise ValueError(f"training.dense_val epoch {epoch}: tỉ lệ phải trong [0, 1): {fractions}")
+    return {0 if f == 0 else min(batches - 1, max(1, round(f * batches))) for f in fractions}
 
 
 def feature_dim(cfg, rows):
@@ -185,13 +224,14 @@ def loaders(cfg, model, rows, seed, train, options=None, speakers=None):
 
 def run_epoch(
     model, loader, optimizer, device, weights, stats=None, clip=5.0, scaler=None, label=None,
-    step_log=None,
+    step_log=None, probe=None,
 ):
     """Loss trung bình; `stats` (dict) nhận thêm trung bình từng thành phần loss + grad norm.
     `label`: in tiến độ theo batch (batch đầu, rồi mỗi 60 s) kèm loss trung bình tới lúc đó.
     `step_log` (train): {"run", "steps", "samples", "epoch", "every"}: mỗi `every` bước ghi W&B loss trung
     bình của cửa sổ đó theo trục train/steps cộng dồn (bước / mẫu trước epoch này = "steps" / "samples").
-    Loss, grad norm đã đọc về CPU mỗi batch, nên chỉ thêm một lệnh log (W&B gửi ở tiến trình nền)."""
+    Loss, grad norm đã đọc về CPU mỗi batch, nên chỉ thêm một lệnh log (W&B gửi ở tiến trình nền).
+    `probe` (train, v006): (tập bước, hàm(bước)): gọi ngay sau bước tối ưu thứ k với k trong tập (đo dày)."""
     total, count, steps = 0.0, 0, 0
     parts, norms, skipped = Counter(), [], 0
     window, window_parts, window_norms = [0.0, 0], Counter(), []
@@ -229,6 +269,8 @@ def run_epoch(
             else:
                 optimizer.step()
             steps += 1
+            if probe and steps in probe[0]:
+                probe[1](steps)
         size = len(batch["index"])
         batch_loss = float(loss.detach())
         total += batch_loss * size
@@ -567,12 +609,41 @@ def train_one(cfg, name, seed, rows, out):
         flush=True,
     )
     began = time.monotonic()
+
+    def dense_probe(epoch, step, done, tag):
+        """Một lần chấm validation giữa epoch (v006, training.dense_val): chỉ ghi lại, không chọn checkpoint."""
+        tick = time.monotonic()
+        with kept_rng():
+            metrics = validation_metrics(model, cfg, val_rows, device)
+        model.train()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        point = {
+            "epoch": epoch - 1 + step / max(1, len(train_loader)),
+            "steps": done + step,
+            "seconds": round(time.monotonic() - tick, 1),
+            "validation": metrics,
+        }
+        history.setdefault("dense", []).append(point)
+        curves = {k: v for k, v in metrics.items() if k.startswith("val_auc") and "_by_" not in k}
+        run.log({"train/steps": point["steps"], "dense/epoch": point["epoch"],
+                 **{f"dense/{k}": v for k, v in curves.items()}})
+        clean = "val_auc_clean/" if any(k.startswith("val_auc_clean/") for k in curves) else "val_auc/"
+        aucs = " ".join(f"{k.split('/')[1]} {v:.3f}" for k, v in curves.items()
+                        if k.startswith(clean) and v is not None)
+        print(f"{tag} đo dày bước {step}/{len(train_loader)}: AUC val gốc {aucs or '-'} | "
+              f"{duration(point['seconds'])}", flush=True)
+
     for epoch in range(start, options["epochs"] + 1):
         tick = time.monotonic()
         train_loader.dataset.epoch = epoch
         model.on_epoch(epoch, options["epochs"])
         train_stats, val_stats = {}, {}
         tag = f"{name} seed{seed} epoch {epoch}/{options['epochs']}"
+        done = sum(e["train_parts"].get("steps", 0) for e in history["epochs"])
+        dense = dense_schedule(options, epoch, len(train_loader))
+        if 0 in dense:
+            dense_probe(epoch, 0, done, tag)
         train_loss = run_epoch(
             model,
             train_loader,
@@ -585,11 +656,12 @@ def train_one(cfg, name, seed, rows, out):
             label=f"{tag} train",
             step_log={
                 "run": run,
-                "steps": sum(e["train_parts"].get("steps", 0) for e in history["epochs"]),
+                "steps": done,
                 "samples": sum(e["train_parts"].get("samples", 0) for e in history["epochs"]),
                 "epoch": epoch,
                 "every": max(1, len(train_loader) // STEP_POINTS),
             },
+            probe=(dense - {0}, lambda step: dense_probe(epoch, step, done, tag)) if dense - {0} else None,
         )
         val_loss = run_epoch(
             model, val_loader, None, device, weights, val_stats, label=f"{tag} val"

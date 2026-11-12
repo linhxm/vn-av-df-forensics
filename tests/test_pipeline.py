@@ -891,6 +891,53 @@ def test_max_hours_stops_cleanly_then_resumes(world, tmp_path, monkeypatch):
     assert T.missing_runs(cfg) == []
 
 
+def test_dense_validation_points_do_not_change_training(world, tmp_path):
+    """v006 · đo dày (training.dense_val): điểm chấm giữa epoch vào history["dense"] và W&B dense/* theo
+    train/steps; RNG giữ nguyên qua mỗi lần chấm nên loss, metric cuối epoch và trọng số y như khi không đo."""
+    from vn_av_df.dataset import training_dataset
+    from vn_av_df.training import train as T
+
+    base = copy.deepcopy(world["cfg"])
+    base["models"], base["seeds"] = ["trihead_v5"], [7]
+    for name in ("avhubert", "mouth", "lipinc", "xlsr", "wave"):
+        (Path(base["cache"]) / name).mkdir(parents=True, exist_ok=True)
+    rows, _ = training_dataset(base)
+    write_fake_caches(base, rows)
+    plan = [[0, 0.5], [0.5]]
+    out = {}
+    for tag, dense in (("plain", None), ("dense", plan)):
+        cfg = copy.deepcopy(base)
+        cfg["runs"] = str(tmp_path / tag)
+        cfg["training"] = {
+            **cfg["training"], "epochs": 2, "max_epochs": 2, "patience": 9, "dense_val": dense,
+        }
+        T.train_all(cfg)
+        out[tag] = Path(cfg["runs"]) / "trihead_v5_seed7"
+    plain, dense = (
+        json.loads((out[k] / "history.json").read_text(encoding="utf-8")) for k in ("plain", "dense")
+    )
+    assert "dense" not in plain
+    batches = dense["epochs"][0]["train_parts"]["steps"]
+    expected = sorted(T.dense_schedule({"dense_val": plan}, 1, batches)) + [
+        batches + s for s in sorted(T.dense_schedule({"dense_val": plan}, 2, batches))
+    ]
+    points = dense["dense"]
+    assert [p["steps"] for p in points] == expected and points[0]["steps"] == 0
+    assert all("val_auc/ai" in p["validation"] for p in points)
+    assert [p["epoch"] for p in points] == sorted(p["epoch"] for p in points)
+    # Không đổi quá trình train: cùng loss, cùng chọn checkpoint, cùng trọng số.
+    for key in ("train_loss", "val_loss", "monitor", "validation"):
+        assert [e[key] for e in plain["epochs"]] == [e[key] for e in dense["epochs"]], key
+    assert plain["best_epoch"] == dense["best_epoch"]
+    a, b = (torch.load(out[k] / "best.pt", map_location="cpu", weights_only=False)["state"] for k in out)
+    assert all(torch.equal(a[k], b[k]) for k in a)
+    run = [r for r in world["wandb"].by_type("train") if r.kwargs["name"].endswith("trihead_v5_seed7")][-1]
+    logged = [e for e in run.logged if "dense/val_auc/ai" in e]
+    assert [e["train/steps"] for e in logged] == expected
+    steps = [e["train/steps"] for e in run.logged if "train/steps" in e]
+    assert steps == sorted(steps)  # W&B bỏ điểm khi trục tụt
+
+
 def test_run_lanes_trains_in_subprocesses_and_merges(world, tmp_path, capsys):
     """Hai lane (mỗi lane một tiến trình train_all, GPU riêng trên Kaggle): xong gộp về runs, tên
     nhóm W&B không đổi, thư mục lane được xoá."""

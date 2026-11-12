@@ -73,7 +73,7 @@ WANDB_CELL = """
 # W&B: log quá trình (setup từng phiên, trích feature, nhãn, train, test, báo cáo) làm bằng chứng.
 # Project PRIVATE. Thêm secret WANDB_API_KEY: Add-ons → Secrets. Không đẩy ảnh / video người thật.
 USE_WANDB = True
-WANDB_PROJECT = "vn-av-df-v005"  # v004: "vn-av-df-v004", v003: "vn-av-df-v003" (giữ nguyên, không ghi chồng)
+WANDB_PROJECT = "vn-av-df-v006"  # v005: "vn-av-df-v005", v004: "vn-av-df-v004" (giữ nguyên, không ghi chồng)
 WANDB_ENTITY = "vn-av-df-capstone"  # team trong org vn-av-df-capstone-org; key tạo trong org đó
 if USE_WANDB:
     from kaggle_secrets import UserSecretsClient
@@ -374,19 +374,21 @@ train = nb(
         (
             "markdown",
             """
-# v005 · Train từng model (nhiều hàng song song trên 2 GPU), rồi test một lần + báo cáo
+# v006 · Train từng model (nhiều hàng song song trên 2 GPU), rồi test một lần + báo cáo
 
-Mỗi phiên train (`GROUP` = `P1`…`P5`, `settings.TRAIN_SESSIONS`) là **một notebook Kaggle T4 ×2** tên `vn-av-df-train-<GROUP>`: các hàng chạy song song, **hàng đầu dùng riêng GPU0**, các hàng sau **chia GPU1** (baseline nhẹ chạy đồng thời); các bước trong hàng chạy nối tiếp. Phiên train **chỉ train** (không chấm test). Train xong hết thì chạy `GROUP = "test"`: chấm test mọi model một lần + ghép muộn + cổng + `report.md`, **một run W&B** duy nhất. Đầu mỗi phiên, cache cần được chép sang `/kaggle/temp` bằng 64 luồng (`STAGE_LOCAL`; đọc thẳng `/kaggle/input` chậm vì độ trễ từng file). Bỏ bước nào thì thêm vào `DROP`; chạy một bước lẻ: `GROUP = "<bước>"` (vd. `"M2"`). Thử luồng trước: `SMOKE = True` (vài người mỗi split, 1 epoch, không W&B).
+v006 = đội hình v005 train lại trên **seed 43** (`SEEDS`), có **đo dày validation** ở 3 epoch đầu (`settings` → `training.dense_val`: thêm điểm AUC giữa epoch để thấy đường học đi lên từ 0,5; không dùng chọn checkpoint). v005 (seed 42) ở branch `v005`.
+
+Mỗi phiên train (`GROUP` = `P1`…`P6`, `settings.TRAIN_SESSIONS`) là **một notebook Kaggle T4 ×2** tên `vn-av-df-v006-<GROUP>` (viết thường, vd. `vn-av-df-v006-p1`): các hàng chạy song song, **hàng đầu dùng riêng GPU0**, các hàng sau **chia GPU1** (baseline nhẹ chạy đồng thời); các bước trong hàng chạy nối tiếp. Phiên train **chỉ train** (không chấm test). Train xong hết thì chạy `GROUP = "test"`: chấm test mọi model một lần + ghép muộn + cổng + `report.md`, **một run W&B** duy nhất. Đầu mỗi phiên, cache cần được chép sang `/kaggle/temp` bằng 64 luồng (`STAGE_LOCAL`; đọc thẳng `/kaggle/input` chậm vì độ trễ từng file). Bỏ bước nào thì thêm vào `DROP`; chạy một bước lẻ: `GROUP = "<bước>"` (vd. `"M2"`). Thử luồng trước: `SMOKE = True` (vài người mỗi split, 1 epoch, không W&B).
 
 | GROUP | Accelerator | GPU0 | GPU1 |
 |---|---|---|---|
 | `labels` | None (CPU) | nhãn mismatch 0 / 1 / mask + kiểm lối tắt → `sync_labels.json` (xem trước khi train) | |
 | `P1` | T4 ×2 | M3-R (+ benchmark mọi model) | đồng thời: BL-M/sup → M2 → BL-M + SpeechForensics, và BL-A2 → BL-V |
 | `P2` (`PREVIOUS_RUN` = P1) | T4 ×2 | M3-R chạy tiếp (xong rồi thì bỏ qua) | đồng thời: M3-R −cặp sạch ↔ nén, và M2 chạy tiếp → BL-M + SpeechForensics |
-| `M3-R-nopair` (`PREVIOUS_RUN` = P2) | T4 ×2 | M3-R −cặp sạch ↔ nén chạy tiếp (P2 hết giờ ở epoch 24) | |
-| `P3` (`PREVIOUS_RUN` = mọi phiên trước, tuỳ chọn) | T4 ×2 | M3-R +nhánh chất lượng | M3-R không học nén |
-| `P4` (`PREVIOUS_RUN` = P1-P3, tuỳ chọn) | T4 ×2 | M3-R +nhánh chất lượng chạy tiếp | M3-R không học nén chạy tiếp → BL-A |
-| `P5` (`PREVIOUS_RUN` = P1-P4, tuỳ chọn) | T4 ×2 | BL-A chạy tiếp | M3-R +nhánh chất lượng (nếu còn dở) |
+| `P3` (`PREVIOUS_RUN` = P2, nếu còn model dở) | T4 ×2 | M3-R chạy tiếp | M3-R −cặp chạy tiếp |
+| `P4` (`PREVIOUS_RUN` = mọi phiên trước, tuỳ chọn) | T4 ×2 | M3-R +nhánh chất lượng | M3-R không học nén |
+| `P5` (`PREVIOUS_RUN` = P1-P4, tuỳ chọn) | T4 ×2 | M3-R +nhánh chất lượng chạy tiếp | M3-R không học nén chạy tiếp → BL-A |
+| `P6` (`PREVIOUS_RUN` = P1-P5, tuỳ chọn) | T4 ×2 | BL-A chạy tiếp | M3-R +nhánh chất lượng (nếu còn dở) |
 | `test` (`PREVIOUS_RUN` = mọi phiên train) | T4 ×2 | chấm test mọi model (bản gốc + mọi biến thể + PR), ghép muộn BL-Ens / BL-Ens-AV, cổng V / R, `report.md`; một run W&B `test` | |
 | `report` | None (CPU) | dựng lại `report.md` từ kết quả test đã có (không chấm lại) | |
 
@@ -398,7 +400,7 @@ Cần: 3 dataset part (có `sync_syncnet.json`, chạy `training/01a_syncnet.py`
         (
             "code",
             """
-GROUP = "labels"      # "labels" → "P1" → "P2" → ("P3") → ("P4") → ("P5") → "test"; hoặc một bước lẻ, vd. "M2"
+GROUP = "labels"      # "labels" → "P1" → "P2" → ("P3") → "test"; tuỳ chọn "P4"-"P6"; hoặc một bước lẻ, vd. "M2"
 DROP = []             # bước bỏ ở phiên này, vd. ["M3-abs"] (settings.TRAIN_GROUPS)
 DATASET_PARTS = [Path(f"/kaggle/input/datasets/linhxm/{s}") for s in (
     "vn-av-df-data-part1-trim04-fake", "vn-av-df-data-part2-fake", "vn-av-df-data-part3-fake")]
@@ -408,10 +410,11 @@ CACHES = [Path(PREPARE.format(p, s)) for p in (1, 2, 3) for s in ("landmarks", "
 # Biến thể (settings.VARIANTS, phiên prepare cùng tên của 3 part): train học biến thể "train" + test thêm trên mọi biến thể.
 # Mỗi biến thể 2 phiên mỗi part: "<v>-cpu" (clip nén + mouth) và "<v>" (avhubert + xlsr).
 VARIANT_CACHES = {v: [Path(PREPARE.format(p, s)) for p in (1, 2, 3) for s in (v, f"{v}-cpu")] for v in settings.VARIANTS}
-RUNS = "/kaggle/input/notebooks/linhxm/vn-av-df-train-{}/vn-av-df-forensics/runs/" + settings.RUN_NAME
-PREVIOUS_RUN = []     # P2: [Path(RUNS.format("p1"))]; "M3-R-nopair": [Path(RUNS.format("p2"))] (Output P2 đã gộp P1); P3-P5: thêm phiên đã chạy  (slug Kaggle viết thường)
-                      # test / report: [Path(RUNS.format(g)) for g in ("p1", "p2")] (+ phiên khác đã chạy, vd. "p3")
-SEEDS = [42]          # lượt đầu một seed; chốt thiết kế rồi chạy [42, 43, 44]
+# Output các phiên train v006: notebook vn-av-df-v006-<phiên> (v005: vn-av-df-train-<phiên>, runs/train_all_v005).
+RUNS = "/kaggle/input/notebooks/linhxm/vn-av-df-v006-{}/vn-av-df-forensics/runs/" + settings.RUN_NAME
+PREVIOUS_RUN = []     # P2: [Path(RUNS.format("p1"))]; P3: [Path(RUNS.format("p2"))] (Output P2 đã gộp P1); bước lẻ: Output phiên gần nhất  (slug viết thường)
+                      # test / report: Output phiên train cuối (đã gộp các phiên trước), vd. [Path(RUNS.format("p3"))]
+SEEDS = list(settings.SEEDS)  # v006: [43] (v005: [42])
 MAX_HOURS = 11.5      # tính từ đầu phiên (SESSION_START); dừng sạch (lưu last.pt) trước giới hạn 12 giờ của
                       # Kaggle, chừa ~30 phút cho phần sau train (W&B, Output)
 STAGE_LOCAL = True    # chép cache cần sang /kaggle/temp trước khi train / test (nhanh hơn nhiều lần; thiếu chỗ thì tự bỏ)

@@ -1,7 +1,7 @@
 """Log W&B: trích feature, train, test, báo cáo (kèm setup của phiên, setup_log.py) làm bằng chứng.
 
 Bật bằng cfg["wandb"] (notebook prepare / train đặt; project để private):
-    {"project": "vn-av-df-v005", "entity": None, "mode": "online"}
+    {"project": "vn-av-df-v006", "entity": None, "mode": "online"}
 Không đặt cfg["wandb"] thì mọi hàm ở đây không làm gì: local và test không cần cài wandb.
 Không đẩy ảnh / video người thật; chỉ số liệu, bảng, biểu đồ và file kết quả.
 
@@ -19,7 +19,7 @@ import numpy as np
 
 from vn_av_df.common.runtime import read_json, write_json
 
-PROJECT = "vn-av-df-v005"
+PROJECT = "vn-av-df-v006"  # v005: "vn-av-df-v005" (giữ nguyên, không ghi chồng)
 
 
 class Run:

@@ -168,7 +168,7 @@ def build_report(cfg, run=None):
         by_model[model_name(folder)].append((folder, metrics))
     seeds = sorted({len(items) for items in by_model.values()})
     lines = [
-        "# Kết quả v005",
+        f"# Kết quả {cfg.get('version') or Path(cfg['runs']).name}",
         "",
         f"Generator đã thấy khi train: {', '.join(evaluation['seen']['generators'])}",
         f"Giọng đã thấy khi train: {', '.join(evaluation['seen']['voices'])}",
