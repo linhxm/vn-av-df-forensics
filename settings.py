@@ -183,12 +183,13 @@ TRAIN_GROUPS = {
 # xong được bỏ qua): P2 tiếp M3-R, M2 của P1 và BL-M (P1 hết giờ trước khi tới BL-M, 10/11). M3-R-nopair hết
 # giờ ở P2 (epoch 24, 11/11): chạy tiếp riêng bằng GROUP = "M3-R-nopair" trước test. P3-P5 tuỳ chọn (sau báo cáo):
 # P4 tiếp quality + clean rồi BL-A; P5 tiếp BL-A (+ quality nếu còn dở). PREVIOUS_RUN = mọi phiên trước.
-# v006: như v005 (P1, P2) cộng P3 = phần còn dở của M3-R và M3-R −cặp (đo dày thêm ~1,2 giờ mỗi model
-# nặng; v005 M3-R 21,3 giờ, −cặp 12,8 giờ). Tuỳ chọn P4-P6 (ablation, BL-A) sau báo cáo.
+# v006: như v005 (P1, P2) cộng P3 = phần còn dở sau P2 (đo dày thêm ~1,2 giờ mỗi model nặng). Lượt thật
+# (13/11): M3-R xong ở P2; M3-R −cặp hết giờ ở P2 (epoch 20) và BL-M/sup hết giờ ở P1 (epoch 46, P2 không có
+# bước này), nên P3 = M3-R −cặp (GPU0) và BL-M/sup (GPU1). Tuỳ chọn P4-P6 (ablation, BL-A) sau báo cáo.
 TRAIN_SESSIONS = {
     "P1": [["M3-R"], ["BL-Msup", "M2", "BL-M"], ["BL-A2", "BL-V"]],
     "P2": [["M3-R"], ["M3-R-nopair"], ["M2", "BL-M"]],
-    "P3": [["M3-R"], ["M3-R-nopair"]],
+    "P3": [["M3-R-nopair"], ["BL-Msup"]],
     "P4": [["M3-R-quality"], ["M3-R-clean"]],
     "P5": [["M3-R-quality"], ["M3-R-clean", "BL-A"]],
     "P6": [["BL-A"], ["M3-R-quality"]],
